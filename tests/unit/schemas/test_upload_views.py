@@ -6,38 +6,7 @@ from pydantic import ValidationError
 from clouddoc.schemas.upload_views import (
     DOCUMENT_UPLOAD_CONTENT_TYPE,
     PresignedDocumentUpload,
-    build_document_object_key,
 )
-
-
-def test_builds_canonical_document_object_key() -> None:
-    """A document job should own one canonical source object."""
-    assert build_document_object_key("job-001") == "documents/job-001/source.txt"
-
-
-def test_trims_job_id_when_building_object_key() -> None:
-    """Surrounding whitespace should not enter the object key."""
-    assert build_document_object_key("  job-001  ") == "documents/job-001/source.txt"
-
-
-@pytest.mark.parametrize(
-    "job_id",
-    [
-        "",
-        " ",
-        "   ",
-        "\t",
-    ],
-)
-def test_rejects_blank_job_id(
-    job_id: str,
-) -> None:
-    """A document object key requires a valid job identity."""
-    with pytest.raises(
-        ValueError,
-        match="job_id must not be empty",
-    ):
-        build_document_object_key(job_id)
 
 
 def test_creates_approved_upload_instructions() -> None:

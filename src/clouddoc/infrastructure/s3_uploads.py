@@ -8,10 +8,10 @@ from clouddoc.application.upload_ports import (
     DocumentUploadProvider,
     DocumentUploadProviderError,
 )
+from clouddoc.schemas.document_keys import build_document_object_key
 from clouddoc.schemas.upload_views import (
     DOCUMENT_UPLOAD_CONTENT_TYPE,
     PresignedDocumentUpload,
-    build_document_object_key,
 )
 
 
