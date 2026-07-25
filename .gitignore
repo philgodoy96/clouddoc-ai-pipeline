@@ -1,0 +1,79 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Python environments
+.venv/
+venv/
+env/
+
+# Python packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Test and coverage artifacts
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+junit.xml
+
+# Static analysis and type checking
+.mypy_cache/
+.ruff_cache/
+.pyright/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# AWS and deployment artifacts
+.aws-sam/
+serverless/
+.lambda-build/
+artifacts/
+
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# Local Terraform variable files
+*.auto.tfvars
+*.auto.tfvars.json
+terraform.tfvars
+
+# IDEs and editors
+.idea/
+.vscode/
+.cursor/
+*.swp
+*.swo
+
+# Operating systems
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Logs
+*.log
+
+# Temporary files
+tmp/
+temp/
+.cache/
