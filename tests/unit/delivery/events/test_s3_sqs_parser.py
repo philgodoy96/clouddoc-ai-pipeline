@@ -13,6 +13,7 @@ from clouddoc.delivery.events.errors import (
     UnsupportedS3EventError,
 )
 from clouddoc.delivery.events.s3_sqs_parser import (
+    parse_sqs_record_with_s3_notification,
     parse_sqs_wrapped_s3_event,
 )
 
@@ -92,6 +93,16 @@ def parse(
     """Parse with the configured expected bucket."""
     return parse_sqs_wrapped_s3_event(
         event,
+        expected_bucket_name=EXPECTED_BUCKET,
+    )
+
+
+def parse_record(
+    queue_record: object,
+):
+    """Parse one queue record with the configured expected bucket."""
+    return parse_sqs_record_with_s3_notification(
+        queue_record,
         expected_bucket_name=EXPECTED_BUCKET,
     )
 
@@ -523,3 +534,199 @@ def test_rejects_blank_expected_bucket_name() -> None:
             make_event(),
             expected_bucket_name="   ",
         )
+
+
+def test_single_record_parses_one_s3_record() -> None:
+    """A valid SQS record with one S3 record returns one event."""
+    events = parse_record(make_queue_record())
+
+    assert len(events) == 1
+
+    event = events[0]
+
+    assert event.message_id == "message-001"
+    assert event.event_name == "ObjectCreated:Put"
+    assert event.bucket_name == EXPECTED_BUCKET
+    assert event.object_key == "documents/job-001/source.txt"
+    assert event.job_id == "job-001"
+    assert event.object_size == 128
+    assert event.etag == "etag-001"
+    assert event.sequencer == "0055AED6DCD90281E5"
+    assert event.version_id is None
+
+
+def test_single_record_parses_multiple_s3_records_in_order() -> None:
+    """One SQS body may contain multiple S3 records."""
+    events = parse_record(
+        make_queue_record(
+            s3_records=[
+                make_s3_record(object_key=("documents%2Fjob-001%2Fsource.txt")),
+                make_s3_record(object_key=("documents%2Fjob-002%2Fsource.txt")),
+            ]
+        )
+    )
+
+    assert [event.job_id for event in events] == [
+        "job-001",
+        "job-002",
+    ]
+
+
+def test_single_record_preserves_message_id_across_s3_records() -> None:
+    """All S3 events from one SQS record share that message ID."""
+    events = parse_record(
+        make_queue_record(
+            message_id="message-shared",
+            s3_records=[
+                make_s3_record(object_key=("documents%2Fjob-001%2Fsource.txt")),
+                make_s3_record(object_key=("documents%2Fjob-002%2Fsource.txt")),
+            ],
+        )
+    )
+
+    assert all(event.message_id == "message-shared" for event in events)
+
+
+@pytest.mark.parametrize(
+    "queue_record",
+    [
+        None,
+        [],
+        "record",
+        123,
+        {},
+        {
+            "messageId": "message-001",
+        },
+        {
+            "body": "{}",
+        },
+        {
+            "messageId": "",
+            "body": "{}",
+        },
+        {
+            "messageId": "message-001",
+            "body": "",
+        },
+        {
+            "messageId": "message-001",
+            "body": "{",
+        },
+        {
+            "messageId": "message-001",
+            "body": "not-json",
+        },
+    ],
+)
+def test_single_record_rejects_malformed_queue_record(
+    queue_record: object,
+) -> None:
+    """Malformed SQS record structures raise MalformedQueueMessageError."""
+    with pytest.raises(MalformedQueueMessageError):
+        parse_record(queue_record)
+
+
+def test_single_record_rejects_invalid_decoded_notification() -> None:
+    """Valid SQS envelopes with invalid S3 notifications raise accordingly."""
+    with pytest.raises(MalformedS3NotificationError):
+        parse_record(
+            make_queue_record(
+                body="{}",
+            )
+        )
+
+
+def test_single_record_rejects_blank_expected_bucket_name() -> None:
+    """Single-record parser configuration requires a bucket identity."""
+    with pytest.raises(
+        ValueError,
+        match="expected_bucket_name must not be empty",
+    ):
+        parse_sqs_record_with_s3_notification(
+            make_queue_record(),
+            expected_bucket_name="   ",
+        )
+
+
+def test_single_record_rejects_unsupported_s3_event() -> None:
+    """Single-record parser preserves UnsupportedS3EventError."""
+    with pytest.raises(
+        UnsupportedS3EventError,
+        match="unsupported S3 event",
+    ):
+        parse_record(
+            make_queue_record(
+                s3_records=[
+                    make_s3_record(
+                        event_name="ObjectRemoved:Delete",
+                    )
+                ]
+            )
+        )
+
+
+def test_single_record_rejects_unexpected_bucket() -> None:
+    """Single-record parser preserves UnexpectedS3BucketError."""
+    with pytest.raises(
+        UnexpectedS3BucketError,
+        match="unexpected S3 bucket",
+    ):
+        parse_record(
+            make_queue_record(
+                s3_records=[
+                    make_s3_record(
+                        bucket_name="other-bucket",
+                    )
+                ]
+            )
+        )
+
+
+def test_single_record_rejects_invalid_document_object_key() -> None:
+    """Single-record parser preserves InvalidDocumentObjectKeyError."""
+    with pytest.raises(
+        InvalidDocumentObjectKeyError,
+        match="invalid canonical document object key",
+    ):
+        parse_record(
+            make_queue_record(
+                s3_records=[
+                    make_s3_record(
+                        object_key="documents%2Fjob-001%2Fother.txt",
+                    )
+                ]
+            )
+        )
+
+
+def test_batch_flattens_multiple_queue_records_in_input_order() -> None:
+    """Batch parsing flattens SQS records while preserving input order."""
+    events = parse(
+        make_event(
+            make_queue_record(
+                message_id="message-001",
+                s3_records=[
+                    make_s3_record(object_key=("documents%2Fjob-001%2Fsource.txt")),
+                    make_s3_record(object_key=("documents%2Fjob-002%2Fsource.txt")),
+                ],
+            ),
+            make_queue_record(
+                message_id="message-002",
+                s3_records=[
+                    make_s3_record(object_key=("documents%2Fjob-003%2Fsource.txt")),
+                ],
+            ),
+        )
+    )
+
+    assert [event.message_id for event in events] == [
+        "message-001",
+        "message-001",
+        "message-002",
+    ]
+    assert [event.job_id for event in events] == [
+        "job-001",
+        "job-002",
+        "job-003",
+    ]
