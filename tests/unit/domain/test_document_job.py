@@ -112,3 +112,110 @@ def test_document_job_rejects_updated_at_before_created_at() -> None:
             created_at=created_at,
             updated_at=created_at - timedelta(seconds=1),
         )
+
+
+def test_job_status_terminal_classification() -> None:
+    """Only completed lifecycle states should be terminal."""
+    assert not JobStatus.PENDING_UPLOAD.is_terminal
+    assert not JobStatus.PROCESSING.is_terminal
+    assert JobStatus.SUCCEEDED.is_terminal
+    assert JobStatus.FAILED.is_terminal
+    assert JobStatus.DEAD.is_terminal
+
+
+def test_document_job_rejects_non_utc_created_at() -> None:
+    """Document job creation timestamps must use UTC."""
+    from datetime import timezone
+
+    brasilia_timezone = timezone(timedelta(hours=-3))
+    created_at = datetime(
+        2026,
+        7,
+        25,
+        9,
+        0,
+        tzinfo=brasilia_timezone,
+    )
+
+    with pytest.raises(
+        InvalidDomainValueError,
+        match="created_at must use UTC",
+    ):
+        DocumentJob(
+            job_id="job-001",
+            correlation_context=CorrelationContext(
+                request_id="request-001",
+                correlation_id="correlation-001",
+            ),
+            created_at=created_at,
+            updated_at=created_at,
+        )
+
+
+def test_document_job_rejects_naive_updated_at() -> None:
+    """The update timestamp must also be timezone-aware."""
+    created_at = datetime(2026, 7, 25, 12, 0, tzinfo=UTC)
+    updated_at = datetime(2026, 7, 25, 12, 0)
+
+    with pytest.raises(
+        InvalidDomainValueError,
+        match="updated_at must be timezone-aware",
+    ):
+        DocumentJob(
+            job_id="job-001",
+            correlation_context=CorrelationContext(
+                request_id="request-001",
+                correlation_id="correlation-001",
+            ),
+            created_at=created_at,
+            updated_at=updated_at,
+        )
+
+
+def test_document_job_rejects_non_utc_updated_at() -> None:
+    """The update timestamp must be normalized to UTC."""
+    from datetime import timezone
+
+    created_at = datetime(2026, 7, 25, 12, 0, tzinfo=UTC)
+    brasilia_timezone = timezone(timedelta(hours=-3))
+    updated_at = datetime(
+        2026,
+        7,
+        25,
+        9,
+        0,
+        tzinfo=brasilia_timezone,
+    )
+
+    with pytest.raises(
+        InvalidDomainValueError,
+        match="updated_at must use UTC",
+    ):
+        DocumentJob(
+            job_id="job-001",
+            correlation_context=CorrelationContext(
+                request_id="request-001",
+                correlation_id="correlation-001",
+            ),
+            created_at=created_at,
+            updated_at=updated_at,
+        )
+
+
+def test_document_job_preserves_identity_values() -> None:
+    """Job and correlation identities should remain stable after creation."""
+    created_at = datetime(2026, 7, 25, 12, 0, tzinfo=UTC)
+    context = CorrelationContext(
+        request_id="request-001",
+        correlation_id="correlation-001",
+    )
+    job = DocumentJob(
+        job_id="job-001",
+        correlation_context=context,
+        created_at=created_at,
+        updated_at=created_at,
+    )
+
+    assert job.job_id == "job-001"
+    assert job.correlation_context.request_id == "request-001"
+    assert job.correlation_context.correlation_id == "correlation-001"
