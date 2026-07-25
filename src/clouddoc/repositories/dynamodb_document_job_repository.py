@@ -112,6 +112,10 @@ class DynamoDBDocumentJobRepository:
             condition_expression = (
                 "#status = :pending AND #updated_at = :expected_updated_at"
             )
+            expression_names = {
+                "#status": "status",
+                "#updated_at": "updated_at",
+            }
             expression_values = {
                 ":pending": JobStatus.PENDING_UPLOAD.value,
                 ":expected_updated_at": (current_job.updated_at.isoformat()),
@@ -143,6 +147,11 @@ class DynamoDBDocumentJobRepository:
                 "AND #lease_expires_at <= :claimed_at "
                 "AND #updated_at = :expected_updated_at"
             )
+            expression_names = {
+                "#status": "status",
+                "#lease_expires_at": "active_attempt_lease_expires_at",
+                "#updated_at": "updated_at",
+            }
             expression_values = {
                 ":processing": JobStatus.PROCESSING.value,
                 ":claimed_at": claimed_at.isoformat(),
@@ -158,11 +167,7 @@ class DynamoDBDocumentJobRepository:
             self._table.put_item(
                 Item=document_job_to_item(updated_job),
                 ConditionExpression=condition_expression,
-                ExpressionAttributeNames={
-                    "#status": "status",
-                    "#lease_expires_at": ("active_attempt_lease_expires_at"),
-                    "#updated_at": "updated_at",
-                },
+                ExpressionAttributeNames=expression_names,
                 ExpressionAttributeValues=expression_values,
             )
         except ClientError as error:
