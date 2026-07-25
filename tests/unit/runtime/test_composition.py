@@ -6,7 +6,9 @@ from clouddoc.application import (
     CreateDocumentJob,
     GetDocumentJob,
 )
+from clouddoc.application.processing_ports import UploadedDocumentProcessor
 from clouddoc.infrastructure import (
+    NoOpUploadedDocumentProcessor,
     S3PresignedDocumentUploadProvider,
     SystemClock,
     UUIDJobIdGenerator,
@@ -19,6 +21,7 @@ from clouddoc.runtime.composition import (
     build_document_job_repository,
     build_document_upload_provider,
     build_get_document_job_service,
+    build_uploaded_document_processor,
 )
 from clouddoc.runtime.settings import RuntimeSettings
 
@@ -270,3 +273,27 @@ def test_composition_does_not_require_real_aws_access() -> None:
         "s3",
         "s3",
     ]
+
+
+def test_builds_uploaded_document_processor() -> None:
+    """Composition should return the no-op uploaded-document processor."""
+    processor = build_uploaded_document_processor()
+
+    assert isinstance(processor, NoOpUploadedDocumentProcessor)
+    assert isinstance(processor, UploadedDocumentProcessor)
+
+
+def test_uploaded_document_processor_is_not_cached() -> None:
+    """Composition should return a fresh processor on each call."""
+    first = build_uploaded_document_processor()
+    second = build_uploaded_document_processor()
+
+    assert first is not second
+
+
+def test_uploaded_document_processor_does_not_require_aws_access() -> None:
+    """Processor wiring should succeed without AWS credentials or clients."""
+    processor = build_uploaded_document_processor()
+
+    assert isinstance(processor, NoOpUploadedDocumentProcessor)
+    assert isinstance(processor, UploadedDocumentProcessor)

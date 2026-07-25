@@ -5,6 +5,7 @@ from clouddoc.runtime.composition import (
     build_document_job_repository,
     build_document_upload_provider,
     build_get_document_job_service,
+    build_uploaded_document_processor,
 )
 from clouddoc.runtime.settings import (
     DEFAULT_UPLOAD_URL_EXPIRATION_SECONDS,
@@ -26,4 +27,5 @@ __all__ = [
     "build_document_job_repository",
     "build_document_upload_provider",
     "build_get_document_job_service",
+    "build_uploaded_document_processor",
 ]
