@@ -1,5 +1,9 @@
 """Application services and application-layer contracts."""
 
+from clouddoc.application.create_document_job import (
+    CreateDocumentJob,
+    CreateDocumentJobCommand,
+)
 from clouddoc.application.errors import (
     ApplicationConflictError,
     ApplicationDependencyError,
@@ -18,6 +22,8 @@ __all__ = [
     "ApplicationError",
     "ApplicationNotFoundError",
     "Clock",
+    "CreateDocumentJob",
+    "CreateDocumentJobCommand",
     "GetDocumentJob",
     "GetDocumentJobQuery",
     "JobIdGenerator",
