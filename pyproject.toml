@@ -20,7 +20,9 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Topic :: Software Development :: Libraries :: Application Frameworks",
 ]
-dependencies = []
+dependencies = [
+  "pydantic>=2.11,<3",
+]
 
 [project.optional-dependencies]
 dev = [
