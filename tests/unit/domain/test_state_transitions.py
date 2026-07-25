@@ -332,3 +332,229 @@ def test_completion_cannot_precede_processing_update() -> None:
 
     assert job.status is JobStatus.PROCESSING
     assert job.active_attempt is not None
+
+
+def test_start_processing_rejects_naive_mutation_timestamp() -> None:
+    """A claim update must use a timezone-aware timestamp."""
+    job = make_job()
+
+    with pytest.raises(
+        InvalidDomainValueError,
+        match="mutation timestamp must be timezone-aware",
+    ):
+        job.start_processing(
+            make_attempt(),
+            updated_at=datetime(2026, 7, 25, 12, 0),
+        )
+
+    assert job.status is JobStatus.PENDING_UPLOAD
+    assert job.attempts == 0
+    assert job.active_attempt is None
+
+
+def test_start_processing_rejects_non_utc_mutation_timestamp() -> None:
+    """A claim update must be normalized to UTC."""
+    from datetime import timezone
+
+    job = make_job()
+    brasilia_timezone = timezone(timedelta(hours=-3))
+    updated_at = datetime(
+        2026,
+        7,
+        25,
+        9,
+        0,
+        1,
+        tzinfo=brasilia_timezone,
+    )
+
+    with pytest.raises(
+        InvalidDomainValueError,
+        match="mutation timestamp must use UTC",
+    ):
+        job.start_processing(
+            make_attempt(),
+            updated_at=updated_at,
+        )
+
+    assert job.status is JobStatus.PENDING_UPLOAD
+    assert job.attempts == 0
+    assert job.active_attempt is None
+
+
+def test_failed_transition_does_not_mutate_job() -> None:
+    """A rejected transition must leave all job state unchanged."""
+    job = make_job()
+    original_updated_at = job.updated_at
+
+    with pytest.raises(InvalidStateTransitionError):
+        job.mark_failed(
+            "unsupported_content_type",
+            finished_at=BASE_TIME + timedelta(seconds=1),
+        )
+
+    assert job.status is JobStatus.PENDING_UPLOAD
+    assert job.attempts == 0
+    assert job.active_attempt is None
+    assert job.processing_result is None
+    assert job.error_reason is None
+    assert job.updated_at == original_updated_at
+
+
+def test_failed_success_validation_does_not_complete_job() -> None:
+    """Invalid success data must not partially mutate the job."""
+    job = make_job()
+    attempt = make_attempt()
+    processing_at = BASE_TIME + timedelta(seconds=1)
+
+    job.start_processing(
+        attempt,
+        updated_at=processing_at,
+    )
+
+    with pytest.raises(
+        InvalidDomainValueError,
+        match="processing result must not be None",
+    ):
+        job.mark_succeeded(
+            None,
+            finished_at=BASE_TIME + timedelta(seconds=2),
+        )
+
+    assert job.status is JobStatus.PROCESSING
+    assert job.active_attempt is attempt
+    assert job.attempts == 1
+    assert job.processing_result is None
+    assert job.error_reason is None
+    assert job.updated_at == processing_at
+
+
+def test_failed_reason_validation_does_not_complete_job() -> None:
+    """Invalid failure data must not partially mutate the job."""
+    job = make_job()
+    attempt = make_attempt()
+    processing_at = BASE_TIME + timedelta(seconds=1)
+
+    job.start_processing(
+        attempt,
+        updated_at=processing_at,
+    )
+
+    with pytest.raises(
+        InvalidDomainValueError,
+        match="error reason must not be empty",
+    ):
+        job.mark_failed(
+            " ",
+            finished_at=BASE_TIME + timedelta(seconds=2),
+        )
+
+    assert job.status is JobStatus.PROCESSING
+    assert job.active_attempt is attempt
+    assert job.attempts == 1
+    assert job.error_reason is None
+    assert job.updated_at == processing_at
+
+
+@pytest.mark.parametrize(
+    "terminal_operation",
+    [
+        "mark_succeeded",
+        "mark_failed",
+        "mark_dead",
+        "release_for_retry",
+    ],
+)
+def test_terminal_job_rejects_all_further_lifecycle_operations(
+    terminal_operation: str,
+) -> None:
+    """A succeeded job must reject every ordinary lifecycle mutation."""
+    job = make_job()
+    job.start_processing(
+        make_attempt(),
+        updated_at=BASE_TIME + timedelta(seconds=1),
+    )
+    job.mark_succeeded(
+        {"document_type": "contract"},
+        finished_at=BASE_TIME + timedelta(seconds=2),
+    )
+
+    with pytest.raises(
+        (InvalidStateTransitionError, TerminalJobMutationError),
+    ):
+        if terminal_operation == "mark_succeeded":
+            job.mark_succeeded(
+                {"document_type": "invoice"},
+                finished_at=BASE_TIME + timedelta(seconds=3),
+            )
+        elif terminal_operation == "mark_failed":
+            job.mark_failed(
+                "unexpected_error",
+                finished_at=BASE_TIME + timedelta(seconds=3),
+            )
+        elif terminal_operation == "mark_dead":
+            job.mark_dead(
+                "retry_exhausted",
+                finished_at=BASE_TIME + timedelta(seconds=3),
+            )
+        else:
+            job.release_for_retry(
+                updated_at=BASE_TIME + timedelta(seconds=3),
+            )
+
+    assert job.status is JobStatus.SUCCEEDED
+    assert job.processing_result == {"document_type": "contract"}
+    assert job.active_attempt is None
+    assert job.attempts == 1
+
+
+def test_attempt_count_changes_only_after_valid_claim() -> None:
+    """Rejected claims must not increment the attempt counter."""
+    job = make_job()
+
+    with pytest.raises(InvalidDomainValueError):
+        job.start_processing(
+            make_attempt(),
+            updated_at=BASE_TIME - timedelta(seconds=1),
+        )
+
+    assert job.attempts == 0
+
+    job.start_processing(
+        make_attempt(),
+        updated_at=BASE_TIME + timedelta(seconds=1),
+    )
+
+    assert job.attempts == 1
+
+
+def test_retry_release_preserves_completed_attempt_count() -> None:
+    """Releasing a claim must not erase processing-attempt history."""
+    job = make_job()
+    job.start_processing(
+        make_attempt(),
+        updated_at=BASE_TIME + timedelta(seconds=1),
+    )
+
+    job.release_for_retry(
+        updated_at=BASE_TIME + timedelta(seconds=2),
+    )
+
+    assert job.attempts == 1
+
+
+def test_terminal_completion_preserves_attempt_count() -> None:
+    """Completing a job must retain the number of acquired claims."""
+    job = make_job()
+    job.start_processing(
+        make_attempt(),
+        updated_at=BASE_TIME + timedelta(seconds=1),
+    )
+
+    job.mark_failed(
+        "invalid_utf8",
+        finished_at=BASE_TIME + timedelta(seconds=2),
+    )
+
+    assert job.status is JobStatus.FAILED
+    assert job.attempts == 1

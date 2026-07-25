@@ -123,3 +123,100 @@ def test_lease_is_expired_at_expiration_boundary() -> None:
     )
 
     assert attempt.is_lease_expired(lease_expires_at)
+
+
+def test_processing_attempt_rejects_naive_expiration() -> None:
+    """The lease expiration timestamp must be timezone-aware."""
+    started_at = datetime(2026, 7, 25, 12, 0, tzinfo=UTC)
+    lease_expires_at = datetime(2026, 7, 25, 12, 5)
+
+    with pytest.raises(
+        InvalidProcessingAttemptError,
+        match="lease_expires_at must be timezone-aware",
+    ):
+        ProcessingAttempt(
+            attempt_id="attempt-001",
+            started_at=started_at,
+            lease_expires_at=lease_expires_at,
+        )
+
+
+def test_processing_attempt_rejects_non_utc_expiration() -> None:
+    """The lease expiration timestamp must use UTC."""
+    from datetime import timezone
+
+    started_at = datetime(2026, 7, 25, 12, 0, tzinfo=UTC)
+    brasilia_timezone = timezone(timedelta(hours=-3))
+    lease_expires_at = datetime(
+        2026,
+        7,
+        25,
+        9,
+        5,
+        tzinfo=brasilia_timezone,
+    )
+
+    with pytest.raises(
+        InvalidProcessingAttemptError,
+        match="lease_expires_at must use UTC",
+    ):
+        ProcessingAttempt(
+            attempt_id="attempt-001",
+            started_at=started_at,
+            lease_expires_at=lease_expires_at,
+        )
+
+
+def test_is_lease_expired_rejects_naive_comparison_time() -> None:
+    """Lease checks must not compare against an ambiguous timestamp."""
+    started_at = datetime(2026, 7, 25, 12, 0, tzinfo=UTC)
+    attempt = ProcessingAttempt(
+        attempt_id="attempt-001",
+        started_at=started_at,
+        lease_expires_at=started_at + timedelta(minutes=5),
+    )
+
+    with pytest.raises(
+        InvalidProcessingAttemptError,
+        match="at must be timezone-aware",
+    ):
+        attempt.is_lease_expired(datetime(2026, 7, 25, 12, 5))
+
+
+def test_is_lease_expired_rejects_non_utc_comparison_time() -> None:
+    """Lease checks must compare timestamps normalized to UTC."""
+    from datetime import timezone
+
+    started_at = datetime(2026, 7, 25, 12, 0, tzinfo=UTC)
+    attempt = ProcessingAttempt(
+        attempt_id="attempt-001",
+        started_at=started_at,
+        lease_expires_at=started_at + timedelta(minutes=5),
+    )
+    brasilia_timezone = timezone(timedelta(hours=-3))
+    comparison_time = datetime(
+        2026,
+        7,
+        25,
+        9,
+        5,
+        tzinfo=brasilia_timezone,
+    )
+
+    with pytest.raises(
+        InvalidProcessingAttemptError,
+        match="at must use UTC",
+    ):
+        attempt.is_lease_expired(comparison_time)
+
+
+def test_lease_is_expired_after_expiration_boundary() -> None:
+    """A lease remains expired after its exact expiration timestamp."""
+    started_at = datetime(2026, 7, 25, 12, 0, tzinfo=UTC)
+    attempt = ProcessingAttempt(
+        attempt_id="attempt-001",
+        started_at=started_at,
+        lease_expires_at=started_at + timedelta(minutes=5),
+    )
+
+    assert attempt.is_lease_expired(started_at + timedelta(minutes=5, seconds=1))
