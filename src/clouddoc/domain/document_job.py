@@ -59,6 +59,44 @@ class DocumentJob:
                 "updated_at must not be earlier than created_at"
             )
 
+    @classmethod
+    def rehydrate(
+        cls,
+        *,
+        job_id: str,
+        correlation_context: CorrelationContext,
+        created_at: datetime,
+        updated_at: datetime,
+        status: JobStatus,
+        attempts: int,
+        active_attempt: ProcessingAttempt | None,
+        processing_result: Any | None,
+        error_reason: str | None,
+    ) -> "DocumentJob":
+        """Reconstruct a previously persisted document job."""
+        job = cls(
+            job_id=job_id,
+            correlation_context=correlation_context,
+            created_at=created_at,
+            updated_at=updated_at,
+        )
+
+        job._validate_rehydrated_state(
+            status=status,
+            attempts=attempts,
+            active_attempt=active_attempt,
+            processing_result=processing_result,
+            error_reason=error_reason,
+        )
+
+        job._status = status
+        job._attempts = attempts
+        job._active_attempt = active_attempt
+        job._processing_result = processing_result
+        job._error_reason = error_reason
+
+        return job
+
     @property
     def status(self) -> JobStatus:
         """Return the current job status."""
@@ -170,6 +208,98 @@ class DocumentJob:
         self._error_reason = normalized_reason
         self._active_attempt = None
         self.updated_at = finished_at
+
+    def _validate_rehydrated_state(
+        self,
+        *,
+        status: JobStatus,
+        attempts: int,
+        active_attempt: ProcessingAttempt | None,
+        processing_result: Any | None,
+        error_reason: str | None,
+    ) -> None:
+        """Validate persisted state before restoring it."""
+        if attempts < 0:
+            raise InvalidDomainValueError("attempts must not be negative")
+
+        if status is JobStatus.PENDING_UPLOAD:
+            if active_attempt is not None:
+                raise InvalidDomainValueError(
+                    "pending job must not have an active attempt"
+                )
+
+            if processing_result is not None:
+                raise InvalidDomainValueError(
+                    "pending job must not have a processing result"
+                )
+
+            if error_reason is not None:
+                raise InvalidDomainValueError(
+                    "pending job must not have an error reason"
+                )
+
+        elif status is JobStatus.PROCESSING:
+            if active_attempt is None:
+                raise InvalidDomainValueError(
+                    "processing job must have an active attempt"
+                )
+
+            if attempts < 1:
+                raise InvalidDomainValueError(
+                    "processing job must have at least one attempt"
+                )
+
+            if processing_result is not None:
+                raise InvalidDomainValueError(
+                    "processing job must not have a processing result"
+                )
+
+            if error_reason is not None:
+                raise InvalidDomainValueError(
+                    "processing job must not have an error reason"
+                )
+
+        elif status is JobStatus.SUCCEEDED:
+            if active_attempt is not None:
+                raise InvalidDomainValueError(
+                    "succeeded job must not have an active attempt"
+                )
+
+            if attempts < 1:
+                raise InvalidDomainValueError(
+                    "succeeded job must have at least one attempt"
+                )
+
+            if processing_result is None:
+                raise InvalidDomainValueError(
+                    "succeeded job must have a processing result"
+                )
+
+            if error_reason is not None:
+                raise InvalidDomainValueError(
+                    "succeeded job must not have an error reason"
+                )
+
+        elif status in {JobStatus.FAILED, JobStatus.DEAD}:
+            if active_attempt is not None:
+                raise InvalidDomainValueError(
+                    f"{status.value} job must not have an active attempt"
+                )
+
+            if attempts < 1:
+                raise InvalidDomainValueError(
+                    f"{status.value} job must have at least one attempt"
+                )
+
+            if processing_result is not None:
+                raise InvalidDomainValueError(
+                    f"{status.value} job must not have a processing result"
+                )
+
+            if error_reason is None or not error_reason.strip():
+                raise InvalidDomainValueError(
+                    f"{status.value} job must have an error reason"
+                )
 
     def _transition_to(self, target_status: JobStatus) -> None:
         """Validate a lifecycle transition before applying it."""
