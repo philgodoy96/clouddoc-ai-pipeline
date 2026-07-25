@@ -3,6 +3,9 @@
 from clouddoc.repositories.document_job_repository import (
     DocumentJobRepository,
 )
+from clouddoc.repositories.dynamodb_document_job_repository import (
+    DynamoDBDocumentJobRepository,
+)
 from clouddoc.repositories.repository_errors import (
     JobAlreadyExistsError,
     JobAttemptMismatchError,
@@ -14,6 +17,7 @@ from clouddoc.repositories.repository_errors import (
 
 __all__ = [
     "DocumentJobRepository",
+    "DynamoDBDocumentJobRepository",
     "JobAlreadyExistsError",
     "JobAttemptMismatchError",
     "JobClaimConflictError",
