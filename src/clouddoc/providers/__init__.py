@@ -4,6 +4,10 @@ from clouddoc.providers.ai_provider import (
     AIProvider,
     AIProviderRequest,
 )
+from clouddoc.providers.mock_ai_provider import (
+    MockAIProvider,
+    MockAIProviderOutcome,
+)
 from clouddoc.providers.provider_errors import (
     AIProviderError,
     AIProviderInvalidResponseError,
@@ -20,4 +24,6 @@ __all__ = [
     "AIProviderThrottledError",
     "AIProviderTimeoutError",
     "AIProviderUnavailableError",
+    "MockAIProvider",
+    "MockAIProviderOutcome",
 ]
