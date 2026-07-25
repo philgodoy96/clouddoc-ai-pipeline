@@ -128,10 +128,12 @@ def test_builds_repository_with_configured_table() -> None:
 def test_builds_document_job_creation_service() -> None:
     """Composition should build the complete creation use case."""
     resource_factory = RecordingResourceFactory()
+    client_factory = RecordingClientFactory()
 
     service = build_create_document_job_service(
         settings=make_settings(),
         dynamodb_resource_factory=resource_factory,
+        s3_client_factory=client_factory,
     )
 
     assert isinstance(service, CreateDocumentJob)
@@ -144,6 +146,16 @@ def test_builds_document_job_creation_service() -> None:
         service._job_id_generator,
         UUIDJobIdGenerator,
     )
+    assert isinstance(
+        service._upload_provider,
+        S3PresignedDocumentUploadProvider,
+    )
+    assert resource_factory.service_names == [
+        "dynamodb",
+    ]
+    assert client_factory.service_names == [
+        "s3",
+    ]
 
 
 def test_builds_document_job_query_service() -> None:
@@ -237,6 +249,7 @@ def test_composition_does_not_require_real_aws_access() -> None:
         build_create_document_job_service(
             settings=make_settings(),
             dynamodb_resource_factory=resource_factory,
+            s3_client_factory=client_factory,
         ),
         build_get_document_job_service(
             settings=make_settings(),
@@ -254,5 +267,6 @@ def test_composition_does_not_require_real_aws_access() -> None:
         "dynamodb",
     ]
     assert client_factory.service_names == [
+        "s3",
         "s3",
     ]

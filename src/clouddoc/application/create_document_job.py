@@ -7,6 +7,10 @@ from clouddoc.application.errors import (
     ApplicationDependencyError,
 )
 from clouddoc.application.ports import Clock, JobIdGenerator
+from clouddoc.application.upload_ports import (
+    DocumentUploadProvider,
+    DocumentUploadProviderError,
+)
 from clouddoc.domain import CorrelationContext, DocumentJob
 from clouddoc.repositories import (
     DocumentJobRepository,
@@ -14,6 +18,7 @@ from clouddoc.repositories import (
     RepositoryError,
 )
 from clouddoc.schemas.job_views import DocumentJobView
+from clouddoc.schemas.upload_views import CreateDocumentJobResult
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,19 +38,32 @@ class CreateDocumentJob:
         repository: DocumentJobRepository,
         clock: Clock,
         job_id_generator: JobIdGenerator,
+        upload_provider: DocumentUploadProvider,
     ) -> None:
         """Initialize the service with application-layer dependencies."""
         self._repository = repository
         self._clock = clock
         self._job_id_generator = job_id_generator
+        self._upload_provider = upload_provider
 
     def execute(
         self,
         command: CreateDocumentJobCommand,
-    ) -> DocumentJobView:
+    ) -> CreateDocumentJobResult:
         """Create a document job and return a detached application view."""
         job_id = self._job_id_generator.generate()
         current_time = self._clock.now()
+
+        try:
+            upload = self._upload_provider.create_upload(
+                job_id=job_id,
+            )
+        except DocumentUploadProviderError as error:
+            raise ApplicationDependencyError(
+                "failed to provision document upload",
+                cause=error,
+                context={"job_id": job_id},
+            ) from error
 
         job = DocumentJob(
             job_id=job_id,
@@ -72,4 +90,7 @@ class CreateDocumentJob:
                 },
             ) from error
 
-        return DocumentJobView.from_job(job)
+        return CreateDocumentJobResult(
+            job=DocumentJobView.from_job(job),
+            upload=upload,
+        )

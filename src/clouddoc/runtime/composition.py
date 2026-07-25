@@ -58,17 +58,23 @@ def build_create_document_job_service(
     *,
     settings: RuntimeSettings,
     dynamodb_resource_factory: DynamoDBResourceFactory = boto3.resource,
+    s3_client_factory: S3ClientFactory = boto3.client,
 ) -> CreateDocumentJob:
     """Build the document-job creation application service."""
     repository = build_document_job_repository(
         settings=settings,
         dynamodb_resource_factory=dynamodb_resource_factory,
     )
+    upload_provider = build_document_upload_provider(
+        settings=settings,
+        s3_client_factory=s3_client_factory,
+    )
 
     return CreateDocumentJob(
         repository=repository,
         clock=SystemClock(),
         job_id_generator=UUIDJobIdGenerator(),
+        upload_provider=upload_provider,
     )
 
 

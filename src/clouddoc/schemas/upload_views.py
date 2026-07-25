@@ -2,6 +2,8 @@
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from clouddoc.schemas.job_views import DocumentJobView
+
 DOCUMENT_UPLOAD_METHOD = "PUT"
 DOCUMENT_UPLOAD_CONTENT_TYPE = "text/plain"
 DOCUMENT_OBJECT_KEY_PREFIX = "documents"
@@ -62,3 +64,12 @@ class PresignedDocumentUpload(BaseModel):
             object_key=normalized_object_key,
             expires_in_seconds=expires_in_seconds,
         )
+
+
+class CreateDocumentJobResult(BaseModel):
+    """Created document job together with upload instructions."""
+
+    model_config = ConfigDict(frozen=True)
+
+    job: DocumentJobView
+    upload: PresignedDocumentUpload

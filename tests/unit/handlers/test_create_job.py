@@ -11,8 +11,38 @@ from clouddoc.application import (
 from clouddoc.domain import JobStatus
 from clouddoc.handlers.create_job import handle
 from clouddoc.schemas.job_views import DocumentJobView
+from clouddoc.schemas.upload_views import (
+    CreateDocumentJobResult,
+    PresignedDocumentUpload,
+)
 
 FIXED_TIME = datetime(2026, 7, 25, 12, 0, tzinfo=UTC)
+FIXED_UPLOAD = PresignedDocumentUpload.create(
+    url="https://example.com/presigned-upload",
+    object_key="documents/job-001/source.txt",
+    expires_in_seconds=900,
+)
+
+
+def make_create_result(
+    *,
+    request_id: str,
+    correlation_id: str,
+) -> CreateDocumentJobResult:
+    """Build a deterministic creation result for handler doubles."""
+    return CreateDocumentJobResult(
+        job=DocumentJobView(
+            job_id="job-001",
+            status=JobStatus.PENDING_UPLOAD,
+            request_id=request_id,
+            correlation_id=correlation_id,
+            created_at=FIXED_TIME,
+            updated_at=FIXED_TIME,
+            attempts=0,
+            error_reason=None,
+        ),
+        upload=FIXED_UPLOAD,
+    )
 
 
 class RecordingCreateService:
@@ -25,19 +55,13 @@ class RecordingCreateService:
     def execute(
         self,
         command: CreateDocumentJobCommand,
-    ) -> DocumentJobView:
-        """Record the command and return a deterministic view."""
+    ) -> CreateDocumentJobResult:
+        """Record the command and return a deterministic result."""
         self.commands.append(command)
 
-        return DocumentJobView(
-            job_id="job-001",
-            status=JobStatus.PENDING_UPLOAD,
+        return make_create_result(
             request_id=command.request_id,
             correlation_id=command.correlation_id,
-            created_at=FIXED_TIME,
-            updated_at=FIXED_TIME,
-            attempts=0,
-            error_reason=None,
         )
 
 
@@ -47,7 +71,7 @@ class ConflictCreateService:
     def execute(
         self,
         command: CreateDocumentJobCommand,
-    ) -> DocumentJobView:
+    ) -> CreateDocumentJobResult:
         """Raise an application conflict."""
         raise ApplicationConflictError("duplicate job")
 
@@ -58,7 +82,7 @@ class FailingCreateService:
     def execute(
         self,
         command: CreateDocumentJobCommand,
-    ) -> DocumentJobView:
+    ) -> CreateDocumentJobResult:
         """Raise an application dependency failure."""
         raise ApplicationDependencyError("DynamoDB unavailable")
 
@@ -69,7 +93,7 @@ class UnexpectedFailureService:
     def execute(
         self,
         command: CreateDocumentJobCommand,
-    ) -> DocumentJobView:
+    ) -> CreateDocumentJobResult:
         """Raise an internal exception containing sensitive detail."""
         raise RuntimeError("internal table clouddoc-secret-table failed")
 
@@ -125,16 +149,38 @@ def test_returns_created_document_job() -> None:
         "x-request-id": "request-001",
         "x-correlation-id": "correlation-001",
     }
-    assert parse_body(response) == {
-        "job_id": "job-001",
-        "status": "pending_upload",
-        "request_id": "request-001",
-        "correlation_id": "correlation-001",
-        "created_at": "2026-07-25T12:00:00Z",
-        "updated_at": "2026-07-25T12:00:00Z",
-        "attempts": 0,
-        "error_reason": None,
+
+    body = parse_body(response)
+
+    assert body == {
+        "job": {
+            "job_id": "job-001",
+            "status": "pending_upload",
+            "request_id": "request-001",
+            "correlation_id": "correlation-001",
+            "created_at": "2026-07-25T12:00:00Z",
+            "updated_at": "2026-07-25T12:00:00Z",
+            "attempts": 0,
+            "error_reason": None,
+        },
+        "upload": {
+            "method": "PUT",
+            "url": "https://example.com/presigned-upload",
+            "headers": {
+                "content-type": "text/plain",
+            },
+            "object_key": "documents/job-001/source.txt",
+            "expires_in_seconds": 900,
+        },
     }
+    assert "object_key" in body["upload"]
+    assert "url" in body["upload"]
+    assert "headers" in body["upload"]
+    assert "expires_in_seconds" in body["upload"]
+    assert "bucket" not in body["upload"]
+    assert "bucket_name" not in body["upload"]
+    assert "bucket" not in json.dumps(body)
+    assert "bucket_name" not in json.dumps(body)
 
 
 def test_propagates_resolved_trace_context() -> None:
