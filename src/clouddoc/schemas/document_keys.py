@@ -13,6 +13,9 @@ def build_document_object_key(
     if not normalized_job_id:
         raise ValueError("job_id must not be empty")
 
+    if any(character.isspace() for character in normalized_job_id):
+        raise ValueError("job_id must not contain whitespace")
+
     return (
         f"{DOCUMENT_OBJECT_KEY_PREFIX}/{normalized_job_id}/{DOCUMENT_SOURCE_FILENAME}"
     )
@@ -38,7 +41,7 @@ def extract_job_id_from_document_object_key(
 
     job_id = parts[1]
 
-    if not job_id:
+    if not job_id or any(character.isspace() for character in job_id):
         raise ValueError("invalid canonical document object key")
 
     return job_id
