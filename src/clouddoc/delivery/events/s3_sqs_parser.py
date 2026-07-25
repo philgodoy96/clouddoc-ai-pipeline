@@ -27,10 +27,7 @@ def parse_sqs_wrapped_s3_event(
     expected_bucket_name: str,
 ) -> list[UploadedDocumentEvent]:
     """Parse a Lambda SQS batch containing serialized S3 notifications."""
-    normalized_bucket_name = expected_bucket_name.strip()
-
-    if not normalized_bucket_name:
-        raise ValueError("expected_bucket_name must not be empty")
+    normalized_bucket_name = _normalize_expected_bucket_name(expected_bucket_name)
 
     queue_records = _extract_records(
         event,
@@ -42,7 +39,7 @@ def parse_sqs_wrapped_s3_event(
 
     for queue_record in queue_records:
         parsed_events.extend(
-            _parse_queue_record(
+            parse_sqs_record_with_s3_notification(
                 queue_record,
                 expected_bucket_name=normalized_bucket_name,
             )
@@ -51,11 +48,14 @@ def parse_sqs_wrapped_s3_event(
     return parsed_events
 
 
-def _parse_queue_record(
+def parse_sqs_record_with_s3_notification(
     queue_record: object,
     *,
     expected_bucket_name: str,
 ) -> list[UploadedDocumentEvent]:
+    """Parse one SQS record containing a serialized S3 notification."""
+    normalized_bucket_name = _normalize_expected_bucket_name(expected_bucket_name)
+
     if not isinstance(queue_record, Mapping):
         raise MalformedQueueMessageError("SQS record must be an object")
 
@@ -87,10 +87,19 @@ def _parse_queue_record(
         _parse_s3_record(
             s3_record,
             message_id=message_id,
-            expected_bucket_name=expected_bucket_name,
+            expected_bucket_name=normalized_bucket_name,
         )
         for s3_record in s3_records
     ]
+
+
+def _normalize_expected_bucket_name(expected_bucket_name: str) -> str:
+    normalized_bucket_name = expected_bucket_name.strip()
+
+    if not normalized_bucket_name:
+        raise ValueError("expected_bucket_name must not be empty")
+
+    return normalized_bucket_name
 
 
 def _parse_s3_record(
