@@ -9,7 +9,9 @@ from clouddoc.application import (
     CreateDocumentJob,
     GetDocumentJob,
 )
+from clouddoc.application.upload_ports import DocumentUploadProvider
 from clouddoc.infrastructure import (
+    S3PresignedDocumentUploadProvider,
     SystemClock,
     UUIDJobIdGenerator,
 )
@@ -20,6 +22,7 @@ from clouddoc.repositories import (
 from clouddoc.runtime.settings import RuntimeSettings
 
 DynamoDBResourceFactory = Callable[..., Any]
+S3ClientFactory = Callable[..., Any]
 
 
 def build_document_job_repository(
@@ -33,6 +36,21 @@ def build_document_job_repository(
 
     return DynamoDBDocumentJobRepository(
         table=table,
+    )
+
+
+def build_document_upload_provider(
+    *,
+    settings: RuntimeSettings,
+    s3_client_factory: S3ClientFactory = boto3.client,
+) -> DocumentUploadProvider:
+    """Build the configured S3 document upload provider."""
+    s3_client = s3_client_factory("s3")
+
+    return S3PresignedDocumentUploadProvider(
+        s3_client=s3_client,
+        bucket_name=settings.documents_bucket_name,
+        expiration_seconds=settings.upload_url_expiration_seconds,
     )
 
 
