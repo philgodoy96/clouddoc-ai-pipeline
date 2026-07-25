@@ -6,6 +6,10 @@ from clouddoc.application.errors import (
     ApplicationError,
     ApplicationNotFoundError,
 )
+from clouddoc.application.get_document_job import (
+    GetDocumentJob,
+    GetDocumentJobQuery,
+)
 from clouddoc.application.ports import Clock, JobIdGenerator
 
 __all__ = [
@@ -14,5 +18,7 @@ __all__ = [
     "ApplicationError",
     "ApplicationNotFoundError",
     "Clock",
+    "GetDocumentJob",
+    "GetDocumentJobQuery",
     "JobIdGenerator",
 ]
