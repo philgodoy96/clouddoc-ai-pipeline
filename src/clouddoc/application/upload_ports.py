@@ -5,6 +5,10 @@ from typing import Protocol, runtime_checkable
 from clouddoc.schemas.upload_views import PresignedDocumentUpload
 
 
+class DocumentUploadProviderError(Exception):
+    """Raised when upload instructions cannot be provisioned."""
+
+
 @runtime_checkable
 class DocumentUploadProvider(Protocol):
     """Provide upload instructions for one document job."""
