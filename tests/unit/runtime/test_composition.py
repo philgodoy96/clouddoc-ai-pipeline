@@ -7,6 +7,7 @@ from clouddoc.application import (
     GetDocumentJob,
 )
 from clouddoc.infrastructure import (
+    S3PresignedDocumentUploadProvider,
     SystemClock,
     UUIDJobIdGenerator,
 )
@@ -16,6 +17,7 @@ from clouddoc.repositories import (
 from clouddoc.runtime.composition import (
     build_create_document_job_service,
     build_document_job_repository,
+    build_document_upload_provider,
     build_get_document_job_service,
 )
 from clouddoc.runtime.settings import RuntimeSettings
@@ -69,10 +71,36 @@ class RecordingResourceFactory:
         return self.resource
 
 
+class FakeS3Client:
+    """Minimal S3 client used to inspect runtime composition."""
+
+
+class RecordingClientFactory:
+    """Record boto3-style client construction requests."""
+
+    def __init__(self) -> None:
+        """Initialize the fake S3 client."""
+        self.client = FakeS3Client()
+        self.service_names: list[str] = []
+
+    def __call__(
+        self,
+        service_name: str,
+        *args: object,
+        **kwargs: object,
+    ) -> FakeS3Client:
+        """Return the fake client for S3."""
+        self.service_names.append(service_name)
+
+        return self.client
+
+
 def make_settings() -> RuntimeSettings:
     """Create valid runtime settings."""
     return RuntimeSettings(
         jobs_table_name="clouddoc-document-jobs",
+        documents_bucket_name="clouddoc-documents",
+        upload_url_expiration_seconds=900,
     )
 
 
@@ -156,9 +184,54 @@ def test_each_service_uses_configured_table_name() -> None:
     ]
 
 
+def test_builds_document_upload_provider() -> None:
+    """Composition should return the S3 upload provider implementation."""
+    client_factory = RecordingClientFactory()
+
+    provider = build_document_upload_provider(
+        settings=make_settings(),
+        s3_client_factory=client_factory,
+    )
+
+    assert isinstance(
+        provider,
+        S3PresignedDocumentUploadProvider,
+    )
+    assert client_factory.service_names == [
+        "s3",
+    ]
+    assert provider._s3_client is client_factory.client
+    assert provider._bucket_name == "clouddoc-documents"
+    assert provider._expiration_seconds == 900
+
+
+def test_document_upload_provider_uses_custom_settings() -> None:
+    """Composition should propagate custom bucket and expiration settings."""
+    client_factory = RecordingClientFactory()
+    settings = RuntimeSettings(
+        jobs_table_name="clouddoc-document-jobs",
+        documents_bucket_name="custom-documents-bucket",
+        upload_url_expiration_seconds=600,
+    )
+
+    provider = build_document_upload_provider(
+        settings=settings,
+        s3_client_factory=client_factory,
+    )
+
+    assert isinstance(
+        provider,
+        S3PresignedDocumentUploadProvider,
+    )
+    assert provider._bucket_name == "custom-documents-bucket"
+    assert provider._expiration_seconds == 600
+    assert provider._s3_client is client_factory.client
+
+
 def test_composition_does_not_require_real_aws_access() -> None:
     """Dependency wiring should be testable without network access."""
     resource_factory = RecordingResourceFactory()
+    client_factory = RecordingClientFactory()
 
     services: tuple[Any, ...] = (
         build_create_document_job_service(
@@ -169,10 +242,17 @@ def test_composition_does_not_require_real_aws_access() -> None:
             settings=make_settings(),
             dynamodb_resource_factory=resource_factory,
         ),
+        build_document_upload_provider(
+            settings=make_settings(),
+            s3_client_factory=client_factory,
+        ),
     )
 
     assert all(services)
     assert resource_factory.service_names == [
         "dynamodb",
         "dynamodb",
+    ]
+    assert client_factory.service_names == [
+        "s3",
     ]
