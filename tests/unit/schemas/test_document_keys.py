@@ -38,6 +38,25 @@ def test_rejects_blank_job_id(
         build_document_object_key(job_id)
 
 
+@pytest.mark.parametrize(
+    "job_id",
+    [
+        "job 001",
+        "job\t001",
+        "job\n001",
+    ],
+)
+def test_rejects_job_id_with_internal_whitespace(
+    job_id: str,
+) -> None:
+    """Canonical object keys must not embed whitespace in the job identity."""
+    with pytest.raises(
+        ValueError,
+        match="job_id must not contain whitespace",
+    ):
+        build_document_object_key(job_id)
+
+
 def test_extracts_job_id_from_canonical_object_key() -> None:
     """The canonical object key should expose its owning job."""
     assert (
@@ -67,6 +86,8 @@ def test_trims_object_key_before_extraction() -> None:
         "documents/job-001/nested/source.txt",
         "/documents/job-001/source.txt",
         "documents/job-001/source.txt/",
+        "documents/job 001/source.txt",
+        "documents/job\t001/source.txt",
     ],
 )
 def test_rejects_invalid_canonical_object_key(
