@@ -9,8 +9,10 @@ from clouddoc.application import (
     CreateDocumentJob,
     GetDocumentJob,
 )
+from clouddoc.application.processing_ports import UploadedDocumentProcessor
 from clouddoc.application.upload_ports import DocumentUploadProvider
 from clouddoc.infrastructure import (
+    NoOpUploadedDocumentProcessor,
     S3PresignedDocumentUploadProvider,
     SystemClock,
     UUIDJobIdGenerator,
@@ -92,3 +94,8 @@ def build_get_document_job_service(
     return GetDocumentJob(
         repository=repository,
     )
+
+
+def build_uploaded_document_processor() -> UploadedDocumentProcessor:
+    """Build the uploaded-document processor."""
+    return NoOpUploadedDocumentProcessor()
