@@ -6,22 +6,6 @@ from clouddoc.schemas.job_views import DocumentJobView
 
 DOCUMENT_UPLOAD_METHOD = "PUT"
 DOCUMENT_UPLOAD_CONTENT_TYPE = "text/plain"
-DOCUMENT_OBJECT_KEY_PREFIX = "documents"
-DOCUMENT_SOURCE_FILENAME = "source.txt"
-
-
-def build_document_object_key(
-    job_id: str,
-) -> str:
-    """Build the canonical S3 object key for a document job."""
-    normalized_job_id = job_id.strip()
-
-    if not normalized_job_id:
-        raise ValueError("job_id must not be empty")
-
-    return (
-        f"{DOCUMENT_OBJECT_KEY_PREFIX}/{normalized_job_id}/{DOCUMENT_SOURCE_FILENAME}"
-    )
 
 
 class PresignedDocumentUpload(BaseModel):
