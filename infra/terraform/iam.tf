@@ -308,3 +308,28 @@ resource "aws_iam_role_policy" "dead_letter_reconciler_permissions" {
   role   = aws_iam_role.dead_letter_reconciler.id
   policy = data.aws_iam_policy_document.dead_letter_reconciler_permissions.json
 }
+
+data "aws_iam_policy_document" "dead_letter_reconciler_queue_consumer" {
+  version = "2012-10-17"
+
+  statement {
+    sid    = "ConsumeProcessingDeadLetterQueue"
+    effect = "Allow"
+
+    actions = [
+      "sqs:DeleteMessage",
+      "sqs:GetQueueAttributes",
+      "sqs:ReceiveMessage",
+    ]
+
+    resources = [
+      aws_sqs_queue.processing_dlq.arn,
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "dead_letter_reconciler_queue_consumer" {
+  name   = "${local.dead_letter_reconciler_function_name}-processing-dlq"
+  role   = aws_iam_role.dead_letter_reconciler.id
+  policy = data.aws_iam_policy_document.dead_letter_reconciler_queue_consumer.json
+}
