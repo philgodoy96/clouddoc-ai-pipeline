@@ -277,6 +277,7 @@ def test_concurrent_processing_starts_return_one_claim_and_one_already_applied(
     )
     assert claim_result.attempt is not None
     assert claim_result.attempt == stored_job.active_attempt
+    assert claim_result.correlation_id == "correlation-001"
 
     already_applied_result = next(
         result
@@ -284,6 +285,7 @@ def test_concurrent_processing_starts_return_one_claim_and_one_already_applied(
         if result.outcome is ProcessingStartOutcome.EFFECT_ALREADY_APPLIED
     )
     assert already_applied_result.attempt is None
+    assert already_applied_result.correlation_id is None
 
     assert first_generator.calls == 1
     assert second_generator.calls == 1

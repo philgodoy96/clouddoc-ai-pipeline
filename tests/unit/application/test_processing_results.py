@@ -37,10 +37,12 @@ def test_claim_acquired_factory_returns_owned_attempt() -> None:
 
     result = ProcessingStartResult.claim_acquired(
         attempt=attempt,
+        correlation_id="correlation-001",
     )
 
     assert result.outcome is ProcessingStartOutcome.CLAIM_ACQUIRED
     assert result.attempt is attempt
+    assert result.correlation_id == "correlation-001"
 
 
 def test_effect_already_applied_factory_omits_attempt() -> None:
@@ -49,6 +51,7 @@ def test_effect_already_applied_factory_omits_attempt() -> None:
 
     assert result.outcome is ProcessingStartOutcome.EFFECT_ALREADY_APPLIED
     assert result.attempt is None
+    assert result.correlation_id is None
 
 
 def test_claim_acquired_requires_attempt() -> None:
@@ -60,6 +63,30 @@ def test_claim_acquired_requires_attempt() -> None:
         ProcessingStartResult(
             outcome=ProcessingStartOutcome.CLAIM_ACQUIRED,
             attempt=None,
+            correlation_id="correlation-001",
+        )
+
+
+@pytest.mark.parametrize(
+    "correlation_id",
+    [
+        None,
+        "",
+        "   ",
+    ],
+)
+def test_claim_acquired_requires_correlation_id(
+    correlation_id: str | None,
+) -> None:
+    """Continuation cannot be authorized without a correlation ID."""
+    with pytest.raises(
+        ValueError,
+        match="claim_acquired outcome requires a correlation_id",
+    ):
+        ProcessingStartResult(
+            outcome=ProcessingStartOutcome.CLAIM_ACQUIRED,
+            attempt=make_attempt(),
+            correlation_id=correlation_id,
         )
 
 
@@ -72,6 +99,20 @@ def test_effect_already_applied_rejects_attempt() -> None:
         ProcessingStartResult(
             outcome=(ProcessingStartOutcome.EFFECT_ALREADY_APPLIED),
             attempt=make_attempt(),
+            correlation_id=None,
+        )
+
+
+def test_effect_already_applied_rejects_correlation_id() -> None:
+    """Already-applied results must not carry authorization context."""
+    with pytest.raises(
+        ValueError,
+        match=("effect_already_applied outcome must not include a correlation_id"),
+    ):
+        ProcessingStartResult(
+            outcome=ProcessingStartOutcome.EFFECT_ALREADY_APPLIED,
+            attempt=None,
+            correlation_id="correlation-001",
         )
 
 
@@ -79,6 +120,7 @@ def test_result_is_immutable() -> None:
     """Continuation decisions must not change after creation."""
     result = ProcessingStartResult.claim_acquired(
         attempt=make_attempt(),
+        correlation_id="correlation-001",
     )
 
     with pytest.raises(FrozenInstanceError):
@@ -98,6 +140,7 @@ def test_outcome_values_are_stable_strings() -> None:
     [
         ProcessingStartResult.claim_acquired(
             attempt=make_attempt(),
+            correlation_id="correlation-001",
         ),
         ProcessingStartResult.effect_already_applied(),
     ],

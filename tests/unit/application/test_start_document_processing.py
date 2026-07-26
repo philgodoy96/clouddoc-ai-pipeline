@@ -284,6 +284,7 @@ def test_claims_pending_job() -> None:
 
     assert isinstance(result, ProcessingStartResult)
     assert result.outcome is ProcessingStartOutcome.CLAIM_ACQUIRED
+    assert result.correlation_id == "correlation-001"
     assert stored_job is not None
     assert stored_job.status is JobStatus.PROCESSING
     assert stored_job.attempts == 1
@@ -321,6 +322,7 @@ def test_active_processing_claim_is_idempotent() -> None:
 
     assert result.outcome is ProcessingStartOutcome.EFFECT_ALREADY_APPLIED
     assert result.attempt is None
+    assert result.correlation_id is None
     assert stored_job is not None
     assert stored_job.attempts == 1
     assert stored_job.active_attempt is not None
@@ -351,6 +353,7 @@ def test_reclaims_expired_processing_lease() -> None:
     stored_job = repository.get_job("job-001")
 
     assert result.outcome is ProcessingStartOutcome.CLAIM_ACQUIRED
+    assert result.correlation_id == "correlation-001"
     assert stored_job is not None
     assert stored_job.status is JobStatus.PROCESSING
     assert stored_job.attempts == 2
@@ -380,6 +383,7 @@ def test_succeeded_job_is_idempotent() -> None:
 
     assert result.outcome is ProcessingStartOutcome.EFFECT_ALREADY_APPLIED
     assert result.attempt is None
+    assert result.correlation_id is None
     assert stored_job is not None
     assert stored_job.status is JobStatus.SUCCEEDED
     assert generator.calls == 0
@@ -514,6 +518,7 @@ def test_reconciles_competing_active_claim_as_success() -> None:
 
     assert result.outcome is ProcessingStartOutcome.EFFECT_ALREADY_APPLIED
     assert result.attempt is None
+    assert result.correlation_id is None
     assert repository.claim_calls == 1
     assert repository.get_calls == 2
 
@@ -534,6 +539,7 @@ def test_reconciles_succeeded_race_as_already_applied() -> None:
 
     assert result.outcome is ProcessingStartOutcome.EFFECT_ALREADY_APPLIED
     assert result.attempt is None
+    assert result.correlation_id is None
 
 
 def test_rejects_unresolved_claim_conflict() -> None:

@@ -19,33 +19,40 @@ class ProcessingStartResult:
 
     outcome: ProcessingStartOutcome
     attempt: ProcessingAttempt | None
+    correlation_id: str | None
 
     def __post_init__(self) -> None:
         """Validate continuation authorization invariants."""
-        if (
-            self.outcome is ProcessingStartOutcome.CLAIM_ACQUIRED
-            and self.attempt is None
-        ):
-            raise ValueError("claim_acquired outcome requires an attempt")
+        if self.outcome is ProcessingStartOutcome.CLAIM_ACQUIRED:
+            if self.attempt is None:
+                raise ValueError("claim_acquired outcome requires an attempt")
 
-        if (
-            self.outcome is ProcessingStartOutcome.EFFECT_ALREADY_APPLIED
-            and self.attempt is not None
-        ):
-            raise ValueError(
-                "effect_already_applied outcome must not include an attempt"
-            )
+            if self.correlation_id is None or not self.correlation_id.strip():
+                raise ValueError("claim_acquired outcome requires a correlation_id")
+
+        if self.outcome is ProcessingStartOutcome.EFFECT_ALREADY_APPLIED:
+            if self.attempt is not None:
+                raise ValueError(
+                    "effect_already_applied outcome must not include an attempt"
+                )
+
+            if self.correlation_id is not None:
+                raise ValueError(
+                    "effect_already_applied outcome must not include a correlation_id"
+                )
 
     @classmethod
     def claim_acquired(
         cls,
         *,
         attempt: ProcessingAttempt,
+        correlation_id: str,
     ) -> "ProcessingStartResult":
         """Create a result authorizing this worker to continue."""
         return cls(
             outcome=ProcessingStartOutcome.CLAIM_ACQUIRED,
             attempt=attempt,
+            correlation_id=correlation_id,
         )
 
     @classmethod
@@ -56,4 +63,5 @@ class ProcessingStartResult:
         return cls(
             outcome=ProcessingStartOutcome.EFFECT_ALREADY_APPLIED,
             attempt=None,
+            correlation_id=None,
         )

@@ -58,6 +58,7 @@ def claim_acquired_result() -> ProcessingStartResult:
             started_at=started_at,
             lease_expires_at=started_at + timedelta(minutes=5),
         ),
+        correlation_id="correlation-001",
     )
 
 
