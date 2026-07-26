@@ -14,7 +14,12 @@ from clouddoc.application.get_document_job import (
     GetDocumentJob,
     GetDocumentJobQuery,
 )
-from clouddoc.application.ports import Clock, JobIdGenerator
+from clouddoc.application.ports import (
+    Clock,
+    JobIdGenerator,
+    ProcessingAttemptIdGenerator,
+)
+from clouddoc.application.start_document_processing import StartDocumentProcessing
 
 __all__ = [
     "ApplicationConflictError",
@@ -27,4 +32,6 @@ __all__ = [
     "GetDocumentJob",
     "GetDocumentJobQuery",
     "JobIdGenerator",
+    "ProcessingAttemptIdGenerator",
+    "StartDocumentProcessing",
 ]
