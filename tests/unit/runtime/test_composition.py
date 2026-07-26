@@ -419,16 +419,19 @@ def test_builds_uploaded_document_processor() -> None:
 
     workflow = processor._workflow
     start_processing = workflow._start_processing
+    repository = workflow._repository
+    clock = workflow._clock
     document_loader = workflow._document_loader
     ai_provider = workflow._ai_provider
 
     assert isinstance(workflow, ProcessUploadedDocument)
     assert isinstance(start_processing, StartDocumentProcessing)
-    assert isinstance(
-        start_processing._repository,
-        DynamoDBDocumentJobRepository,
-    )
-    assert isinstance(start_processing._clock, SystemClock)
+    assert isinstance(repository, DynamoDBDocumentJobRepository)
+    assert isinstance(clock, SystemClock)
+    assert start_processing._repository is repository
+    assert start_processing._clock is clock
+    assert workflow._repository is repository
+    assert workflow._clock is clock
     assert isinstance(
         start_processing._attempt_id_generator,
         UUIDProcessingAttemptIdGenerator,
@@ -473,6 +476,9 @@ def test_uploaded_document_processor_propagates_custom_configuration() -> None:
     assert workflow._document_loader._bucket_name == "custom-document-bucket"
     assert workflow._document_loader._max_size_bytes == 131_072
     assert isinstance(workflow._ai_provider, MockAIProvider)
+    assert workflow._repository is workflow._start_processing._repository
+    assert workflow._clock is workflow._start_processing._clock
+    assert isinstance(workflow._clock, SystemClock)
 
 
 def test_uploaded_document_processor_uses_custom_ai_provider_factory() -> None:
@@ -494,6 +500,9 @@ def test_uploaded_document_processor_uses_custom_ai_provider_factory() -> None:
     assert workflow._ai_provider is recording_provider_factory.provider
     assert isinstance(workflow._ai_provider, AIProvider)
     assert recording_provider_factory.provider.requests == []
+    assert workflow._repository is workflow._start_processing._repository
+    assert workflow._clock is workflow._start_processing._clock
+    assert isinstance(workflow._clock, SystemClock)
 
 
 def test_uploaded_document_processor_is_not_cached() -> None:
@@ -519,17 +528,23 @@ def test_uploaded_document_processor_is_not_cached() -> None:
 
     assert first is not second
     assert first_workflow is not second_workflow
+    assert first_workflow._repository is not second_workflow._repository
+    assert first_workflow._clock is not second_workflow._clock
     assert first_workflow._start_processing is not (second_workflow._start_processing)
-    assert first_workflow._start_processing._repository is not (
+    assert first_workflow._document_loader is not (second_workflow._document_loader)
+    assert first_workflow._ai_provider is not second_workflow._ai_provider
+    assert first_workflow._repository._table is not (second_workflow._repository._table)
+    assert first_workflow._document_loader._s3_client is not (
+        second_workflow._document_loader._s3_client
+    )
+    assert first_workflow._repository is first_workflow._start_processing._repository
+    assert first_workflow._clock is first_workflow._start_processing._clock
+    assert second_workflow._repository is (
         second_workflow._start_processing._repository
     )
-    assert first_workflow._start_processing._repository._table is not (
-        second_workflow._start_processing._repository._table
-    )
-    assert first_workflow._document_loader is not (second_workflow._document_loader)
+    assert second_workflow._clock is second_workflow._start_processing._clock
     assert first_workflow._document_loader._s3_client is (first_client_factory.client)
     assert second_workflow._document_loader._s3_client is (second_client_factory.client)
-    assert first_workflow._ai_provider is not second_workflow._ai_provider
     assert isinstance(first_workflow._ai_provider, MockAIProvider)
     assert isinstance(second_workflow._ai_provider, MockAIProvider)
     assert first_resource_factory.resource is not (second_resource_factory.resource)
@@ -557,13 +572,17 @@ def test_uploaded_document_processor_does_not_require_aws_access() -> None:
 
     assert isinstance(start_processing, StartDocumentProcessing)
     assert isinstance(
-        start_processing._repository,
+        workflow._repository,
         DynamoDBDocumentJobRepository,
     )
+    assert isinstance(workflow._repository._table, FakeDynamoDBTable)
+    assert workflow._repository is start_processing._repository
     assert resource_factory.resource.requested_table_names == [
         "clouddoc-document-jobs",
     ]
-    assert start_processing._repository._table.name == "clouddoc-document-jobs"
+    assert workflow._repository._table.name == "clouddoc-document-jobs"
+    assert isinstance(workflow._clock, SystemClock)
+    assert workflow._clock is start_processing._clock
     assert isinstance(document_loader, S3DocumentTextLoader)
     assert isinstance(document_loader, DocumentTextLoader)
     assert document_loader._s3_client is client_factory.client
