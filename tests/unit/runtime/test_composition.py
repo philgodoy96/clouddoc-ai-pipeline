@@ -5,12 +5,14 @@ from typing import Any
 
 from clouddoc.application import (
     CreateDocumentJob,
+    DocumentTextLoader,
     GetDocumentJob,
     StartDocumentProcessing,
 )
 from clouddoc.application.processing_ports import UploadedDocumentProcessor
 from clouddoc.infrastructure import (
     ApplicationUploadedDocumentProcessor,
+    S3DocumentTextLoader,
     S3PresignedDocumentUploadProvider,
     SystemClock,
     UUIDJobIdGenerator,
@@ -22,6 +24,7 @@ from clouddoc.repositories import (
 from clouddoc.runtime.composition import (
     build_create_document_job_service,
     build_document_job_repository,
+    build_document_text_loader,
     build_document_upload_provider,
     build_get_document_job_service,
     build_uploaded_document_processor,
@@ -250,6 +253,73 @@ def test_document_upload_provider_uses_custom_settings() -> None:
     assert provider._s3_client is client_factory.client
 
 
+def test_builds_document_text_loader() -> None:
+    """Composition should return the bounded S3 document text loader."""
+    client_factory = RecordingClientFactory()
+
+    loader = build_document_text_loader(
+        settings=make_settings(),
+        s3_client_factory=client_factory,
+    )
+
+    assert isinstance(loader, S3DocumentTextLoader)
+    assert isinstance(loader, DocumentTextLoader)
+    assert client_factory.service_names == [
+        "s3",
+    ]
+    assert loader._s3_client is client_factory.client
+    assert loader._bucket_name == "clouddoc-documents"
+    assert loader._max_size_bytes == 65_536
+
+
+def test_document_text_loader_uses_custom_settings() -> None:
+    """Composition should propagate custom bucket and size-limit settings."""
+    client_factory = RecordingClientFactory()
+    settings = RuntimeSettings(
+        jobs_table_name="clouddoc-document-jobs",
+        documents_bucket_name="custom-document-bucket",
+        upload_url_expiration_seconds=900,
+        processing_lease_duration_seconds=300,
+        max_document_size_bytes=131_072,
+    )
+
+    loader = build_document_text_loader(
+        settings=settings,
+        s3_client_factory=client_factory,
+    )
+
+    assert isinstance(loader, S3DocumentTextLoader)
+    assert isinstance(loader, DocumentTextLoader)
+    assert loader._bucket_name == "custom-document-bucket"
+    assert loader._max_size_bytes == 131_072
+    assert loader._s3_client is client_factory.client
+
+
+def test_document_text_loader_is_not_cached() -> None:
+    """Composition should return a fresh loader on each call."""
+    first_factory = RecordingClientFactory()
+    second_factory = RecordingClientFactory()
+
+    first = build_document_text_loader(
+        settings=make_settings(),
+        s3_client_factory=first_factory,
+    )
+    second = build_document_text_loader(
+        settings=make_settings(),
+        s3_client_factory=second_factory,
+    )
+
+    assert first is not second
+    assert first_factory.service_names == [
+        "s3",
+    ]
+    assert second_factory.service_names == [
+        "s3",
+    ]
+    assert first._s3_client is first_factory.client
+    assert second._s3_client is second_factory.client
+
+
 def test_composition_does_not_require_real_aws_access() -> None:
     """Dependency wiring should be testable without network access."""
     resource_factory = RecordingResourceFactory()
@@ -269,6 +339,10 @@ def test_composition_does_not_require_real_aws_access() -> None:
             settings=make_settings(),
             s3_client_factory=client_factory,
         ),
+        build_document_text_loader(
+            settings=make_settings(),
+            s3_client_factory=client_factory,
+        ),
         build_uploaded_document_processor(
             settings=make_settings(),
             dynamodb_resource_factory=resource_factory,
@@ -282,6 +356,7 @@ def test_composition_does_not_require_real_aws_access() -> None:
         "dynamodb",
     ]
     assert client_factory.service_names == [
+        "s3",
         "s3",
         "s3",
     ]

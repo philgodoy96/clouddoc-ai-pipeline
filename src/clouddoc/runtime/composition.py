@@ -8,6 +8,7 @@ import boto3
 
 from clouddoc.application import (
     CreateDocumentJob,
+    DocumentTextLoader,
     GetDocumentJob,
     StartDocumentProcessing,
 )
@@ -15,6 +16,7 @@ from clouddoc.application.processing_ports import UploadedDocumentProcessor
 from clouddoc.application.upload_ports import DocumentUploadProvider
 from clouddoc.infrastructure import (
     ApplicationUploadedDocumentProcessor,
+    S3DocumentTextLoader,
     S3PresignedDocumentUploadProvider,
     SystemClock,
     UUIDJobIdGenerator,
@@ -56,6 +58,21 @@ def build_document_upload_provider(
         s3_client=s3_client,
         bucket_name=settings.documents_bucket_name,
         expiration_seconds=settings.upload_url_expiration_seconds,
+    )
+
+
+def build_document_text_loader(
+    *,
+    settings: RuntimeSettings,
+    s3_client_factory: S3ClientFactory = boto3.client,
+) -> DocumentTextLoader:
+    """Build the configured bounded S3 document text loader."""
+    s3_client = s3_client_factory("s3")
+
+    return S3DocumentTextLoader(
+        s3_client=s3_client,
+        bucket_name=settings.documents_bucket_name,
+        max_size_bytes=settings.max_document_size_bytes,
     )
 
 
