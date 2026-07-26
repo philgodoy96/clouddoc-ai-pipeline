@@ -7,6 +7,7 @@ from clouddoc.application import (
     CreateDocumentJob,
     DocumentTextLoader,
     GetDocumentJob,
+    ProcessUploadedDocument,
     StartDocumentProcessing,
 )
 from clouddoc.application.processing_ports import UploadedDocumentProcessor
@@ -17,6 +18,11 @@ from clouddoc.infrastructure import (
     SystemClock,
     UUIDJobIdGenerator,
     UUIDProcessingAttemptIdGenerator,
+)
+from clouddoc.providers import (
+    AIProvider,
+    AIProviderRequest,
+    MockAIProvider,
 )
 from clouddoc.repositories import (
     DynamoDBDocumentJobRepository,
@@ -30,6 +36,7 @@ from clouddoc.runtime.composition import (
     build_uploaded_document_processor,
 )
 from clouddoc.runtime.settings import RuntimeSettings
+from clouddoc.schemas import AIExtractionResult
 
 
 class FakeDynamoDBTable:
@@ -102,6 +109,38 @@ class RecordingClientFactory:
         self.service_names.append(service_name)
 
         return self.client
+
+
+class RecordingAIProvider:
+    """Minimal AI provider used to inspect runtime composition."""
+
+    provider_name = "recording"
+
+    def __init__(self) -> None:
+        """Initialize request tracking."""
+        self.requests: list[AIProviderRequest] = []
+
+    def extract(
+        self,
+        request: AIProviderRequest,
+    ) -> AIExtractionResult:
+        """Record the request and refuse execution during composition tests."""
+        self.requests.append(request)
+        raise AssertionError("composition tests must not invoke the AI provider")
+
+
+class RecordingAIProviderFactory:
+    """Record AI provider factory invocations."""
+
+    def __init__(self) -> None:
+        """Own one recording provider instance."""
+        self.provider = RecordingAIProvider()
+        self.calls = 0
+
+    def __call__(self) -> RecordingAIProvider:
+        """Return the owned provider and count the invocation."""
+        self.calls += 1
+        return self.provider
 
 
 def make_settings() -> RuntimeSettings:
@@ -378,25 +417,30 @@ def test_builds_uploaded_document_processor() -> None:
     assert isinstance(processor, ApplicationUploadedDocumentProcessor)
     assert isinstance(processor, UploadedDocumentProcessor)
 
-    service = processor._service
-    document_loader = processor._document_loader
+    workflow = processor._workflow
+    start_processing = workflow._start_processing
+    document_loader = workflow._document_loader
+    ai_provider = workflow._ai_provider
 
-    assert isinstance(service, StartDocumentProcessing)
+    assert isinstance(workflow, ProcessUploadedDocument)
+    assert isinstance(start_processing, StartDocumentProcessing)
     assert isinstance(
-        service._repository,
+        start_processing._repository,
         DynamoDBDocumentJobRepository,
     )
-    assert isinstance(service._clock, SystemClock)
+    assert isinstance(start_processing._clock, SystemClock)
     assert isinstance(
-        service._attempt_id_generator,
+        start_processing._attempt_id_generator,
         UUIDProcessingAttemptIdGenerator,
     )
-    assert service._lease_duration == timedelta(seconds=300)
+    assert start_processing._lease_duration == timedelta(seconds=300)
     assert isinstance(document_loader, S3DocumentTextLoader)
     assert isinstance(document_loader, DocumentTextLoader)
     assert document_loader._s3_client is client_factory.client
     assert document_loader._bucket_name == "clouddoc-documents"
     assert document_loader._max_size_bytes == 65_536
+    assert isinstance(ai_provider, MockAIProvider)
+    assert isinstance(ai_provider, AIProvider)
     assert resource_factory.service_names == [
         "dynamodb",
     ]
@@ -423,9 +467,33 @@ def test_uploaded_document_processor_propagates_custom_configuration() -> None:
         s3_client_factory=client_factory,
     )
 
-    assert processor._service._lease_duration == timedelta(seconds=600)
-    assert processor._document_loader._bucket_name == "custom-document-bucket"
-    assert processor._document_loader._max_size_bytes == 131_072
+    workflow = processor._workflow
+
+    assert workflow._start_processing._lease_duration == timedelta(seconds=600)
+    assert workflow._document_loader._bucket_name == "custom-document-bucket"
+    assert workflow._document_loader._max_size_bytes == 131_072
+    assert isinstance(workflow._ai_provider, MockAIProvider)
+
+
+def test_uploaded_document_processor_uses_custom_ai_provider_factory() -> None:
+    """Composition should wire the exact provider returned by a custom factory."""
+    resource_factory = RecordingResourceFactory()
+    client_factory = RecordingClientFactory()
+    recording_provider_factory = RecordingAIProviderFactory()
+
+    processor = build_uploaded_document_processor(
+        settings=make_settings(),
+        dynamodb_resource_factory=resource_factory,
+        s3_client_factory=client_factory,
+        ai_provider_factory=recording_provider_factory,
+    )
+
+    workflow = processor._workflow
+
+    assert recording_provider_factory.calls == 1
+    assert workflow._ai_provider is recording_provider_factory.provider
+    assert isinstance(workflow._ai_provider, AIProvider)
+    assert recording_provider_factory.provider.requests == []
 
 
 def test_uploaded_document_processor_is_not_cached() -> None:
@@ -446,14 +514,25 @@ def test_uploaded_document_processor_is_not_cached() -> None:
         s3_client_factory=second_client_factory,
     )
 
+    first_workflow = first._workflow
+    second_workflow = second._workflow
+
     assert first is not second
-    assert first._service is not second._service
-    assert first._service._repository is not second._service._repository
-    assert first._document_loader is not second._document_loader
-    assert first._service._repository._table is not (second._service._repository._table)
-    assert first._document_loader._s3_client is first_client_factory.client
-    assert second._document_loader._s3_client is second_client_factory.client
-    assert first_resource_factory.resource is not second_resource_factory.resource
+    assert first_workflow is not second_workflow
+    assert first_workflow._start_processing is not (second_workflow._start_processing)
+    assert first_workflow._start_processing._repository is not (
+        second_workflow._start_processing._repository
+    )
+    assert first_workflow._start_processing._repository._table is not (
+        second_workflow._start_processing._repository._table
+    )
+    assert first_workflow._document_loader is not (second_workflow._document_loader)
+    assert first_workflow._document_loader._s3_client is (first_client_factory.client)
+    assert second_workflow._document_loader._s3_client is (second_client_factory.client)
+    assert first_workflow._ai_provider is not second_workflow._ai_provider
+    assert isinstance(first_workflow._ai_provider, MockAIProvider)
+    assert isinstance(second_workflow._ai_provider, MockAIProvider)
+    assert first_resource_factory.resource is not (second_resource_factory.resource)
     assert first_client_factory.client is not second_client_factory.client
 
 
@@ -471,22 +550,25 @@ def test_uploaded_document_processor_does_not_require_aws_access() -> None:
     assert isinstance(processor, ApplicationUploadedDocumentProcessor)
     assert isinstance(processor, UploadedDocumentProcessor)
 
-    service = processor._service
-    document_loader = processor._document_loader
+    workflow = processor._workflow
+    start_processing = workflow._start_processing
+    document_loader = workflow._document_loader
+    ai_provider = workflow._ai_provider
 
-    assert isinstance(service, StartDocumentProcessing)
+    assert isinstance(start_processing, StartDocumentProcessing)
     assert isinstance(
-        service._repository,
+        start_processing._repository,
         DynamoDBDocumentJobRepository,
     )
-    assert isinstance(service._clock, SystemClock)
-    assert isinstance(
-        service._attempt_id_generator,
-        UUIDProcessingAttemptIdGenerator,
-    )
-    assert service._lease_duration == timedelta(seconds=300)
+    assert resource_factory.resource.requested_table_names == [
+        "clouddoc-document-jobs",
+    ]
+    assert start_processing._repository._table.name == "clouddoc-document-jobs"
     assert isinstance(document_loader, S3DocumentTextLoader)
     assert isinstance(document_loader, DocumentTextLoader)
+    assert document_loader._s3_client is client_factory.client
+    assert isinstance(ai_provider, MockAIProvider)
+    assert isinstance(ai_provider, AIProvider)
     assert resource_factory.service_names == [
         "dynamodb",
     ]

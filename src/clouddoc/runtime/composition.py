@@ -10,6 +10,7 @@ from clouddoc.application import (
     CreateDocumentJob,
     DocumentTextLoader,
     GetDocumentJob,
+    ProcessUploadedDocument,
     StartDocumentProcessing,
 )
 from clouddoc.application.processing_ports import UploadedDocumentProcessor
@@ -22,6 +23,10 @@ from clouddoc.infrastructure import (
     UUIDJobIdGenerator,
     UUIDProcessingAttemptIdGenerator,
 )
+from clouddoc.providers import (
+    AIProvider,
+    MockAIProvider,
+)
 from clouddoc.repositories import (
     DocumentJobRepository,
     DynamoDBDocumentJobRepository,
@@ -30,6 +35,7 @@ from clouddoc.runtime.settings import RuntimeSettings
 
 DynamoDBResourceFactory = Callable[..., Any]
 S3ClientFactory = Callable[..., Any]
+AIProviderFactory = Callable[[], AIProvider]
 
 
 def build_document_job_repository(
@@ -121,13 +127,14 @@ def build_uploaded_document_processor(
     settings: RuntimeSettings,
     dynamodb_resource_factory: DynamoDBResourceFactory = boto3.resource,
     s3_client_factory: S3ClientFactory = boto3.client,
+    ai_provider_factory: AIProviderFactory = MockAIProvider,
 ) -> UploadedDocumentProcessor:
     """Build the uploaded-document processor."""
     repository = build_document_job_repository(
         settings=settings,
         dynamodb_resource_factory=dynamodb_resource_factory,
     )
-    service = StartDocumentProcessing(
+    start_processing = StartDocumentProcessing(
         repository=repository,
         clock=SystemClock(),
         attempt_id_generator=UUIDProcessingAttemptIdGenerator(),
@@ -139,8 +146,13 @@ def build_uploaded_document_processor(
         settings=settings,
         s3_client_factory=s3_client_factory,
     )
+    ai_provider = ai_provider_factory()
+    workflow = ProcessUploadedDocument(
+        start_processing=start_processing,
+        document_loader=document_loader,
+        ai_provider=ai_provider,
+    )
 
     return ApplicationUploadedDocumentProcessor(
-        service=service,
-        document_loader=document_loader,
+        workflow=workflow,
     )
