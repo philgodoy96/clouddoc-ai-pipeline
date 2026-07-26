@@ -127,6 +127,7 @@ class RecordingRepository:
         job_id: str,
         reason: str,
         *,
+        expected_updated_at: datetime,
         marked_at: datetime,
     ) -> DocumentJob:
         """Record one dead-state transition attempt."""
@@ -134,6 +135,7 @@ class RecordingRepository:
             {
                 "job_id": job_id,
                 "reason": reason,
+                "expected_updated_at": expected_updated_at,
                 "marked_at": marked_at,
             }
         )
@@ -258,12 +260,13 @@ def test_clock_double_satisfies_application_port() -> None:
 
 def test_marks_expired_processing_job_dead() -> None:
     """An expired processing attempt should be reconciled."""
+    observed_job = make_job(
+        status=JobStatus.PROCESSING,
+        lease_expires_at=EXPIRED_LEASE_AT,
+    )
     service, repository, clock = make_service(
         get_results=[
-            make_job(
-                status=JobStatus.PROCESSING,
-                lease_expires_at=EXPIRED_LEASE_AT,
-            )
+            observed_job,
         ],
     )
 
@@ -281,6 +284,7 @@ def test_marks_expired_processing_job_dead() -> None:
         {
             "job_id": JOB_ID,
             "reason": (DeadLetterReason.PROCESSING_RETRIES_EXHAUSTED.value),
+            "expected_updated_at": observed_job.updated_at,
             "marked_at": RECONCILED_AT,
         }
     ]
@@ -289,12 +293,13 @@ def test_marks_expired_processing_job_dead() -> None:
 
 def test_marks_released_attempted_job_dead() -> None:
     """A retry-ready attempted job should be reconciled."""
+    observed_job = make_job(
+        status=JobStatus.PENDING_UPLOAD,
+        attempts=1,
+    )
     service, repository, clock = make_service(
         get_results=[
-            make_job(
-                status=JobStatus.PENDING_UPLOAD,
-                attempts=1,
-            )
+            observed_job,
         ],
     )
 
@@ -307,6 +312,7 @@ def test_marks_released_attempted_job_dead() -> None:
         {
             "job_id": JOB_ID,
             "reason": (DeadLetterReason.PROCESSING_RETRIES_EXHAUSTED.value),
+            "expected_updated_at": observed_job.updated_at,
             "marked_at": RECONCILED_AT,
         }
     ]
@@ -437,13 +443,14 @@ def test_normalizes_lookup_dependency_failure() -> None:
 
 def test_normalizes_job_disappearing_during_mark_dead() -> None:
     """A removed job must not produce false reconciliation success."""
+    observed_job = make_job(
+        status=JobStatus.PENDING_UPLOAD,
+        attempts=1,
+    )
     repository_error = JobNotFoundError("job disappeared")
     service, repository, clock = make_service(
         get_results=[
-            make_job(
-                status=JobStatus.PENDING_UPLOAD,
-                attempts=1,
-            )
+            observed_job,
         ],
         mark_dead_error=repository_error,
     )
@@ -457,19 +464,27 @@ def test_normalizes_job_disappearing_during_mark_dead() -> None:
         )
 
     assert captured_error.value.__cause__ is repository_error
-    assert len(repository.mark_dead_calls) == 1
+    assert repository.mark_dead_calls == [
+        {
+            "job_id": JOB_ID,
+            "reason": (DeadLetterReason.PROCESSING_RETRIES_EXHAUSTED.value),
+            "expected_updated_at": observed_job.updated_at,
+            "marked_at": RECONCILED_AT,
+        }
+    ]
     assert clock.calls == 1
 
 
 def test_normalizes_mark_dead_dependency_failure() -> None:
     """A failed persistence operation must remain retryable."""
+    observed_job = make_job(
+        status=JobStatus.PENDING_UPLOAD,
+        attempts=1,
+    )
     repository_error = RepositoryError("DynamoDB unavailable")
     service, repository, clock = make_service(
         get_results=[
-            make_job(
-                status=JobStatus.PENDING_UPLOAD,
-                attempts=1,
-            )
+            observed_job,
         ],
         mark_dead_error=repository_error,
     )
@@ -488,7 +503,14 @@ def test_normalizes_mark_dead_dependency_failure() -> None:
         "job_id": JOB_ID,
         "operation": "mark_dead",
     }
-    assert len(repository.mark_dead_calls) == 1
+    assert repository.mark_dead_calls == [
+        {
+            "job_id": JOB_ID,
+            "reason": (DeadLetterReason.PROCESSING_RETRIES_EXHAUSTED.value),
+            "expected_updated_at": observed_job.updated_at,
+            "marked_at": RECONCILED_AT,
+        }
+    ]
     assert clock.calls == 1
 
 
@@ -504,13 +526,14 @@ def test_reconciles_conditional_race_to_terminal_state(
     terminal_status: JobStatus,
 ) -> None:
     """A concurrently recorded terminal state should win."""
+    observed_job = make_job(
+        status=JobStatus.PENDING_UPLOAD,
+        attempts=1,
+    )
     conflict = JobStateConflictError("conditional update failed")
     service, repository, clock = make_service(
         get_results=[
-            make_job(
-                status=JobStatus.PENDING_UPLOAD,
-                attempts=1,
-            ),
+            observed_job,
             make_job(
                 status=terminal_status,
             ),
@@ -527,19 +550,27 @@ def test_reconciles_conditional_race_to_terminal_state(
         JOB_ID,
         JOB_ID,
     ]
-    assert len(repository.mark_dead_calls) == 1
+    assert repository.mark_dead_calls == [
+        {
+            "job_id": JOB_ID,
+            "reason": (DeadLetterReason.PROCESSING_RETRIES_EXHAUSTED.value),
+            "expected_updated_at": observed_job.updated_at,
+            "marked_at": RECONCILED_AT,
+        }
+    ]
     assert clock.calls == 1
 
 
 def test_rejects_conditional_race_to_nonterminal_state() -> None:
     """A new processing owner must survive stale reconciliation."""
+    observed_job = make_job(
+        status=JobStatus.PENDING_UPLOAD,
+        attempts=1,
+    )
     conflict = JobStateConflictError("conditional update failed")
     service, repository, clock = make_service(
         get_results=[
-            make_job(
-                status=JobStatus.PENDING_UPLOAD,
-                attempts=1,
-            ),
+            observed_job,
             make_job(
                 status=JobStatus.PROCESSING,
                 lease_expires_at=ACTIVE_LEASE_AT,
@@ -561,19 +592,27 @@ def test_rejects_conditional_race_to_nonterminal_state() -> None:
         JOB_ID,
         JOB_ID,
     ]
-    assert len(repository.mark_dead_calls) == 1
+    assert repository.mark_dead_calls == [
+        {
+            "job_id": JOB_ID,
+            "reason": (DeadLetterReason.PROCESSING_RETRIES_EXHAUSTED.value),
+            "expected_updated_at": observed_job.updated_at,
+            "marked_at": RECONCILED_AT,
+        }
+    ]
     assert clock.calls == 1
 
 
 def test_unexpected_mark_dead_failure_propagates() -> None:
     """Unexpected repository defects should reach the outer boundary."""
+    observed_job = make_job(
+        status=JobStatus.PENDING_UPLOAD,
+        attempts=1,
+    )
     unexpected_error = RuntimeError("unexpected repository defect")
     service, repository, clock = make_service(
         get_results=[
-            make_job(
-                status=JobStatus.PENDING_UPLOAD,
-                attempts=1,
-            )
+            observed_job,
         ],
         mark_dead_error=unexpected_error,
     )
@@ -586,5 +625,12 @@ def test_unexpected_mark_dead_failure_propagates() -> None:
             job_id=JOB_ID,
         )
 
-    assert len(repository.mark_dead_calls) == 1
+    assert repository.mark_dead_calls == [
+        {
+            "job_id": JOB_ID,
+            "reason": (DeadLetterReason.PROCESSING_RETRIES_EXHAUSTED.value),
+            "expected_updated_at": observed_job.updated_at,
+            "marked_at": RECONCILED_AT,
+        }
+    ]
     assert clock.calls == 1
