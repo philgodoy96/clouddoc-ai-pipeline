@@ -11,10 +11,12 @@ authoritative DynamoDB document-job state
 four Lambda runtime functions
 four independent Lambda execution roles
 four managed CloudWatch log groups
+the processing queue consumer IAM boundary
+the processing queue to Processor Lambda event source mapping
 ```
 
-Invocation sources, API Gateway, Bedrock permissions, CloudWatch alarms, and
-real AWS deployment remain separate follow-up work.
+API Gateway, Bedrock permissions, CloudWatch alarms, DLQ Reconciler
+invocation, and real AWS deployment remain separate follow-up work.
 
 ## Current resources
 
@@ -251,7 +253,7 @@ stored in Lambda environment variables.
 | --- | --- |
 | Create Job | `dynamodb:PutItem`; `s3:PutObject` under `documents/*` |
 | Get Job | `dynamodb:GetItem` |
-| Processor | `dynamodb:GetItem`; `dynamodb:PutItem`; `s3:GetObject`; `s3:GetObjectVersion` under `documents/*` |
+| Processor | `dynamodb:GetItem`; `dynamodb:PutItem`; `s3:GetObject`; `s3:GetObjectVersion` under `documents/*`; dedicated processing-queue consumer inline policy |
 | Dead-Letter Reconciler | `dynamodb:GetItem`; `dynamodb:PutItem` |
 
 Each function has its own role. Each role trusts only `lambda.amazonaws.com`.
@@ -259,8 +261,8 @@ Logging permissions target only that function's log group streams.
 `logs:CreateLogGroup` is not granted. No AWS-managed basic execution policy is
 attached.
 
-SQS and Bedrock permissions are intentionally absent. Queue consumption and
-provider integration remain separate follow-up slices.
+Bedrock permissions remain intentionally absent. Provider integration remains a
+separate follow-up slice.
 
 #### Logging
 
@@ -274,6 +276,113 @@ prod = 30 days
 
 Terraform owns log-group creation and retention. Runtime roles may create streams
 and put events only within their own log group.
+
+### Processing queue consumer
+
+```text
+aws_lambda_event_source_mapping.processing_queue
+data.aws_iam_policy_document.processor_queue_consumer
+aws_iam_role_policy.processor_queue_consumer
+```
+
+Terraform declares the enabled event source mapping from the processing queue to
+the Document Processor Lambda, plus a dedicated Processor queue-consumer inline
+policy. The Dead-Letter Reconciler is not connected yet.
+
+## Processing flow
+
+```text
+S3 ObjectCreated
+    → processing SQS queue
+    → Lambda event source mapping
+    → Document Processor Lambda
+    → S3 / DynamoDB / future AI provider
+```
+
+Ownership remains split:
+
+```text
+SQS owns delivery, retry, visibility, and redrive
+DynamoDB owns authoritative DocumentJob lifecycle
+```
+
+## Queue-consumer IAM
+
+The Processor receives a dedicated inline SQS consumer policy that grants exactly:
+
+```text
+sqs:DeleteMessage
+sqs:GetQueueAttributes
+sqs:ReceiveMessage
+```
+
+The resource is restricted to:
+
+```text
+processing queue ARN only
+```
+
+The Processor cannot:
+
+```text
+send messages
+purge the queue
+administer the queue
+consume the DLQ
+```
+
+No AWS-managed SQS execution policy is attached. No KMS permission is needed
+because the queue uses SQS-managed encryption.
+
+## Event source mapping
+
+The processing-queue mapping is configured as:
+
+```text
+enabled = true
+batch size = 1
+maximum batching window = 0 seconds
+ReportBatchItemFailures enabled
+maximum concurrency = 5
+```
+
+Decisions:
+
+```text
+batch size 1 creates one document-processing failure and cost domain
+zero batching window avoids unnecessary delay
+partial batch reporting matches the handler contract
+maximum concurrency 5 bounds AI-processing parallelism and cost
+```
+
+## Timeout and retry contract
+
+The Processor and processing queues share this contract:
+
+```text
+Processor timeout = 120 seconds
+processing queue visibility timeout = 720 seconds
+ratio = 6x
+maxReceiveCount = 3
+processing queue retention = 4 days
+processing DLQ retention = 14 days
+```
+
+Three receives are a cost-aware decision for potentially expensive AI
+processing. The threshold isolates exhausted work earlier rather than repeating
+inference indefinitely. It is not claimed to be universally optimal and should
+be revisited after deployed measurement.
+
+## Concurrency
+
+Event-source maximum concurrency is configured. Lambda reserved concurrency
+remains unconfigured.
+
+In plan semantics, the unconfigured reserved concurrency is represented as
+`null`.
+
+Reserved concurrency must be designed with account-level concurrency, Bedrock
+quotas, and all future invocation sources before it is introduced.
 
 ## Ownership boundary
 
@@ -369,10 +478,19 @@ processing queue topology
 document ingestion topology
 document-jobs table topology
 Lambda runtime and IAM topology
+processing event-source topology
 ```
 
-The current total is ten offline test runs. Tests use a mocked AWS provider and
-create no resources.
+The current validated total is:
+
+```text
+13 passed, 0 failed
+```
+
+Tests use a mocked AWS provider and create no resources. Plan-time computed
+identifiers are overridden for deterministic mocked tests. The tests validate
+the dedicated inline policy identity rather than comparing rendered policy JSON
+that remains unknown during plan.
 
 ## Outputs
 
@@ -414,9 +532,9 @@ dead_letter_reconciler_function_name
 dead_letter_reconciler_function_arn
 ```
 
-These identifiers will support future API Gateway, event-source mapping, alarm,
-and deployment integrations. Outputs expose resource identifiers only; they do
-not expose credentials or object content.
+These identifiers will support future API Gateway, alarm, and deployment
+integrations. Outputs expose resource identifiers only; they do not expose
+credentials or object content.
 
 ## Security and durability
 
@@ -478,6 +596,20 @@ no tracing
 one shared artifact
 ```
 
+Processing-queue consumer cost decisions:
+
+```text
+batch size 1
+maximum concurrency 5
+three-receive redrive threshold
+no provisioned concurrency
+no provisioned pollers
+no automatic DLQ replay
+```
+
+These settings prioritize bounded AI parallelism and predictable per-document
+failure domains over maximum throughput.
+
 The Processor memory budget is intentionally larger because it owns document
 loading, validation, and AI orchestration. That budget requires deployed
 measurement later.
@@ -506,15 +638,19 @@ The following remain intentionally sequenced follow-up work:
 ```text
 API Gateway
 Lambda invoke permissions
-processing queue event-source mapping
-processing queue consumer permissions
-DLQ event-source mapping
+DLQ Reconciler event-source mapping
 DLQ consumer permissions
-partial batch response configuration
-event-source concurrency
+automatic replay
+reserved concurrency
+provisioned concurrency
+provisioned pollers
+batch size greater than 1
+event filtering
+queue-age alarms
+DLQ-depth alarms
+Lambda throttling alarms
 Bedrock integration
 Bedrock permissions
-reserved concurrency
 CloudWatch alarms and dashboards
 X-Ray
 Secrets Manager
@@ -522,6 +658,8 @@ versions and aliases
 artifact publication to S3
 code signing
 real AWS deployment
+load testing
+failure injection
 ```
 
 Additional deferred items from earlier slices also remain separate:
@@ -557,3 +695,5 @@ real AWS deployment and restore validation
 - [ADR-018: Provision authoritative document job state](../../docs/adr/ADR-018-provision-authoritative-document-job-state.md)
 - [Lambda runtime infrastructure](../../docs/architecture/lambda-runtime-infrastructure.md)
 - [ADR-019: Provision separate Lambda runtime boundaries](../../docs/adr/ADR-019-provision-separate-lambda-runtime-boundaries.md)
+- [Processing queue consumer infrastructure](../../docs/architecture/processing-queue-consumer-infrastructure.md)
+- [ADR-020: Connect processing queue to Processor Lambda](../../docs/adr/ADR-020-connect-processing-queue-to-processor-lambda.md)
