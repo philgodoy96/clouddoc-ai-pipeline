@@ -4,6 +4,15 @@ from clouddoc.application.create_document_job import (
     CreateDocumentJob,
     CreateDocumentJobCommand,
 )
+from clouddoc.application.document_ports import (
+    DocumentDependencyError,
+    DocumentLoadError,
+    DocumentNotFoundError,
+    DocumentObjectReference,
+    DocumentTextLoader,
+    DocumentValidationError,
+    LoadedTextDocument,
+)
 from clouddoc.application.errors import (
     ApplicationConflictError,
     ApplicationDependencyError,
@@ -29,9 +38,16 @@ __all__ = [
     "Clock",
     "CreateDocumentJob",
     "CreateDocumentJobCommand",
+    "DocumentDependencyError",
+    "DocumentLoadError",
+    "DocumentNotFoundError",
+    "DocumentObjectReference",
+    "DocumentTextLoader",
+    "DocumentValidationError",
     "GetDocumentJob",
     "GetDocumentJobQuery",
     "JobIdGenerator",
+    "LoadedTextDocument",
     "ProcessingAttemptIdGenerator",
     "StartDocumentProcessing",
 ]
