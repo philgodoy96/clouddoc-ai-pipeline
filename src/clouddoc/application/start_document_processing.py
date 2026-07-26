@@ -11,6 +11,9 @@ from clouddoc.application.ports import (
     Clock,
     ProcessingAttemptIdGenerator,
 )
+from clouddoc.application.processing_results import (
+    ProcessingStartResult,
+)
 from clouddoc.delivery.events.models import UploadedDocumentEvent
 from clouddoc.domain import (
     JobStatus,
@@ -52,7 +55,7 @@ class StartDocumentProcessing:
         self,
         *,
         event: UploadedDocumentEvent,
-    ) -> None:
+    ) -> ProcessingStartResult:
         """Acquire processing ownership or accept an applied duplicate."""
         claimed_at = self._clock.now()
         job = self._get_job(event.job_id)
@@ -63,7 +66,7 @@ class StartDocumentProcessing:
         )
 
         if job.status is JobStatus.SUCCEEDED:
-            return
+            return ProcessingStartResult.effect_already_applied()
 
         if job.status is JobStatus.PROCESSING:
             active_attempt = job.active_attempt
@@ -74,7 +77,7 @@ class StartDocumentProcessing:
                 )
 
             if not active_attempt.is_lease_expired(claimed_at):
-                return
+                return ProcessingStartResult.effect_already_applied()
 
         elif job.status is not JobStatus.PENDING_UPLOAD:
             raise ApplicationConflictError(
@@ -101,7 +104,7 @@ class StartDocumentProcessing:
             JobClaimConflictError,
             JobStateConflictError,
         ) as error:
-            self._reconcile_claim_conflict(
+            return self._reconcile_claim_conflict(
                 job_id=job.job_id,
                 observed_at=claimed_at,
                 cause=error,
@@ -115,6 +118,10 @@ class StartDocumentProcessing:
                     "attempt_id": attempt.attempt_id,
                 },
             ) from error
+
+        return ProcessingStartResult.claim_acquired(
+            attempt=attempt,
+        )
 
     def _get_job(
         self,
@@ -143,12 +150,12 @@ class StartDocumentProcessing:
         job_id: str,
         observed_at,
         cause: Exception,
-    ) -> None:
+    ) -> ProcessingStartResult:
         """Resolve a conditional claim race against authoritative state."""
         current_job = self._get_job(job_id)
 
         if current_job.status is JobStatus.SUCCEEDED:
-            return
+            return ProcessingStartResult.effect_already_applied()
 
         if current_job.status is JobStatus.PROCESSING:
             active_attempt = current_job.active_attempt
@@ -156,7 +163,7 @@ class StartDocumentProcessing:
             if active_attempt is not None and not active_attempt.is_lease_expired(
                 observed_at
             ):
-                return
+                return ProcessingStartResult.effect_already_applied()
 
         raise ApplicationConflictError(
             f"document job {job_id} could not acquire processing ownership"
