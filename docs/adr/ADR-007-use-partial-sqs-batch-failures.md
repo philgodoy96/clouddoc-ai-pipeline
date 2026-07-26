@@ -232,21 +232,14 @@ Exact timeout values will be selected after the real processing workflow is intr
 
 ## Current Processor
 
-Runtime composition currently returns:
+Runtime composition now uses ApplicationUploadedDocumentProcessor backed by StartDocumentProcessing.
 
-```text
-NoOpUploadedDocumentProcessor
-```
+That service validates authoritative job ownership and acquires bounded processing claims.
 
-This is intentional.
-
-The current slice validates delivery and retry behavior before introducing job state, S3 reads, and AI inference.
+S3 reads and AI execution remain deferred.
 
 ## Follow-up Work
 
-- Replace the no-op processor with an application processing service.
-- Add authoritative job lookup.
-- Define idempotent job-state transitions.
 - Add S3 document retrieval.
 - Add structured logs and metrics.
 - Configure `ReportBatchItemFailures` in Terraform.

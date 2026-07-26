@@ -240,14 +240,30 @@ The current runtime composition maps:
 
 ```text
 UploadedDocumentProcessor
-    → NoOpUploadedDocumentProcessor
+    → ApplicationUploadedDocumentProcessor
+    → StartDocumentProcessing
 ```
 
-The no-op adapter accepts events without side effects.
+The processor now:
 
-This is intentional.
+```text
+loads the authoritative job through the repository
+validates canonical object ownership
+acquires or reconciles a bounded ProcessingAttempt claim
+treats active processing and succeeded states idempotently
+```
 
-The slice stabilizes:
+It still does not:
+
+```text
+download S3 content
+invoke the AI provider
+persist processing results
+```
+
+Authoritative processing-start ownership and claim semantics are documented separately.
+
+The handler slice continues to stabilize:
 
 ```text
 batch isolation
@@ -257,7 +273,7 @@ handler composition
 retry classification
 ```
 
-before adding persistence, S3 reads, or AI processing.
+S3 reads, AI execution, and attempt-aware result persistence remain intentionally deferred.
 
 ## Handler Structure
 
@@ -359,12 +375,12 @@ no AWS access
 ## Intentionally Deferred
 
 ```text
-authoritative job lookup
-job state transitions
-idempotency persistence
 S3 GetObject
 UTF-8 validation
 AI provider invocation
+attempt-aware result persistence
+retry release and terminal failure persistence
+lease heartbeat or extension
 structured logging
 CloudWatch metrics
 visibility timeout configuration
