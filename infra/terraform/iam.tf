@@ -221,3 +221,65 @@ resource "aws_iam_role_policy" "get_job_permissions" {
   role   = aws_iam_role.get_job.id
   policy = data.aws_iam_policy_document.get_job_permissions.json
 }
+
+data "aws_iam_policy_document" "processor_permissions" {
+  version = "2012-10-17"
+
+  statement {
+    sid    = "ReadAndPersistDocumentJob"
+    effect = "Allow"
+
+    actions = [
+      "dynamodb:GetItem",
+      "dynamodb:PutItem",
+    ]
+
+    resources = [
+      aws_dynamodb_table.document_jobs.arn,
+    ]
+  }
+
+  statement {
+    sid    = "ReadCanonicalDocumentObject"
+    effect = "Allow"
+
+    actions = [
+      "s3:GetObject",
+      "s3:GetObjectVersion",
+    ]
+
+    resources = [
+      "${aws_s3_bucket.documents.arn}/documents/*",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "processor_permissions" {
+  name   = "${local.processor_function_name}-permissions"
+  role   = aws_iam_role.processor.id
+  policy = data.aws_iam_policy_document.processor_permissions.json
+}
+
+data "aws_iam_policy_document" "dead_letter_reconciler_permissions" {
+  version = "2012-10-17"
+
+  statement {
+    sid    = "ReadAndPersistDeadLetterJobState"
+    effect = "Allow"
+
+    actions = [
+      "dynamodb:GetItem",
+      "dynamodb:PutItem",
+    ]
+
+    resources = [
+      aws_dynamodb_table.document_jobs.arn,
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "dead_letter_reconciler_permissions" {
+  name   = "${local.dead_letter_reconciler_function_name}-permissions"
+  role   = aws_iam_role.dead_letter_reconciler.id
+  policy = data.aws_iam_policy_document.dead_letter_reconciler_permissions.json
+}
