@@ -41,7 +41,9 @@ include = ["clouddoc*"]
 minversion = "8.0"
 testpaths = ["tests"]
 pythonpath = ["src"]
+# Allow identical test basenames under different directories (e.g. application vs handlers).
 addopts = [
+  "--import-mode=importlib",
   "--strict-config",
   "--strict-markers",
   "-ra",
