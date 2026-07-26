@@ -4,9 +4,19 @@ Production-minded AWS serverless document intelligence pipeline designed to inge
 
 ## Project Status
 
-CloudDoc AI Pipeline is currently in the repository foundation and architecture phase.
+CloudDoc AI Pipeline contains incrementally implemented application and infrastructure foundations in the repository. AWS resource deployment and end-to-end cloud validation remain future work.
 
-The following foundations are already defined:
+Foundations already implemented in the repository include:
+
+* document-job domain and application services
+* AWS adapters and Lambda-compatible handlers
+* processing and dead-letter reconciliation
+* Terraform processing queues
+* private S3 document ingestion
+* deterministic Lambda ZIP packaging
+* offline automated tests
+
+Architecture and delivery foundations already defined include:
 
 * business context and system responsibilities
 * synchronous and asynchronous execution boundaries
@@ -22,7 +32,7 @@ The following foundations are already defined:
 * Terraform ownership boundaries
 * professional contribution and pull request workflow
 
-Application behavior and AWS infrastructure will be introduced incrementally through focused implementation slices.
+Implemented-in-repository foundations are distinct from deployed-and-validated-in-AWS behavior. Remaining application and infrastructure slices will continue to land incrementally.
 
 ## Business Problem
 
@@ -82,6 +92,8 @@ DLQ Reconciler Lambda
         ▼
 DynamoDB job status = dead
 ```
+
+The repository now contains Lambda-compatible handlers and a shared ZIP builder for that runtime. Terraform Lambda function resources remain a follow-up slice; the diagram describes the approved AWS flow, not an already active deployment.
 
 ## Planned V1 Capabilities
 
@@ -153,6 +165,8 @@ Detailed principles are documented in:
 * [Project Context](docs/architecture/project-context.md)
 * [System Design](docs/architecture/system-design.md)
 * [Engineering Principles](docs/architecture/engineering-principles.md)
+* [Lambda Packaging Architecture](docs/architecture/lambda-packaging.md)
+* [ADR-017: Package Python Lambdas as a Shared Deterministic ZIP](docs/adr/ADR-017-package-python-lambdas-as-a-shared-zip.md)
 
 ## Planned AWS Architecture
 
@@ -204,12 +218,13 @@ EventBridge is intentionally deferred from the primary v1 path because the curre
 * Terraform
 * GitHub Actions
 * Git
+* pip-tools
 
-Some listed technologies are part of the approved implementation plan and have not yet been introduced into the repository.
+Lambda ZIP packaging targets Python 3.12 on Linux x86_64. Some listed technologies remain part of the approved implementation plan and have not yet been introduced into every delivery path.
 
 ## Repository Structure
 
-Current foundation:
+Current repository layout:
 
 ```text
 .
@@ -219,9 +234,29 @@ Current foundation:
 ├── infra/
 │   └── terraform/
 ├── lambdas/
+├── requirements/
+│   ├── lambda.in
+│   └── lambda.lock.txt
+├── scripts/
+│   └── build_lambda_package.py
 ├── src/
 │   └── clouddoc/
+│       ├── application/
+│       ├── delivery/
+│       ├── domain/
+│       ├── handlers/
+│       ├── infrastructure/
+│       ├── providers/
+│       ├── repositories/
+│       ├── runtime/
+│       └── schemas/
 ├── tests/
+│   ├── contract/
+│   ├── fakes/
+│   ├── integration/
+│   ├── tooling/
+│   │   └── test_lambda_package_builder.py
+│   └── unit/
 ├── .github/
 ├── CONTRIBUTING.md
 ├── LICENSE
@@ -230,21 +265,11 @@ Current foundation:
 └── README.md
 ```
 
-Additional modules will be introduced only when their responsibilities become active.
-
-Planned application boundaries include:
+Local packaging also produces generated paths that are ignored by Git and are not versioned repository contents:
 
 ```text
-src/clouddoc/
-├── domain/
-├── schemas/
-├── services/
-├── providers/
-├── repositories/
-├── storage/
-├── observability/
-├── config/
-└── bootstrap/
+.lambda-build/
+artifacts/lambda/
 ```
 
 ## Local Development
@@ -311,11 +336,77 @@ Run all current checks with Make:
 make check
 ```
 
+### Lambda Packaging
+
+Regenerate the committed Lambda runtime lock:
+
+```bash
+make lambda-lock
+```
+
+`lambda-lock` intentionally updates the committed dependency lock.
+
+Build the shared Lambda ZIP:
+
+```bash
+make lambda-package
+```
+
+`lambda-package` may access the package registry for locked Linux wheels.
+
+Build and verify the artifact SHA-256:
+
+```bash
+make lambda-package-check
+```
+
+`lambda-package-check` builds and verifies SHA-256.
+
+Remove generated package outputs only:
+
+```bash
+make lambda-clean
+```
+
+`lambda-clean` removes only generated package outputs.
+
+The builder can also be invoked directly:
+
+```bash
+python scripts/build_lambda_package.py
+```
+
+Generated ZIP and checksum files under `artifacts/lambda/` are local build outputs. Do not commit them.
+
+## Packaging Contract
+
+The shared deployment artifact is:
+
+```text
+artifacts/lambda/clouddoc-app.zip
+```
+
+The archive contains:
+
+* the `clouddoc` package at ZIP root
+* locked runtime dependencies
+* explicitly packaged Boto3
+
+The package targets:
+
+```text
+Python 3.12
+manylinux2014_x86_64
+CPython cp312
+```
+
+Equivalent inputs produce a stable archive hash because ordering, timestamps, permissions, and compression behavior are controlled. This is intentionally deterministic packaging within that contract, not cryptographic signing or universal reproducibility across arbitrary environments.
+
 ## Testing Strategy
 
 Automated tests will not require real Amazon Bedrock calls.
 
-The project will use:
+The project currently covers or plans coverage for:
 
 * unit tests for domain rules and state transitions
 * unit tests for AI output validation
@@ -325,9 +416,14 @@ The project will use:
 * retry and failure classification tests
 * repository integration tests
 * event contract tests
+* Lambda package builder tooling tests
 * Terraform validation
 * manual deployed-environment checks
 * manual end-to-end AWS validation
+
+Builder-tooling tests use temporary directories and local dependency fixtures. They do not install real packages, do not access AWS, and do not require network access.
+
+Manual deployed AWS validation remains future work.
 
 Testing guidance will evolve under:
 
@@ -349,6 +445,14 @@ The project is designed to:
 * avoid logging full documents or model payloads
 * keep Terraform state and environment files out of Git
 * use Secrets Manager only when a real secret exists
+
+Packaging security boundaries:
+
+* runtime dependency hashes are verified
+* generated artifacts are ignored by Git
+* AWS credentials are not required for packaging
+* secrets and environment files are not copied
+* host-native dependencies are not used for the Linux package
 
 ## Reliability Principles
 
@@ -388,7 +492,7 @@ The planned v1 controls costs through:
 
 ## Intentionally Deferred from V1
 
-The following capabilities are intentionally deferred:
+The following product capabilities are intentionally deferred:
 
 * authentication
 * multi-tenant SaaS behavior
@@ -410,6 +514,21 @@ The following capabilities are intentionally deferred:
 
 These decisions keep the first release focused on one complete, observable, recoverable serverless document-processing workflow.
 
+Deployment and packaging follow-ups are intentionally sequenced after the shared ZIP foundation:
+
+* Lambda Terraform resources
+* execution roles and IAM
+* event-source mappings
+* runtime environment variables
+* CloudWatch log groups
+* artifact publication
+* CI packaging
+* code signing
+* Lambda layers
+* container-image packaging
+* arm64
+* real AWS invocation
+
 ## Architecture Decision Records
 
 Significant technical decisions will be documented under:
@@ -418,7 +537,7 @@ Significant technical decisions will be documented under:
 docs/adr/
 ```
 
-Planned ADR topics include:
+Planned and recorded ADR topics include:
 
 * SQS as the document-processing queue
 * Lambda for bounded processing
@@ -429,6 +548,7 @@ Planned ADR topics include:
 * at-least-once delivery
 * plain-text input for v1
 * dead-letter reconciliation
+* shared deterministic Lambda ZIP packaging
 
 ## Contributing
 
