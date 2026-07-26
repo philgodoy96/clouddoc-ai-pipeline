@@ -1,19 +1,11 @@
 """Application-backed uploaded-document processor adapter."""
 
-from clouddoc.application.document_ports import (
-    DocumentLoadError,
-    DocumentObjectReference,
-    DocumentTextLoader,
-)
 from clouddoc.application.errors import ApplicationError
+from clouddoc.application.process_uploaded_document import (
+    ProcessUploadedDocument,
+)
 from clouddoc.application.processing_ports import (
     UploadedDocumentProcessingError,
-)
-from clouddoc.application.processing_results import (
-    ProcessingStartOutcome,
-)
-from clouddoc.application.start_document_processing import (
-    StartDocumentProcessing,
 )
 from clouddoc.delivery.events.models import UploadedDocumentEvent
 
@@ -24,43 +16,22 @@ class ApplicationUploadedDocumentProcessor:
     def __init__(
         self,
         *,
-        service: StartDocumentProcessing,
-        document_loader: DocumentTextLoader,
+        workflow: ProcessUploadedDocument,
     ) -> None:
-        """Initialize the adapter with start and document-loading dependencies."""
-        self._service = service
-        self._document_loader = document_loader
+        """Initialize the adapter with the document-processing workflow."""
+        self._workflow = workflow
 
     def process(
         self,
         *,
         event: UploadedDocumentEvent,
     ) -> None:
-        """Start authoritative processing for one uploaded document."""
+        """Process one uploaded-document event through the application workflow."""
         try:
-            start_result = self._service.execute(
+            self._workflow.execute(
                 event=event,
             )
         except ApplicationError as error:
             raise UploadedDocumentProcessingError(
-                "failed to start uploaded-document processing"
-            ) from error
-
-        if start_result.outcome is ProcessingStartOutcome.EFFECT_ALREADY_APPLIED:
-            return
-
-        reference = DocumentObjectReference(
-            object_key=event.object_key,
-            expected_size_bytes=event.object_size,
-            expected_etag=event.etag,
-            version_id=event.version_id,
-        )
-
-        try:
-            self._document_loader.load(
-                reference=reference,
-            )
-        except DocumentLoadError as error:
-            raise UploadedDocumentProcessingError(
-                "failed to load uploaded document"
+                "failed to process uploaded document"
             ) from error
