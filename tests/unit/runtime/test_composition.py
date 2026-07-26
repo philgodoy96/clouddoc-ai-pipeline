@@ -346,6 +346,7 @@ def test_composition_does_not_require_real_aws_access() -> None:
         build_uploaded_document_processor(
             settings=make_settings(),
             dynamodb_resource_factory=resource_factory,
+            s3_client_factory=client_factory,
         ),
     )
 
@@ -359,22 +360,26 @@ def test_composition_does_not_require_real_aws_access() -> None:
         "s3",
         "s3",
         "s3",
+        "s3",
     ]
 
 
 def test_builds_uploaded_document_processor() -> None:
     """Composition should return the authoritative uploaded-document processor."""
     resource_factory = RecordingResourceFactory()
+    client_factory = RecordingClientFactory()
 
     processor = build_uploaded_document_processor(
         settings=make_settings(),
         dynamodb_resource_factory=resource_factory,
+        s3_client_factory=client_factory,
     )
 
     assert isinstance(processor, ApplicationUploadedDocumentProcessor)
     assert isinstance(processor, UploadedDocumentProcessor)
 
     service = processor._service
+    document_loader = processor._document_loader
 
     assert isinstance(service, StartDocumentProcessing)
     assert isinstance(
@@ -387,58 +392,87 @@ def test_builds_uploaded_document_processor() -> None:
         UUIDProcessingAttemptIdGenerator,
     )
     assert service._lease_duration == timedelta(seconds=300)
+    assert isinstance(document_loader, S3DocumentTextLoader)
+    assert isinstance(document_loader, DocumentTextLoader)
+    assert document_loader._s3_client is client_factory.client
+    assert document_loader._bucket_name == "clouddoc-documents"
+    assert document_loader._max_size_bytes == 65_536
     assert resource_factory.service_names == [
         "dynamodb",
     ]
+    assert client_factory.service_names == [
+        "s3",
+    ]
 
 
-def test_uploaded_document_processor_propagates_custom_lease() -> None:
-    """Composition should propagate a custom processing lease duration."""
+def test_uploaded_document_processor_propagates_custom_configuration() -> None:
+    """Composition should propagate custom lease, bucket, and size settings."""
     resource_factory = RecordingResourceFactory()
+    client_factory = RecordingClientFactory()
     settings = RuntimeSettings(
         jobs_table_name="clouddoc-document-jobs",
-        documents_bucket_name="clouddoc-documents",
+        documents_bucket_name="custom-document-bucket",
         upload_url_expiration_seconds=900,
         processing_lease_duration_seconds=600,
-        max_document_size_bytes=65_536,
+        max_document_size_bytes=131_072,
     )
 
     processor = build_uploaded_document_processor(
         settings=settings,
         dynamodb_resource_factory=resource_factory,
+        s3_client_factory=client_factory,
     )
 
     assert processor._service._lease_duration == timedelta(seconds=600)
+    assert processor._document_loader._bucket_name == "custom-document-bucket"
+    assert processor._document_loader._max_size_bytes == 131_072
 
 
 def test_uploaded_document_processor_is_not_cached() -> None:
     """Composition should return a fresh processor on each call."""
+    first_resource_factory = RecordingResourceFactory()
+    first_client_factory = RecordingClientFactory()
+    second_resource_factory = RecordingResourceFactory()
+    second_client_factory = RecordingClientFactory()
+
     first = build_uploaded_document_processor(
         settings=make_settings(),
-        dynamodb_resource_factory=RecordingResourceFactory(),
+        dynamodb_resource_factory=first_resource_factory,
+        s3_client_factory=first_client_factory,
     )
     second = build_uploaded_document_processor(
         settings=make_settings(),
-        dynamodb_resource_factory=RecordingResourceFactory(),
+        dynamodb_resource_factory=second_resource_factory,
+        s3_client_factory=second_client_factory,
     )
 
     assert first is not second
     assert first._service is not second._service
+    assert first._service._repository is not second._service._repository
+    assert first._document_loader is not second._document_loader
+    assert first._service._repository._table is not (second._service._repository._table)
+    assert first._document_loader._s3_client is first_client_factory.client
+    assert second._document_loader._s3_client is second_client_factory.client
+    assert first_resource_factory.resource is not second_resource_factory.resource
+    assert first_client_factory.client is not second_client_factory.client
 
 
 def test_uploaded_document_processor_does_not_require_aws_access() -> None:
     """Processor wiring should succeed without AWS credentials or clients."""
     resource_factory = RecordingResourceFactory()
+    client_factory = RecordingClientFactory()
 
     processor = build_uploaded_document_processor(
         settings=make_settings(),
         dynamodb_resource_factory=resource_factory,
+        s3_client_factory=client_factory,
     )
 
     assert isinstance(processor, ApplicationUploadedDocumentProcessor)
     assert isinstance(processor, UploadedDocumentProcessor)
 
     service = processor._service
+    document_loader = processor._document_loader
 
     assert isinstance(service, StartDocumentProcessing)
     assert isinstance(
@@ -451,6 +485,11 @@ def test_uploaded_document_processor_does_not_require_aws_access() -> None:
         UUIDProcessingAttemptIdGenerator,
     )
     assert service._lease_duration == timedelta(seconds=300)
+    assert isinstance(document_loader, S3DocumentTextLoader)
+    assert isinstance(document_loader, DocumentTextLoader)
     assert resource_factory.service_names == [
         "dynamodb",
+    ]
+    assert client_factory.service_names == [
+        "s3",
     ]
