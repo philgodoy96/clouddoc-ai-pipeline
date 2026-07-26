@@ -33,6 +33,7 @@ from clouddoc.application.ports import (
     ProcessingAttemptIdGenerator,
 )
 from clouddoc.application.process_uploaded_document import ProcessUploadedDocument
+from clouddoc.application.processing_failures import ProcessingFailureReason
 from clouddoc.application.processing_results import (
     ProcessingStartOutcome,
     ProcessingStartResult,
@@ -61,6 +62,7 @@ __all__ = [
     "LoadedTextDocument",
     "ProcessUploadedDocument",
     "ProcessingAttemptIdGenerator",
+    "ProcessingFailureReason",
     "ProcessingStartOutcome",
     "ProcessingStartResult",
     "StartDocumentProcessing",
