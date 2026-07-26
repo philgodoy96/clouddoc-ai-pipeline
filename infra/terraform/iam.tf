@@ -162,3 +162,62 @@ resource "aws_iam_role_policy" "dead_letter_reconciler_logging" {
   role   = aws_iam_role.dead_letter_reconciler.id
   policy = data.aws_iam_policy_document.dead_letter_reconciler_logging.json
 }
+
+data "aws_iam_policy_document" "create_job_permissions" {
+  version = "2012-10-17"
+
+  statement {
+    sid    = "CreateDocumentJob"
+    effect = "Allow"
+
+    actions = [
+      "dynamodb:PutItem",
+    ]
+
+    resources = [
+      aws_dynamodb_table.document_jobs.arn,
+    ]
+  }
+
+  statement {
+    sid    = "AuthorizeCanonicalDocumentUpload"
+    effect = "Allow"
+
+    actions = [
+      "s3:PutObject",
+    ]
+
+    resources = [
+      "${aws_s3_bucket.documents.arn}/documents/*",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "create_job_permissions" {
+  name   = "${local.create_job_function_name}-permissions"
+  role   = aws_iam_role.create_job.id
+  policy = data.aws_iam_policy_document.create_job_permissions.json
+}
+
+data "aws_iam_policy_document" "get_job_permissions" {
+  version = "2012-10-17"
+
+  statement {
+    sid    = "ReadDocumentJob"
+    effect = "Allow"
+
+    actions = [
+      "dynamodb:GetItem",
+    ]
+
+    resources = [
+      aws_dynamodb_table.document_jobs.arn,
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "get_job_permissions" {
+  name   = "${local.get_job_function_name}-permissions"
+  role   = aws_iam_role.get_job.id
+  policy = data.aws_iam_policy_document.get_job_permissions.json
+}
