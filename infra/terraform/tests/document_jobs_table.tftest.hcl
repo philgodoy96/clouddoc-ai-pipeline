@@ -1,5 +1,13 @@
 mock_provider "aws" {
   override_during = plan
+
+  # mock_provider invents a random string for computed .json; IAM resources
+  # validate that attribute as a JSON object, so supply a minimal valid policy.
+  mock_data "aws_iam_policy_document" {
+    defaults = {
+      json = "{\"Version\":\"2012-10-17\",\"Statement\":[]}"
+    }
+  }
 }
 
 variables {
