@@ -439,7 +439,7 @@ def test_mark_dead_from_processing(
     repository.create_job(make_job())
     attempt = make_attempt()
 
-    repository.claim_job(
+    claimed_job = repository.claim_job(
         "job-001",
         attempt,
         claimed_at=BASE_TIME + timedelta(seconds=1),
@@ -448,6 +448,7 @@ def test_mark_dead_from_processing(
     dead_job = repository.mark_dead(
         "job-001",
         "retry_exhausted",
+        expected_updated_at=claimed_job.updated_at,
         marked_at=BASE_TIME + timedelta(seconds=2),
     )
 
@@ -468,7 +469,7 @@ def test_mark_dead_after_retry_release(
         attempt,
         claimed_at=BASE_TIME + timedelta(seconds=1),
     )
-    repository.release_retryable_claim(
+    released_job = repository.release_retryable_claim(
         "job-001",
         attempt.attempt_id,
         released_at=BASE_TIME + timedelta(seconds=2),
@@ -477,6 +478,7 @@ def test_mark_dead_after_retry_release(
     dead_job = repository.mark_dead(
         "job-001",
         "retry_exhausted",
+        expected_updated_at=released_job.updated_at,
         marked_at=BASE_TIME + timedelta(seconds=3),
     )
 
@@ -489,14 +491,60 @@ def test_mark_dead_rejects_unattempted_pending_job(
     repository: DocumentJobRepository,
 ) -> None:
     """A newly created job cannot be reconciled as retry-exhausted."""
-    repository.create_job(make_job())
+    created_job = make_job()
+    repository.create_job(created_job)
 
     with pytest.raises(JobStateConflictError):
         repository.mark_dead(
             "job-001",
             "retry_exhausted",
+            expected_updated_at=created_job.updated_at,
             marked_at=BASE_TIME + timedelta(seconds=1),
         )
+
+
+def test_mark_dead_rejects_stale_observed_snapshot(
+    repository: DocumentJobRepository,
+) -> None:
+    """A stale reconciliation snapshot must not kill a newer claim."""
+    repository.create_job(make_job())
+    first_attempt = make_attempt()
+
+    repository.claim_job(
+        "job-001",
+        first_attempt,
+        claimed_at=BASE_TIME + timedelta(seconds=1),
+    )
+    released_job = repository.release_retryable_claim(
+        "job-001",
+        first_attempt.attempt_id,
+        released_at=BASE_TIME + timedelta(seconds=2),
+    )
+
+    second_attempt = make_attempt(
+        attempt_id="attempt-002",
+        started_at=BASE_TIME + timedelta(seconds=3),
+    )
+    repository.claim_job(
+        "job-001",
+        second_attempt,
+        claimed_at=BASE_TIME + timedelta(seconds=3),
+    )
+
+    with pytest.raises(JobStateConflictError):
+        repository.mark_dead(
+            "job-001",
+            "retry_exhausted",
+            expected_updated_at=released_job.updated_at,
+            marked_at=BASE_TIME + timedelta(seconds=4),
+        )
+
+    stored_job = repository.get_job("job-001")
+
+    assert stored_job is not None
+    assert stored_job.status is JobStatus.PROCESSING
+    assert stored_job.active_attempt == second_attempt
+    assert stored_job.attempts == 2
 
 
 @pytest.mark.parametrize(
@@ -514,7 +562,7 @@ def test_mark_dead_protects_existing_terminal_state(
     repository.create_job(make_job())
     attempt = make_attempt()
 
-    repository.claim_job(
+    claimed_job = repository.claim_job(
         "job-001",
         attempt,
         claimed_at=BASE_TIME + timedelta(seconds=1),
@@ -539,6 +587,7 @@ def test_mark_dead_protects_existing_terminal_state(
         repository.mark_dead(
             "job-001",
             "retry_exhausted",
+            expected_updated_at=claimed_job.updated_at,
             marked_at=BASE_TIME + timedelta(seconds=3),
         )
 
@@ -582,6 +631,7 @@ def test_mutations_raise_not_found_for_missing_job(
             repository.mark_dead(
                 "missing-job",
                 "retry_exhausted",
+                expected_updated_at=BASE_TIME,
                 marked_at=BASE_TIME,
             )
 

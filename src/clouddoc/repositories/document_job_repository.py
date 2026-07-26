@@ -67,6 +67,7 @@ class DocumentJobRepository(Protocol):
         job_id: str,
         reason: str,
         *,
+        expected_updated_at: datetime,
         marked_at: datetime,
     ) -> DocumentJob:
-        """Reconcile retry exhaustion into the dead state."""
+        """Reconcile retry exhaustion from one observed job snapshot."""

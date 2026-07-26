@@ -271,10 +271,16 @@ class DynamoDBDocumentJobRepository:
         job_id: str,
         reason: str,
         *,
+        expected_updated_at: datetime,
         marked_at: datetime,
     ) -> DocumentJob:
-        """Reconcile retry exhaustion into the dead state."""
+        """Reconcile retry exhaustion from one observed job snapshot."""
         current_job = self._get_required_job(job_id)
+
+        if current_job.updated_at != expected_updated_at:
+            raise JobStateConflictError(
+                f"job {job_id} changed before dead-letter reconciliation"
+            )
 
         if current_job.status is JobStatus.PROCESSING:
             updated_job = deepcopy(current_job)

@@ -57,6 +57,7 @@ class ReconcileDeadLetteredDocument:
             self._repository.mark_dead(
                 job.job_id,
                 DeadLetterReason.PROCESSING_RETRIES_EXHAUSTED.value,
+                expected_updated_at=job.updated_at,
                 marked_at=marked_at,
             )
         except JobNotFoundError as error:
