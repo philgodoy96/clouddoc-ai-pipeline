@@ -104,6 +104,7 @@ def make_settings() -> RuntimeSettings:
         jobs_table_name="clouddoc-document-jobs",
         documents_bucket_name="clouddoc-documents",
         upload_url_expiration_seconds=900,
+        processing_lease_duration_seconds=300,
     )
 
 
@@ -227,6 +228,7 @@ def test_document_upload_provider_uses_custom_settings() -> None:
         jobs_table_name="clouddoc-document-jobs",
         documents_bucket_name="custom-documents-bucket",
         upload_url_expiration_seconds=600,
+        processing_lease_duration_seconds=300,
     )
 
     provider = build_document_upload_provider(
