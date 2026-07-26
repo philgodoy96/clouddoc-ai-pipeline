@@ -134,9 +134,10 @@ def build_uploaded_document_processor(
         settings=settings,
         dynamodb_resource_factory=dynamodb_resource_factory,
     )
+    clock = SystemClock()
     start_processing = StartDocumentProcessing(
         repository=repository,
-        clock=SystemClock(),
+        clock=clock,
         attempt_id_generator=UUIDProcessingAttemptIdGenerator(),
         lease_duration=timedelta(
             seconds=settings.processing_lease_duration_seconds,
@@ -151,6 +152,8 @@ def build_uploaded_document_processor(
         start_processing=start_processing,
         document_loader=document_loader,
         ai_provider=ai_provider,
+        repository=repository,
+        clock=clock,
     )
 
     return ApplicationUploadedDocumentProcessor(
