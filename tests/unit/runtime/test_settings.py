@@ -8,9 +8,11 @@ from clouddoc.runtime import (
     RuntimeSettings,
 )
 from clouddoc.runtime.settings import (
+    DEFAULT_MAX_DOCUMENT_SIZE_BYTES,
     DEFAULT_PROCESSING_LEASE_DURATION_SECONDS,
     DEFAULT_UPLOAD_URL_EXPIRATION_SECONDS,
     DOCUMENTS_BUCKET_NAME_ENV_VAR,
+    MAX_DOCUMENT_SIZE_BYTES_ENV_VAR,
     PROCESSING_LEASE_DURATION_SECONDS_ENV_VAR,
     UPLOAD_URL_EXPIRATION_SECONDS_ENV_VAR,
 )
@@ -39,6 +41,7 @@ def test_loads_jobs_table_name_from_environment_mapping() -> None:
         documents_bucket_name=VALID_DOCUMENTS_BUCKET_NAME,
         upload_url_expiration_seconds=DEFAULT_UPLOAD_URL_EXPIRATION_SECONDS,
         processing_lease_duration_seconds=DEFAULT_PROCESSING_LEASE_DURATION_SECONDS,
+        max_document_size_bytes=DEFAULT_MAX_DOCUMENT_SIZE_BYTES,
     )
 
 
@@ -95,6 +98,7 @@ def test_reads_process_environment_by_default(
     assert (
         settings.upload_url_expiration_seconds == DEFAULT_UPLOAD_URL_EXPIRATION_SECONDS
     )
+    assert settings.max_document_size_bytes == DEFAULT_MAX_DOCUMENT_SIZE_BYTES
 
 
 def test_explicit_environment_mapping_isolated_from_process_environment(
@@ -113,6 +117,10 @@ def test_explicit_environment_mapping_isolated_from_process_environment(
         UPLOAD_URL_EXPIRATION_SECONDS_ENV_VAR,
         "1200",
     )
+    monkeypatch.setenv(
+        MAX_DOCUMENT_SIZE_BYTES_ENV_VAR,
+        "131072",
+    )
 
     settings = RuntimeSettings.from_environment(
         {
@@ -126,6 +134,7 @@ def test_explicit_environment_mapping_isolated_from_process_environment(
     assert (
         settings.upload_url_expiration_seconds == DEFAULT_UPLOAD_URL_EXPIRATION_SECONDS
     )
+    assert settings.max_document_size_bytes == DEFAULT_MAX_DOCUMENT_SIZE_BYTES
 
 
 def test_rejects_missing_jobs_table_name() -> None:
@@ -320,6 +329,68 @@ def test_rejects_invalid_processing_lease_duration(
         )
 
 
+def test_missing_max_document_size_uses_default() -> None:
+    """Missing max document size should fall back to the documented default."""
+    settings = RuntimeSettings.from_environment(_valid_environment())
+
+    assert settings.max_document_size_bytes == 65_536
+
+
+def test_loads_configured_max_document_size() -> None:
+    """A valid configured max document size should be parsed as an integer."""
+    settings = RuntimeSettings.from_environment(
+        _valid_environment(
+            **{MAX_DOCUMENT_SIZE_BYTES_ENV_VAR: "131072"},
+        )
+    )
+
+    assert settings.max_document_size_bytes == 131_072
+
+
+def test_trims_max_document_size() -> None:
+    """Surrounding whitespace around a valid max document size should be accepted."""
+    settings = RuntimeSettings.from_environment(
+        _valid_environment(
+            **{MAX_DOCUMENT_SIZE_BYTES_ENV_VAR: "  131072  "},
+        )
+    )
+
+    assert settings.max_document_size_bytes == 131_072
+
+
+@pytest.mark.parametrize(
+    "max_document_size",
+    [
+        "",
+        " ",
+        "   ",
+        "\t",
+        "\n",
+        "0",
+        "-1",
+        "-65536",
+        "65536.0",
+        "abc",
+        "65a536",
+        "true",
+        "false",
+    ],
+)
+def test_rejects_invalid_max_document_size(
+    max_document_size: str,
+) -> None:
+    """Invalid max document size values must fail with a stable error message."""
+    with pytest.raises(
+        RuntimeConfigurationError,
+        match=("CLOUDDOC_MAX_DOCUMENT_SIZE_BYTES must be a positive integer"),
+    ):
+        RuntimeSettings.from_environment(
+            _valid_environment(
+                **{MAX_DOCUMENT_SIZE_BYTES_ENV_VAR: max_document_size},
+            )
+        )
+
+
 def test_settings_are_immutable() -> None:
     """Runtime configuration should not change after startup."""
     settings = RuntimeSettings(
@@ -327,6 +398,7 @@ def test_settings_are_immutable() -> None:
         documents_bucket_name=VALID_DOCUMENTS_BUCKET_NAME,
         upload_url_expiration_seconds=900,
         processing_lease_duration_seconds=300,
+        max_document_size_bytes=65_536,
     )
 
     with pytest.raises(AttributeError):

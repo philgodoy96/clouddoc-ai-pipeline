@@ -26,6 +26,7 @@ def make_runtime_settings() -> RuntimeSettings:
         documents_bucket_name=EXPECTED_BUCKET,
         upload_url_expiration_seconds=900,
         processing_lease_duration_seconds=300,
+        max_document_size_bytes=65_536,
     )
 
 

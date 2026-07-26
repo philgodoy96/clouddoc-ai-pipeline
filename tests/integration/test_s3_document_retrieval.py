@@ -107,7 +107,7 @@ def test_loads_plain_text_document_from_s3(
     loader: S3DocumentTextLoader,
 ) -> None:
     """A valid S3 object should round-trip through the adapter."""
-    content = "Olá, CloudDoc!".encode("utf-8")
+    content = "Olá, CloudDoc!".encode()
     reference = put_document(
         s3_client,
         content=content,
@@ -260,8 +260,8 @@ def test_rejects_replaced_current_object_when_event_has_no_version(
     with pytest.raises(
         DocumentValidationError,
         match=(
-            "document size does not match the uploaded event"
-            "|document ETag does not match the uploaded event"
+            r"document size does not match the uploaded event"
+            r"|document ETag does not match the uploaded event"
         ),
     ):
         loader.load(
