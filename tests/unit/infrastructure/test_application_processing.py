@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from clouddoc.application import ProcessingFailureReason
 from clouddoc.application.document_processing_results import (
     DocumentProcessingResult,
 )
@@ -85,6 +86,14 @@ def make_processed_result() -> DocumentProcessingResult:
 def make_already_applied_result() -> DocumentProcessingResult:
     """Create one deterministic already-applied workflow result."""
     return DocumentProcessingResult.effect_already_applied()
+
+
+def make_terminal_failure_result() -> DocumentProcessingResult:
+    """Create one deterministic durably recorded terminal result."""
+    return DocumentProcessingResult.terminal_failure_recorded(
+        attempt=make_attempt(),
+        failure_reason=(ProcessingFailureReason.DOCUMENT_VALIDATION_FAILED),
+    )
 
 
 class RecordingProcessUploadedDocument:
@@ -170,6 +179,26 @@ def test_returns_none_when_effect_already_applied() -> None:
     event = make_event()
     workflow = RecordingProcessUploadedDocument(
         result=make_already_applied_result(),
+    )
+    processor = ApplicationUploadedDocumentProcessor(
+        workflow=workflow,
+    )
+
+    result = processor.process(
+        event=event,
+    )
+
+    assert result is None
+    assert workflow.events == [
+        event,
+    ]
+
+
+def test_returns_none_when_terminal_failure_is_recorded() -> None:
+    """Durably recorded terminal failures should be acknowledged."""
+    event = make_event()
+    workflow = RecordingProcessUploadedDocument(
+        result=make_terminal_failure_result(),
     )
     processor = ApplicationUploadedDocumentProcessor(
         workflow=workflow,
