@@ -1,3 +1,13 @@
+output "documents_bucket_name" {
+  description = "Name of the private source-document bucket."
+  value       = aws_s3_bucket.documents.bucket
+}
+
+output "documents_bucket_arn" {
+  description = "ARN of the private source-document bucket."
+  value       = aws_s3_bucket.documents.arn
+}
+
 output "processing_queue_name" {
   description = "Name of the processing source queue."
   value       = aws_sqs_queue.processing.name

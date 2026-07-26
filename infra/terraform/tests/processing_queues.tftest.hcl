@@ -8,6 +8,15 @@ variables {
   environment  = "dev"
 }
 
+override_data {
+  target          = data.aws_caller_identity.current
+  override_during = plan
+
+  values = {
+    account_id = "123456789012"
+  }
+}
+
 override_resource {
   target          = aws_sqs_queue.processing
   override_during = plan
