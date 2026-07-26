@@ -45,6 +45,15 @@ def test_claim_acquired_factory_returns_owned_attempt() -> None:
     assert result.correlation_id == "correlation-001"
 
 
+def test_processing_already_active_factory_omits_continuation_context() -> None:
+    """An active competing claim must not authorize continuation."""
+    result = ProcessingStartResult.processing_already_active()
+
+    assert result.outcome is ProcessingStartOutcome.PROCESSING_ALREADY_ACTIVE
+    assert result.attempt is None
+    assert result.correlation_id is None
+
+
 def test_effect_already_applied_factory_omits_attempt() -> None:
     """An already-applied effect must not authorize continuation."""
     result = ProcessingStartResult.effect_already_applied()
@@ -90,6 +99,32 @@ def test_claim_acquired_requires_correlation_id(
         )
 
 
+def test_processing_already_active_rejects_attempt() -> None:
+    """Another worker's attempt must not authorize continuation."""
+    with pytest.raises(
+        ValueError,
+        match=("processing_already_active outcome must not include an attempt"),
+    ):
+        ProcessingStartResult(
+            outcome=(ProcessingStartOutcome.PROCESSING_ALREADY_ACTIVE),
+            attempt=make_attempt(),
+            correlation_id=None,
+        )
+
+
+def test_processing_already_active_rejects_correlation_id() -> None:
+    """Active-ownership results must not carry authorization context."""
+    with pytest.raises(
+        ValueError,
+        match=("processing_already_active outcome must not include a correlation_id"),
+    ):
+        ProcessingStartResult(
+            outcome=ProcessingStartOutcome.PROCESSING_ALREADY_ACTIVE,
+            attempt=None,
+            correlation_id="correlation-001",
+        )
+
+
 def test_effect_already_applied_rejects_attempt() -> None:
     """Another worker's attempt must not authorize continuation."""
     with pytest.raises(
@@ -131,6 +166,10 @@ def test_outcome_values_are_stable_strings() -> None:
     """Outcome values should remain suitable for logs and tests."""
     assert ProcessingStartOutcome.CLAIM_ACQUIRED.value == "claim_acquired"
     assert (
+        ProcessingStartOutcome.PROCESSING_ALREADY_ACTIVE.value
+        == "processing_already_active"
+    )
+    assert (
         ProcessingStartOutcome.EFFECT_ALREADY_APPLIED.value == "effect_already_applied"
     )
 
@@ -142,6 +181,7 @@ def test_outcome_values_are_stable_strings() -> None:
             attempt=make_attempt(),
             correlation_id="correlation-001",
         ),
+        ProcessingStartResult.processing_already_active(),
         ProcessingStartResult.effect_already_applied(),
     ],
 )
@@ -151,5 +191,6 @@ def test_result_preserves_declared_outcome(
     """Every valid result should preserve one explicit decision."""
     assert result.outcome in {
         ProcessingStartOutcome.CLAIM_ACQUIRED,
+        ProcessingStartOutcome.PROCESSING_ALREADY_ACTIVE,
         ProcessingStartOutcome.EFFECT_ALREADY_APPLIED,
     }

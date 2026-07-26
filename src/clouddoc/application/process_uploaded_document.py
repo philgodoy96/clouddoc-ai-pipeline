@@ -61,6 +61,11 @@ class ProcessUploadedDocument:
         if start_result.outcome is ProcessingStartOutcome.EFFECT_ALREADY_APPLIED:
             return DocumentProcessingResult.effect_already_applied()
 
+        if start_result.outcome is ProcessingStartOutcome.PROCESSING_ALREADY_ACTIVE:
+            raise ApplicationConflictError(
+                "document job already has an active processing attempt"
+            )
+
         attempt = start_result.attempt
         correlation_id = start_result.correlation_id
 
