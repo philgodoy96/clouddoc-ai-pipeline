@@ -13,10 +13,15 @@ four independent Lambda execution roles
 four managed CloudWatch log groups
 the processing queue consumer IAM boundary
 the processing queue to Processor Lambda event source mapping
+the processing DLQ to Dead-Letter Reconciler event source mapping
+the Dead-Letter Reconciler processing-DLQ consumer boundary
+the reconciliation failure quarantine queue
+the processing-DLQ-to-quarantine redrive path
 ```
 
-API Gateway, Bedrock permissions, CloudWatch alarms, DLQ Reconciler
-invocation, and real AWS deployment remain separate follow-up work.
+API Gateway, Bedrock permissions, CloudWatch alarms, automatic replay,
+operator recovery tooling, and real AWS deployment remain separate follow-up
+work.
 
 ## Current resources
 
@@ -27,6 +32,9 @@ aws_sqs_queue.processing
 aws_sqs_queue.processing_dlq
 aws_sqs_queue_redrive_policy.processing
 aws_sqs_queue_redrive_allow_policy.processing_dlq
+aws_sqs_queue.reconciliation_failures
+aws_sqs_queue_redrive_policy.processing_dlq_reconciliation
+aws_sqs_queue_redrive_allow_policy.reconciliation_failures
 ```
 
 Queue names are scoped by project and environment:
@@ -34,6 +42,7 @@ Queue names are scoped by project and environment:
 ```text
 ${project_name}-${environment}-processing
 ${project_name}-${environment}-processing-dlq
+${project_name}-${environment}-reconciliation-failures
 ```
 
 Default local values produce:
@@ -41,6 +50,7 @@ Default local values produce:
 ```text
 clouddoc-dev-processing
 clouddoc-dev-processing-dlq
+clouddoc-dev-reconciliation-failures
 ```
 
 Processing queue:
@@ -63,9 +73,10 @@ Message retention: 1209600 seconds (14 days)
 Encryption: SQS-managed server-side encryption
 ```
 
-Redrive behavior:
+Primary redrive behavior:
 
 ```text
+processing queue → processing DLQ after three receives
 maxReceiveCount = 3
 deadLetterTargetArn = processing DLQ
 redrivePermission = byQueue
@@ -254,7 +265,7 @@ stored in Lambda environment variables.
 | Create Job | `dynamodb:PutItem`; `s3:PutObject` under `documents/*` |
 | Get Job | `dynamodb:GetItem` |
 | Processor | `dynamodb:GetItem`; `dynamodb:PutItem`; `s3:GetObject`; `s3:GetObjectVersion` under `documents/*`; dedicated processing-queue consumer inline policy |
-| Dead-Letter Reconciler | `dynamodb:GetItem`; `dynamodb:PutItem` |
+| Dead-Letter Reconciler | `dynamodb:GetItem`; `dynamodb:PutItem`; dedicated processing-DLQ consumer inline policy |
 
 Each function has its own role. Each role trusts only `lambda.amazonaws.com`.
 Logging permissions target only that function's log group streams.
@@ -287,7 +298,19 @@ aws_iam_role_policy.processor_queue_consumer
 
 Terraform declares the enabled event source mapping from the processing queue to
 the Document Processor Lambda, plus a dedicated Processor queue-consumer inline
-policy. The Dead-Letter Reconciler is not connected yet.
+policy.
+
+### Dead-letter reconciliation consumer
+
+```text
+aws_lambda_event_source_mapping.processing_dlq
+data.aws_iam_policy_document.dead_letter_reconciler_queue_consumer
+aws_iam_role_policy.dead_letter_reconciler_queue_consumer
+```
+
+Terraform declares the enabled event source mapping from the processing DLQ to
+the Dead-Letter Reconciler Lambda, plus a dedicated Dead-Letter Reconciler
+processing-DLQ inline policy.
 
 ## Processing flow
 
@@ -299,11 +322,68 @@ S3 ObjectCreated
     → S3 / DynamoDB / future AI provider
 ```
 
+## Failure flow
+
+```text
+processing queue
+    → Document Processor
+    → processing DLQ after three receives
+    → Dead-Letter Reconciler
+    → reconciliation failure quarantine after three reconciliation receives
+```
+
 Ownership remains split:
 
 ```text
-SQS owns delivery, retry, visibility, and redrive
-DynamoDB owns authoritative DocumentJob lifecycle
+DynamoDB owns authoritative DocumentJob state
+SQS owns delivery, retry, and redrive
+the quarantine queue owns terminal operational evidence
+```
+
+## Quarantine queue
+
+Terraform declares a terminal reconciliation failure quarantine:
+
+```text
+Standard queue
+zero delay
+180-second visibility timeout
+14-day retention
+SQS-managed encryption
+no consumer
+no redrive policy
+```
+
+Queue tags:
+
+```text
+QueueRole = dead-letter-reconciliation-quarantine
+```
+
+The quarantine queue is terminal in the current architecture. It preserves
+operational evidence for investigation; it does not continue the processing
+pipeline.
+
+## Processing-DLQ redrive
+
+The processing DLQ now redrives exhausted reconciliation attempts:
+
+```text
+processing DLQ maxReceiveCount = 3
+dead-letter target = reconciliation failure quarantine
+```
+
+The quarantine queue accepts redrive only from the processing DLQ:
+
+```text
+redrivePermission = byQueue
+source = processing DLQ only
+```
+
+The primary processing redrive path is unchanged:
+
+```text
+processing queue → processing DLQ after three receives
 ```
 
 ## Queue-consumer IAM
@@ -334,6 +414,37 @@ consume the DLQ
 No AWS-managed SQS execution policy is attached. No KMS permission is needed
 because the queue uses SQS-managed encryption.
 
+## Reconciler IAM
+
+The Dead-Letter Reconciler receives a dedicated inline SQS consumer policy that
+grants exactly:
+
+```text
+sqs:DeleteMessage
+sqs:GetQueueAttributes
+sqs:ReceiveMessage
+```
+
+The resource is restricted to:
+
+```text
+processing DLQ ARN only
+```
+
+The reconciler cannot:
+
+```text
+consume the primary processing queue
+consume the quarantine queue
+send messages
+move messages
+purge or administer queues
+replay work
+```
+
+No AWS-managed SQS execution policy is attached. No KMS permission is needed
+because the queues use SQS-managed encryption.
+
 ## Event source mapping
 
 The processing-queue mapping is configured as:
@@ -355,6 +466,27 @@ partial batch reporting matches the handler contract
 maximum concurrency 5 bounds AI-processing parallelism and cost
 ```
 
+## Reconciliation event source mapping
+
+The processing-DLQ mapping is configured as:
+
+```text
+enabled = true
+batch size = 1
+maximum batching window = 0 seconds
+ReportBatchItemFailures enabled
+maximum concurrency = 2
+```
+
+Decisions:
+
+```text
+batch size 1 isolates one exhausted message
+zero batching window avoids unnecessary delay
+partial batch reporting matches the handler
+maximum concurrency 2 prevents a failure storm from creating a reconciliation storm
+```
+
 ## Timeout and retry contract
 
 The Processor and processing queues share this contract:
@@ -373,6 +505,17 @@ processing. The threshold isolates exhausted work earlier rather than repeating
 inference indefinitely. It is not claimed to be universally optimal and should
 be revisited after deployed measurement.
 
+The Dead-Letter Reconciler and processing DLQ share this contract:
+
+```text
+Dead-Letter Reconciler timeout = 30 seconds
+processing DLQ visibility timeout = 180 seconds
+ratio = 6x
+```
+
+Reserved concurrency remains unconfigured and is represented as `null` in
+Terraform plan semantics.
+
 ## Concurrency
 
 Event-source maximum concurrency is configured. Lambda reserved concurrency
@@ -384,6 +527,20 @@ In plan semantics, the unconfigured reserved concurrency is represented as
 Reserved concurrency must be designed with account-level concurrency, Bedrock
 quotas, and all future invocation sources before it is introduced.
 
+## No automatic replay
+
+This root deliberately declares no automatic replay path:
+
+```text
+the reconciler has no SendMessage permission
+the reconciler has no SQS message-move permission
+the quarantine queue has no consumer
+no resource routes messages back to the processing queue
+```
+
+Future replay requires a separately approved operator workflow with
+authorization, auditability, idempotency, and rate controls.
+
 ## Ownership boundary
 
 Each store owns a distinct concern:
@@ -392,6 +549,7 @@ Each store owns a distinct concern:
 S3 owns raw document bytes and object versions
 SQS owns delivery attempts and redrive
 DynamoDB owns authoritative DocumentJob lifecycle state
+the quarantine queue owns terminal operational evidence
 ```
 
 SQS delivery state does not determine business lifecycle state. Message
@@ -479,18 +637,35 @@ document ingestion topology
 document-jobs table topology
 Lambda runtime and IAM topology
 processing event-source topology
+dead-letter reconciliation topology
 ```
 
 The current validated total is:
 
 ```text
-13 passed, 0 failed
+17 passed, 0 failed
+```
+
+The dead-letter reconciliation tests validate:
+
+```text
+quarantine topology
+redrive chain
+reconciler least privilege
+absence of replay actions
+event-source mapping
+partial failure behavior
+concurrency
+timeout ratio
+retention
+encryption
+outputs
 ```
 
 Tests use a mocked AWS provider and create no resources. Plan-time computed
-identifiers are overridden for deterministic mocked tests. The tests validate
-the dedicated inline policy identity rather than comparing rendered policy JSON
-that remains unknown during plan.
+values use deterministic overrides. The tests validate the dedicated inline
+policy identity rather than comparing rendered policy JSON that remains unknown
+during plan.
 
 ## Outputs
 
@@ -503,6 +678,9 @@ processing_queue_url
 processing_dlq_name
 processing_dlq_arn
 processing_dlq_url
+reconciliation_failures_queue_name
+reconciliation_failures_queue_arn
+reconciliation_failures_queue_url
 ```
 
 Document-ingestion outputs:
@@ -532,9 +710,9 @@ dead_letter_reconciler_function_name
 dead_letter_reconciler_function_arn
 ```
 
-These identifiers will support future API Gateway, alarm, and deployment
-integrations. Outputs expose resource identifiers only; they do not expose
-credentials or object content.
+These identifiers will support future API Gateway, alarm, runbook, operator
+inspection, and deployment verification integrations. Outputs expose resource
+identifiers only; they do not expose credentials or object content.
 
 ## Security and durability
 
@@ -551,8 +729,9 @@ versioning
 bounded lifecycle retention
 ```
 
-Both queues enable SQS-managed encryption at rest. The documents bucket uses
-AES256 default encryption and an explicit `aws:SecureTransport` deny.
+The processing, processing-DLQ, and quarantine queues enable SQS-managed
+encryption at rest. The documents bucket uses AES256 default encryption and an
+explicit `aws:SecureTransport` deny.
 
 The document-jobs table declares these durability and security controls:
 
@@ -569,6 +748,13 @@ no speculative indexes
 Malware scanning, Object Lock, access logging, and CloudTrail data events are
 not part of this slice. AWS Backup, global tables, DAX, Contributor Insights,
 customer-managed KMS, and CloudWatch alarms are not declared for the table.
+
+## Retention nuance
+
+For Standard queues, the original enqueue timestamp is preserved when messages
+move to a DLQ. Effective remaining quarantine retention therefore depends on
+message age. Messages do not automatically receive a fresh full 14 days after
+redrive.
 
 ## Cost posture
 
@@ -610,6 +796,21 @@ no automatic DLQ replay
 These settings prioritize bounded AI parallelism and predictable per-document
 failure domains over maximum throughput.
 
+Dead-letter reconciliation cost decisions:
+
+```text
+batch size 1
+maximum concurrency 2
+three reconciliation receives
+14-day bounded quarantine retention
+no provisioned concurrency
+no provisioned pollers
+no automatic replay
+```
+
+These settings prioritize bounded retry cost, failure isolation, and operator
+signal.
+
 The Processor memory budget is intentionally larger because it owns document
 loading, validation, and AI orchestration. That budget requires deployed
 measurement later.
@@ -638,9 +839,15 @@ The following remain intentionally sequenced follow-up work:
 ```text
 API Gateway
 Lambda invoke permissions
-DLQ Reconciler event-source mapping
-DLQ consumer permissions
+quarantine consumer
 automatic replay
+operator replay API
+message-move permissions
+processing DLQ depth alarm
+quarantine depth alarm
+message-age alarm
+reconciler failure alarm
+manual recovery runbook
 reserved concurrency
 provisioned concurrency
 provisioned pollers
@@ -660,6 +867,7 @@ code signing
 real AWS deployment
 load testing
 failure injection
+recovery testing
 ```
 
 Additional deferred items from earlier slices also remain separate:
@@ -697,3 +905,5 @@ real AWS deployment and restore validation
 - [ADR-019: Provision separate Lambda runtime boundaries](../../docs/adr/ADR-019-provision-separate-lambda-runtime-boundaries.md)
 - [Processing queue consumer infrastructure](../../docs/architecture/processing-queue-consumer-infrastructure.md)
 - [ADR-020: Connect processing queue to Processor Lambda](../../docs/adr/ADR-020-connect-processing-queue-to-processor-lambda.md)
+- [Dead-letter reconciliation infrastructure](../../docs/architecture/dead-letter-reconciliation-infrastructure.md)
+- [ADR-021: Connect processing DLQ to Reconciler Lambda](../../docs/adr/ADR-021-connect-processing-dlq-to-reconciler-lambda.md)
