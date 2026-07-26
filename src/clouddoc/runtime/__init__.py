@@ -2,6 +2,7 @@
 
 from clouddoc.runtime.composition import (
     build_create_document_job_service,
+    build_dead_lettered_document_processor,
     build_document_job_repository,
     build_document_text_loader,
     build_document_upload_provider,
@@ -33,6 +34,7 @@ __all__ = [
     "RuntimeConfigurationError",
     "RuntimeSettings",
     "build_create_document_job_service",
+    "build_dead_lettered_document_processor",
     "build_document_job_repository",
     "build_document_text_loader",
     "build_document_upload_provider",

@@ -14,6 +14,44 @@ from clouddoc.delivery.events.errors import (
 from clouddoc.delivery.events.s3_sqs_parser import (
     parse_sqs_record_with_s3_notification,
 )
+from clouddoc.runtime import (
+    RuntimeSettings,
+    build_dead_lettered_document_processor,
+)
+
+_PROCESSOR: DeadLetteredDocumentProcessor | None = None
+
+
+def _get_processor(
+    *,
+    settings: RuntimeSettings,
+) -> DeadLetteredDocumentProcessor:
+    """Build and cache the dead-letter reconciliation processor."""
+    global _PROCESSOR
+
+    if _PROCESSOR is None:
+        _PROCESSOR = build_dead_lettered_document_processor(
+            settings=settings,
+        )
+
+    return _PROCESSOR
+
+
+def lambda_handler(
+    event: object,
+    context: object,
+) -> dict[str, list[dict[str, str]]]:
+    """Handle a dead-letter SQS batch delivered by AWS Lambda."""
+    settings = RuntimeSettings.from_environment()
+
+    return handle(
+        event,
+        context,
+        processor=_get_processor(
+            settings=settings,
+        ),
+        expected_bucket_name=settings.documents_bucket_name,
+    )
 
 
 def handle(
