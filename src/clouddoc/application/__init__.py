@@ -28,6 +28,10 @@ from clouddoc.application.ports import (
     JobIdGenerator,
     ProcessingAttemptIdGenerator,
 )
+from clouddoc.application.processing_results import (
+    ProcessingStartOutcome,
+    ProcessingStartResult,
+)
 from clouddoc.application.start_document_processing import StartDocumentProcessing
 
 __all__ = [
@@ -49,5 +53,7 @@ __all__ = [
     "JobIdGenerator",
     "LoadedTextDocument",
     "ProcessingAttemptIdGenerator",
+    "ProcessingStartOutcome",
+    "ProcessingStartResult",
     "StartDocumentProcessing",
 ]
