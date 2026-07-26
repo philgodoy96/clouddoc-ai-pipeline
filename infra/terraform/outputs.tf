@@ -37,3 +37,13 @@ output "processing_dlq_url" {
   description = "URL of the processing dead-letter queue."
   value       = aws_sqs_queue.processing_dlq.url
 }
+
+output "document_jobs_table_name" {
+  description = "Name of the authoritative document-jobs table."
+  value       = aws_dynamodb_table.document_jobs.name
+}
+
+output "document_jobs_table_arn" {
+  description = "ARN of the authoritative document-jobs table."
+  value       = aws_dynamodb_table.document_jobs.arn
+}
