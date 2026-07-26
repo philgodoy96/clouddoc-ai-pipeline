@@ -1,17 +1,20 @@
 """Tests for runtime dependency composition."""
 
+from datetime import timedelta
 from typing import Any
 
 from clouddoc.application import (
     CreateDocumentJob,
     GetDocumentJob,
+    StartDocumentProcessing,
 )
 from clouddoc.application.processing_ports import UploadedDocumentProcessor
 from clouddoc.infrastructure import (
-    NoOpUploadedDocumentProcessor,
+    ApplicationUploadedDocumentProcessor,
     S3PresignedDocumentUploadProvider,
     SystemClock,
     UUIDJobIdGenerator,
+    UUIDProcessingAttemptIdGenerator,
 )
 from clouddoc.repositories import (
     DynamoDBDocumentJobRepository,
@@ -264,10 +267,15 @@ def test_composition_does_not_require_real_aws_access() -> None:
             settings=make_settings(),
             s3_client_factory=client_factory,
         ),
+        build_uploaded_document_processor(
+            settings=make_settings(),
+            dynamodb_resource_factory=resource_factory,
+        ),
     )
 
     assert all(services)
     assert resource_factory.service_names == [
+        "dynamodb",
         "dynamodb",
         "dynamodb",
     ]
@@ -278,24 +286,93 @@ def test_composition_does_not_require_real_aws_access() -> None:
 
 
 def test_builds_uploaded_document_processor() -> None:
-    """Composition should return the no-op uploaded-document processor."""
-    processor = build_uploaded_document_processor()
+    """Composition should return the authoritative uploaded-document processor."""
+    resource_factory = RecordingResourceFactory()
 
-    assert isinstance(processor, NoOpUploadedDocumentProcessor)
+    processor = build_uploaded_document_processor(
+        settings=make_settings(),
+        dynamodb_resource_factory=resource_factory,
+    )
+
+    assert isinstance(processor, ApplicationUploadedDocumentProcessor)
     assert isinstance(processor, UploadedDocumentProcessor)
+
+    service = processor._service
+
+    assert isinstance(service, StartDocumentProcessing)
+    assert isinstance(
+        service._repository,
+        DynamoDBDocumentJobRepository,
+    )
+    assert isinstance(service._clock, SystemClock)
+    assert isinstance(
+        service._attempt_id_generator,
+        UUIDProcessingAttemptIdGenerator,
+    )
+    assert service._lease_duration == timedelta(seconds=300)
+    assert resource_factory.service_names == [
+        "dynamodb",
+    ]
+
+
+def test_uploaded_document_processor_propagates_custom_lease() -> None:
+    """Composition should propagate a custom processing lease duration."""
+    resource_factory = RecordingResourceFactory()
+    settings = RuntimeSettings(
+        jobs_table_name="clouddoc-document-jobs",
+        documents_bucket_name="clouddoc-documents",
+        upload_url_expiration_seconds=900,
+        processing_lease_duration_seconds=600,
+    )
+
+    processor = build_uploaded_document_processor(
+        settings=settings,
+        dynamodb_resource_factory=resource_factory,
+    )
+
+    assert processor._service._lease_duration == timedelta(seconds=600)
 
 
 def test_uploaded_document_processor_is_not_cached() -> None:
     """Composition should return a fresh processor on each call."""
-    first = build_uploaded_document_processor()
-    second = build_uploaded_document_processor()
+    first = build_uploaded_document_processor(
+        settings=make_settings(),
+        dynamodb_resource_factory=RecordingResourceFactory(),
+    )
+    second = build_uploaded_document_processor(
+        settings=make_settings(),
+        dynamodb_resource_factory=RecordingResourceFactory(),
+    )
 
     assert first is not second
+    assert first._service is not second._service
 
 
 def test_uploaded_document_processor_does_not_require_aws_access() -> None:
     """Processor wiring should succeed without AWS credentials or clients."""
-    processor = build_uploaded_document_processor()
+    resource_factory = RecordingResourceFactory()
 
-    assert isinstance(processor, NoOpUploadedDocumentProcessor)
+    processor = build_uploaded_document_processor(
+        settings=make_settings(),
+        dynamodb_resource_factory=resource_factory,
+    )
+
+    assert isinstance(processor, ApplicationUploadedDocumentProcessor)
     assert isinstance(processor, UploadedDocumentProcessor)
+
+    service = processor._service
+
+    assert isinstance(service, StartDocumentProcessing)
+    assert isinstance(
+        service._repository,
+        DynamoDBDocumentJobRepository,
+    )
+    assert isinstance(service._clock, SystemClock)
+    assert isinstance(
+        service._attempt_id_generator,
+        UUIDProcessingAttemptIdGenerator,
+    )
+    assert service._lease_duration == timedelta(seconds=300)
+    assert resource_factory.service_names == [
+        "dynamodb",
+    ]

@@ -22,12 +22,17 @@ from clouddoc.runtime import (
 _PROCESSOR: UploadedDocumentProcessor | None = None
 
 
-def _get_processor() -> UploadedDocumentProcessor:
+def _get_processor(
+    *,
+    settings: RuntimeSettings,
+) -> UploadedDocumentProcessor:
     """Build and cache the uploaded-document processor."""
     global _PROCESSOR
 
     if _PROCESSOR is None:
-        _PROCESSOR = build_uploaded_document_processor()
+        _PROCESSOR = build_uploaded_document_processor(
+            settings=settings,
+        )
 
     return _PROCESSOR
 
@@ -42,7 +47,9 @@ def lambda_handler(
     return handle(
         event,
         context,
-        processor=_get_processor(),
+        processor=_get_processor(
+            settings=settings,
+        ),
         expected_bucket_name=settings.documents_bucket_name,
     )
 
