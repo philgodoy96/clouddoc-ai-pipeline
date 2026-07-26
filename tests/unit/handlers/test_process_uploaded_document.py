@@ -33,8 +33,9 @@ def make_runtime_settings() -> RuntimeSettings:
 def install_fake_settings(
     monkeypatch: pytest.MonkeyPatch,
     settings: RuntimeSettings,
-) -> None:
+) -> list[RuntimeSettings]:
     """Replace RuntimeSettings.from_environment without mutating os.environ."""
+    settings_loads: list[RuntimeSettings] = []
 
     class FakeRuntimeSettings:
         """Settings loader double that returns configured settings."""
@@ -42,6 +43,7 @@ def install_fake_settings(
         @classmethod
         def from_environment(cls) -> RuntimeSettings:
             """Return the configured runtime settings."""
+            settings_loads.append(settings)
             return settings
 
     monkeypatch.setattr(
@@ -49,6 +51,8 @@ def install_fake_settings(
         "RuntimeSettings",
         FakeRuntimeSettings,
     )
+
+    return settings_loads
 
 
 def install_recording_builder(
@@ -64,7 +68,7 @@ def install_recording_builder(
         *,
         settings: RuntimeSettings,
     ) -> RecordingProcessor:
-        """Require settings and return the recording processor."""
+        """Match the handler's settings-only builder call contract."""
         recorded_settings.append(settings)
 
         if raise_error is not None:
@@ -582,7 +586,7 @@ def test_lambda_handler_propagates_settings_to_processor_builder(
         monkeypatch,
         processor=processor,
     )
-    install_fake_settings(monkeypatch, settings)
+    settings_loads = install_fake_settings(monkeypatch, settings)
 
     response = handler_module.lambda_handler(
         make_event(
@@ -591,6 +595,7 @@ def test_lambda_handler_propagates_settings_to_processor_builder(
         None,
     )
 
+    assert settings_loads == [settings]
     assert recorded_settings == [settings]
     assert response == {
         "batchItemFailures": [],
@@ -598,7 +603,9 @@ def test_lambda_handler_propagates_settings_to_processor_builder(
     assert [event.job_id for event in processor.events] == [
         "job-001",
     ]
+    assert len(processor.events) == 1
     assert settings.documents_bucket_name == EXPECTED_BUCKET
+    assert handler_module._PROCESSOR is processor
 
 
 def test_lambda_handler_caches_composed_processor(
@@ -613,7 +620,7 @@ def test_lambda_handler_caches_composed_processor(
         monkeypatch,
         processor=processor,
     )
-    install_fake_settings(monkeypatch, settings)
+    settings_loads = install_fake_settings(monkeypatch, settings)
 
     first_response = handler_module.lambda_handler(
         make_event(
@@ -642,6 +649,7 @@ def test_lambda_handler_caches_composed_processor(
         None,
     )
 
+    assert settings_loads == [settings, settings]
     assert recorded_settings == [settings]
     assert first_response == {
         "batchItemFailures": [],
@@ -656,6 +664,33 @@ def test_lambda_handler_caches_composed_processor(
     assert handler_module._PROCESSOR is processor
 
 
+def test_lambda_handler_acknowledges_successful_claim_aware_processor_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Successful claim-aware processor results acknowledge the SQS message."""
+    monkeypatch.setattr(handler_module, "_PROCESSOR", None)
+
+    settings = make_runtime_settings()
+    processor = RecordingProcessor()
+    install_recording_builder(
+        monkeypatch,
+        processor=processor,
+    )
+    install_fake_settings(monkeypatch, settings)
+
+    response = handler_module.lambda_handler(
+        make_event(
+            make_queue_record(),
+        ),
+        None,
+    )
+
+    assert len(processor.events) == 1
+    assert response == {
+        "batchItemFailures": [],
+    }
+
+
 def test_lambda_handler_builder_failure_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -666,14 +701,19 @@ def test_lambda_handler_builder_failure_raises(
     install_recording_builder(
         monkeypatch,
         processor=RecordingProcessor(),
-        raise_error=RuntimeError("composition failed"),
+        raise_error=RuntimeError("processor composition failed"),
     )
     install_fake_settings(monkeypatch, settings)
 
-    with pytest.raises(RuntimeError, match="composition failed"):
+    with pytest.raises(
+        RuntimeError,
+        match="processor composition failed",
+    ):
         handler_module.lambda_handler(
             make_event(
                 make_queue_record(),
             ),
             None,
         )
+
+    assert handler_module._PROCESSOR is None
