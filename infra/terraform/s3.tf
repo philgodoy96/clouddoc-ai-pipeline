@@ -71,3 +71,19 @@ resource "aws_s3_bucket_lifecycle_configuration" "documents" {
     }
   }
 }
+
+resource "aws_s3_bucket_notification" "documents" {
+  bucket = aws_s3_bucket.documents.id
+
+  queue {
+    id            = "document-upload-created"
+    queue_arn     = aws_sqs_queue.processing.arn
+    events        = ["s3:ObjectCreated:*"]
+    filter_prefix = "documents/"
+    filter_suffix = "source.txt"
+  }
+
+  depends_on = [
+    aws_sqs_queue_policy.processing_s3_publish,
+  ]
+}
