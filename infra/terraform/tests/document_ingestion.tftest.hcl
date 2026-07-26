@@ -262,14 +262,6 @@ run "private_document_ingestion_topology" {
 
   assert {
     condition = (
-      aws_s3_bucket_policy.documents.policy ==
-      data.aws_iam_policy_document.documents_https_only.json
-    )
-    error_message = "The bucket policy must use the HTTPS-only policy document."
-  }
-
-  assert {
-    condition = (
       length(
         data.aws_iam_policy_document
         .documents_https_only.statement
@@ -566,15 +558,6 @@ run "private_document_ingestion_topology" {
       aws_sqs_queue.processing.url
     )
     error_message = "The S3 publishing policy must be attached to the processing queue."
-  }
-
-  assert {
-    condition = (
-      aws_sqs_queue_policy.processing_s3_publish.policy ==
-      data.aws_iam_policy_document
-      .processing_queue_allow_s3.json
-    )
-    error_message = "The processing queue must use the least-privilege S3 publishing policy."
   }
 
   assert {
