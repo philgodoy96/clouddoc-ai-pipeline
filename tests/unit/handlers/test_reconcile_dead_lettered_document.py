@@ -12,11 +12,79 @@ from clouddoc.delivery.events.errors import (
     MalformedQueueMessageError,
 )
 from clouddoc.delivery.events.models import UploadedDocumentEvent
+from clouddoc.handlers import reconcile_dead_lettered_document as handler_module
 from clouddoc.handlers.reconcile_dead_lettered_document import (
     handle,
 )
+from clouddoc.runtime.settings import RuntimeSettings
 
 EXPECTED_BUCKET = "clouddoc-documents"
+
+
+def make_runtime_settings() -> RuntimeSettings:
+    """Create immutable runtime settings for Lambda entrypoint tests."""
+    return RuntimeSettings(
+        jobs_table_name="clouddoc-document-jobs",
+        documents_bucket_name=EXPECTED_BUCKET,
+        upload_url_expiration_seconds=900,
+        processing_lease_duration_seconds=300,
+        max_document_size_bytes=65_536,
+    )
+
+
+def install_fake_settings(
+    monkeypatch: pytest.MonkeyPatch,
+    settings: RuntimeSettings,
+) -> list[RuntimeSettings]:
+    """Replace RuntimeSettings.from_environment without mutating os.environ."""
+    settings_loads: list[RuntimeSettings] = []
+
+    class FakeRuntimeSettings:
+        """Settings loader double that returns configured settings."""
+
+        @classmethod
+        def from_environment(cls) -> RuntimeSettings:
+            """Return the configured runtime settings."""
+            settings_loads.append(settings)
+            return settings
+
+    monkeypatch.setattr(
+        handler_module,
+        "RuntimeSettings",
+        FakeRuntimeSettings,
+    )
+
+    return settings_loads
+
+
+def install_recording_builder(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    processor: "RecordingDeadLetteredDocumentProcessor",
+    raise_error: Exception | None = None,
+) -> list[RuntimeSettings]:
+    """Monkeypatch the processor builder and record settings arguments."""
+    recorded_settings: list[RuntimeSettings] = []
+
+    def fake_build_dead_lettered_document_processor(
+        *,
+        settings: RuntimeSettings,
+    ) -> RecordingDeadLetteredDocumentProcessor:
+        """Match the handler's settings-only builder call contract."""
+        recorded_settings.append(settings)
+
+        if raise_error is not None:
+            raise raise_error
+
+        return processor
+
+    monkeypatch.setattr(
+        handler_module,
+        "build_dead_lettered_document_processor",
+        fake_build_dead_lettered_document_processor,
+    )
+
+    return recorded_settings
 
 
 class RecordingDeadLetteredDocumentProcessor:
@@ -506,3 +574,186 @@ def test_rejects_record_without_reportable_message_id(
                 queue_record,
             )
         )
+
+
+def test_lambda_handler_propagates_settings_to_processor_builder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Lambda entrypoint should load settings and pass them to composition."""
+    monkeypatch.setattr(handler_module, "_PROCESSOR", None)
+
+    settings = make_runtime_settings()
+    processor = RecordingDeadLetteredDocumentProcessor()
+    recorded_settings = install_recording_builder(
+        monkeypatch,
+        processor=processor,
+    )
+    settings_loads = install_fake_settings(monkeypatch, settings)
+
+    response = handler_module.lambda_handler(
+        make_event(
+            make_queue_record(),
+        ),
+        None,
+    )
+
+    assert settings_loads == [settings]
+    assert recorded_settings == [settings]
+    assert response == {
+        "batchItemFailures": [],
+    }
+    assert [event.job_id for event in processor.events] == [
+        "job-001",
+    ]
+    assert len(processor.events) == 1
+    assert settings.documents_bucket_name == EXPECTED_BUCKET
+    assert handler_module._PROCESSOR is processor
+
+
+def test_lambda_handler_caches_composed_processor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Warm invocations should reuse the cached processor composition."""
+    monkeypatch.setattr(handler_module, "_PROCESSOR", None)
+
+    settings = make_runtime_settings()
+    processor = RecordingDeadLetteredDocumentProcessor()
+    recorded_settings = install_recording_builder(
+        monkeypatch,
+        processor=processor,
+    )
+    settings_loads = install_fake_settings(monkeypatch, settings)
+
+    first_response = handler_module.lambda_handler(
+        make_event(
+            make_queue_record(
+                message_id="dlq-message-001",
+                s3_records=[
+                    make_s3_record(
+                        job_id="job-001",
+                    )
+                ],
+            )
+        ),
+        None,
+    )
+    second_response = handler_module.lambda_handler(
+        make_event(
+            make_queue_record(
+                message_id="dlq-message-002",
+                s3_records=[
+                    make_s3_record(
+                        job_id="job-002",
+                    )
+                ],
+            )
+        ),
+        None,
+    )
+
+    assert settings_loads == [settings, settings]
+    assert recorded_settings == [settings]
+    assert first_response == {
+        "batchItemFailures": [],
+    }
+    assert second_response == {
+        "batchItemFailures": [],
+    }
+    assert [event.job_id for event in processor.events] == [
+        "job-001",
+        "job-002",
+    ]
+    assert handler_module._PROCESSOR is processor
+
+
+def test_lambda_handler_propagates_expected_bucket_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Lambda entrypoint should pass documents_bucket_name into handle(...)."""
+    monkeypatch.setattr(handler_module, "_PROCESSOR", None)
+
+    matching_settings = make_runtime_settings()
+    processor = RecordingDeadLetteredDocumentProcessor()
+    install_recording_builder(
+        monkeypatch,
+        processor=processor,
+    )
+    install_fake_settings(monkeypatch, matching_settings)
+
+    matching_response = handler_module.lambda_handler(
+        make_event(
+            make_queue_record(
+                message_id="dlq-message-001",
+            )
+        ),
+        None,
+    )
+
+    assert matching_response == {
+        "batchItemFailures": [],
+    }
+    assert [event.job_id for event in processor.events] == [
+        "job-001",
+    ]
+
+    monkeypatch.setattr(handler_module, "_PROCESSOR", None)
+
+    mismatched_settings = RuntimeSettings(
+        jobs_table_name="clouddoc-document-jobs",
+        documents_bucket_name="other-documents-bucket",
+        upload_url_expiration_seconds=900,
+        processing_lease_duration_seconds=300,
+        max_document_size_bytes=65_536,
+    )
+    mismatched_processor = RecordingDeadLetteredDocumentProcessor()
+    install_recording_builder(
+        monkeypatch,
+        processor=mismatched_processor,
+    )
+    install_fake_settings(monkeypatch, mismatched_settings)
+
+    mismatched_response = handler_module.lambda_handler(
+        make_event(
+            make_queue_record(
+                message_id="dlq-message-002",
+            )
+        ),
+        None,
+    )
+
+    assert mismatched_response == {
+        "batchItemFailures": [
+            {
+                "itemIdentifier": "dlq-message-002",
+            }
+        ],
+    }
+    assert mismatched_processor.events == []
+
+
+def test_lambda_handler_builder_failure_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cold-start composition failures must fail the entire invocation."""
+    monkeypatch.setattr(handler_module, "_PROCESSOR", None)
+
+    settings = make_runtime_settings()
+    install_recording_builder(
+        monkeypatch,
+        processor=RecordingDeadLetteredDocumentProcessor(),
+        raise_error=RuntimeError("processor composition failed"),
+    )
+    install_fake_settings(monkeypatch, settings)
+
+    with pytest.raises(
+        RuntimeError,
+        match="processor composition failed",
+    ):
+        handler_module.lambda_handler(
+            make_event(
+                make_queue_record(),
+            ),
+            None,
+        )
+
+    assert handler_module._PROCESSOR is None

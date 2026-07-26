@@ -11,11 +11,16 @@ from clouddoc.application import (
     DocumentTextLoader,
     GetDocumentJob,
     ProcessUploadedDocument,
+    ReconcileDeadLetteredDocument,
     StartDocumentProcessing,
+)
+from clouddoc.application.dead_letter_processing_ports import (
+    DeadLetteredDocumentProcessor,
 )
 from clouddoc.application.processing_ports import UploadedDocumentProcessor
 from clouddoc.application.upload_ports import DocumentUploadProvider
 from clouddoc.infrastructure import (
+    ApplicationDeadLetteredDocumentProcessor,
     ApplicationUploadedDocumentProcessor,
     S3DocumentTextLoader,
     S3PresignedDocumentUploadProvider,
@@ -157,5 +162,26 @@ def build_uploaded_document_processor(
     )
 
     return ApplicationUploadedDocumentProcessor(
+        workflow=workflow,
+    )
+
+
+def build_dead_lettered_document_processor(
+    *,
+    settings: RuntimeSettings,
+    dynamodb_resource_factory: DynamoDBResourceFactory = boto3.resource,
+) -> DeadLetteredDocumentProcessor:
+    """Build the dead-lettered document reconciliation processor."""
+    repository = build_document_job_repository(
+        settings=settings,
+        dynamodb_resource_factory=dynamodb_resource_factory,
+    )
+    clock = SystemClock()
+    workflow = ReconcileDeadLetteredDocument(
+        repository=repository,
+        clock=clock,
+    )
+
+    return ApplicationDeadLetteredDocumentProcessor(
         workflow=workflow,
     )

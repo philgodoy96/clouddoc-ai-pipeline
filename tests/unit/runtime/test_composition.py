@@ -8,10 +8,15 @@ from clouddoc.application import (
     DocumentTextLoader,
     GetDocumentJob,
     ProcessUploadedDocument,
+    ReconcileDeadLetteredDocument,
     StartDocumentProcessing,
+)
+from clouddoc.application.dead_letter_processing_ports import (
+    DeadLetteredDocumentProcessor,
 )
 from clouddoc.application.processing_ports import UploadedDocumentProcessor
 from clouddoc.infrastructure import (
+    ApplicationDeadLetteredDocumentProcessor,
     ApplicationUploadedDocumentProcessor,
     S3DocumentTextLoader,
     S3PresignedDocumentUploadProvider,
@@ -29,6 +34,7 @@ from clouddoc.repositories import (
 )
 from clouddoc.runtime.composition import (
     build_create_document_job_service,
+    build_dead_lettered_document_processor,
     build_document_job_repository,
     build_document_text_loader,
     build_document_upload_provider,
@@ -387,10 +393,15 @@ def test_composition_does_not_require_real_aws_access() -> None:
             dynamodb_resource_factory=resource_factory,
             s3_client_factory=client_factory,
         ),
+        build_dead_lettered_document_processor(
+            settings=make_settings(),
+            dynamodb_resource_factory=resource_factory,
+        ),
     )
 
     assert all(services)
     assert resource_factory.service_names == [
+        "dynamodb",
         "dynamodb",
         "dynamodb",
         "dynamodb",
@@ -593,4 +604,98 @@ def test_uploaded_document_processor_does_not_require_aws_access() -> None:
     ]
     assert client_factory.service_names == [
         "s3",
+    ]
+
+
+def test_builds_dead_lettered_document_processor() -> None:
+    """Composition should return the authoritative DLQ reconciliation processor."""
+    resource_factory = RecordingResourceFactory()
+
+    processor = build_dead_lettered_document_processor(
+        settings=make_settings(),
+        dynamodb_resource_factory=resource_factory,
+    )
+
+    assert isinstance(processor, ApplicationDeadLetteredDocumentProcessor)
+    assert isinstance(processor, DeadLetteredDocumentProcessor)
+
+    workflow = processor._workflow
+    repository = workflow._repository
+    clock = workflow._clock
+
+    assert isinstance(workflow, ReconcileDeadLetteredDocument)
+    assert isinstance(repository, DynamoDBDocumentJobRepository)
+    assert isinstance(clock, SystemClock)
+    assert workflow._repository is repository
+    assert workflow._clock is clock
+    assert isinstance(repository._table, FakeDynamoDBTable)
+    assert repository._table.name == "clouddoc-document-jobs"
+    assert resource_factory.resource.requested_table_names == [
+        "clouddoc-document-jobs",
+    ]
+    assert resource_factory.service_names == [
+        "dynamodb",
+    ]
+
+
+def test_dead_lettered_document_processor_is_not_cached() -> None:
+    """Composition should return a fresh DLQ processor on each call."""
+    first_resource_factory = RecordingResourceFactory()
+    second_resource_factory = RecordingResourceFactory()
+
+    first = build_dead_lettered_document_processor(
+        settings=make_settings(),
+        dynamodb_resource_factory=first_resource_factory,
+    )
+    second = build_dead_lettered_document_processor(
+        settings=make_settings(),
+        dynamodb_resource_factory=second_resource_factory,
+    )
+
+    first_workflow = first._workflow
+    second_workflow = second._workflow
+
+    assert first is not second
+    assert first_workflow is not second_workflow
+    assert first_workflow._repository is not second_workflow._repository
+    assert first_workflow._clock is not second_workflow._clock
+    assert first_workflow._repository._table is not (second_workflow._repository._table)
+    assert first_resource_factory.resource is not second_resource_factory.resource
+    assert isinstance(first_workflow._repository, DynamoDBDocumentJobRepository)
+    assert isinstance(first_workflow._clock, SystemClock)
+    assert isinstance(second_workflow._repository, DynamoDBDocumentJobRepository)
+    assert isinstance(second_workflow._clock, SystemClock)
+    assert first_workflow._repository is first._workflow._repository
+    assert first_workflow._clock is first._workflow._clock
+    assert second_workflow._repository is second._workflow._repository
+    assert second_workflow._clock is second._workflow._clock
+
+
+def test_dead_lettered_document_processor_does_not_require_aws_access() -> None:
+    """DLQ processor wiring should succeed without AWS credentials or clients."""
+    resource_factory = RecordingResourceFactory()
+
+    processor = build_dead_lettered_document_processor(
+        settings=make_settings(),
+        dynamodb_resource_factory=resource_factory,
+    )
+
+    assert isinstance(processor, ApplicationDeadLetteredDocumentProcessor)
+    assert isinstance(processor, DeadLetteredDocumentProcessor)
+
+    workflow = processor._workflow
+
+    assert isinstance(workflow, ReconcileDeadLetteredDocument)
+    assert isinstance(
+        workflow._repository,
+        DynamoDBDocumentJobRepository,
+    )
+    assert isinstance(workflow._repository._table, FakeDynamoDBTable)
+    assert resource_factory.resource.requested_table_names == [
+        "clouddoc-document-jobs",
+    ]
+    assert workflow._repository._table.name == "clouddoc-document-jobs"
+    assert isinstance(workflow._clock, SystemClock)
+    assert resource_factory.service_names == [
+        "dynamodb",
     ]
