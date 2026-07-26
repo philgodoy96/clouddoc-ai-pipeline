@@ -47,3 +47,43 @@ output "document_jobs_table_arn" {
   description = "ARN of the authoritative document-jobs table."
   value       = aws_dynamodb_table.document_jobs.arn
 }
+
+output "create_job_function_name" {
+  description = "Name of the Create Job Lambda function."
+  value       = aws_lambda_function.create_job.function_name
+}
+
+output "create_job_function_arn" {
+  description = "ARN of the Create Job Lambda function."
+  value       = aws_lambda_function.create_job.arn
+}
+
+output "get_job_function_name" {
+  description = "Name of the Get Job Lambda function."
+  value       = aws_lambda_function.get_job.function_name
+}
+
+output "get_job_function_arn" {
+  description = "ARN of the Get Job Lambda function."
+  value       = aws_lambda_function.get_job.arn
+}
+
+output "processor_function_name" {
+  description = "Name of the Document Processor Lambda function."
+  value       = aws_lambda_function.processor.function_name
+}
+
+output "processor_function_arn" {
+  description = "ARN of the Document Processor Lambda function."
+  value       = aws_lambda_function.processor.arn
+}
+
+output "dead_letter_reconciler_function_name" {
+  description = "Name of the Dead-Letter Reconciler Lambda function."
+  value       = aws_lambda_function.dead_letter_reconciler.function_name
+}
+
+output "dead_letter_reconciler_function_arn" {
+  description = "ARN of the Dead-Letter Reconciler Lambda function."
+  value       = aws_lambda_function.dead_letter_reconciler.arn
+}
