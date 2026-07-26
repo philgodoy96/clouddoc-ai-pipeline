@@ -43,6 +43,9 @@ from clouddoc.application.processing_results import (
     ProcessingStartOutcome,
     ProcessingStartResult,
 )
+from clouddoc.application.reconcile_dead_lettered_document import (
+    ReconcileDeadLetteredDocument,
+)
 from clouddoc.application.start_document_processing import StartDocumentProcessing
 
 __all__ = [
@@ -73,5 +76,6 @@ __all__ = [
     "ProcessingFailureReason",
     "ProcessingStartOutcome",
     "ProcessingStartResult",
+    "ReconcileDeadLetteredDocument",
     "StartDocumentProcessing",
 ]
