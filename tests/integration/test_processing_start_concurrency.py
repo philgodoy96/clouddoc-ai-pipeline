@@ -10,6 +10,10 @@ import boto3
 import pytest
 from moto import mock_aws
 
+from clouddoc.application import (
+    ProcessingStartOutcome,
+    ProcessingStartResult,
+)
 from clouddoc.application.start_document_processing import (
     StartDocumentProcessing,
 )
@@ -193,10 +197,10 @@ def make_service(
     )
 
 
-def test_concurrent_processing_starts_resolve_idempotently(
+def test_concurrent_processing_starts_return_one_claim_and_one_already_applied(
     dynamodb_table: Any,
 ) -> None:
-    """Two workers should converge on one authoritative claim."""
+    """Two workers should return one claim and one already-applied outcome."""
     authoritative_repository = DynamoDBDocumentJobRepository(
         table=dynamodb_table,
     )
@@ -248,10 +252,10 @@ def test_concurrent_processing_starts_resolve_idempotently(
             ),
         ]
 
-    assert results == [
-        None,
-        None,
-    ]
+    assert all(isinstance(result, ProcessingStartResult) for result in results)
+    outcomes = [result.outcome for result in results]
+    assert outcomes.count(ProcessingStartOutcome.CLAIM_ACQUIRED) == 1
+    assert outcomes.count(ProcessingStartOutcome.EFFECT_ALREADY_APPLIED) == 1
 
     stored_job = authoritative_repository.get_job("job-001")
 
@@ -265,6 +269,21 @@ def test_concurrent_processing_starts_resolve_idempotently(
     }
     assert stored_job.active_attempt.started_at == CLAIMED_AT
     assert stored_job.active_attempt.lease_expires_at == (CLAIMED_AT + LEASE_DURATION)
+
+    claim_result = next(
+        result
+        for result in results
+        if result.outcome is ProcessingStartOutcome.CLAIM_ACQUIRED
+    )
+    assert claim_result.attempt is not None
+    assert claim_result.attempt == stored_job.active_attempt
+
+    already_applied_result = next(
+        result
+        for result in results
+        if result.outcome is ProcessingStartOutcome.EFFECT_ALREADY_APPLIED
+    )
+    assert already_applied_result.attempt is None
 
     assert first_generator.calls == 1
     assert second_generator.calls == 1
