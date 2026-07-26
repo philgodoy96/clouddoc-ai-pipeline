@@ -13,6 +13,10 @@ from clouddoc.application.document_ports import (
     DocumentValidationError,
     LoadedTextDocument,
 )
+from clouddoc.application.document_processing_results import (
+    DocumentProcessingOutcome,
+    DocumentProcessingResult,
+)
 from clouddoc.application.errors import (
     ApplicationConflictError,
     ApplicationDependencyError,
@@ -46,6 +50,8 @@ __all__ = [
     "DocumentLoadError",
     "DocumentNotFoundError",
     "DocumentObjectReference",
+    "DocumentProcessingOutcome",
+    "DocumentProcessingResult",
     "DocumentTextLoader",
     "DocumentValidationError",
     "GetDocumentJob",
