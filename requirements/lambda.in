@@ -1,0 +1,5 @@
+# Direct dependencies for the Lambda deployment artifact.
+# Keep aligned with [project].dependencies in pyproject.toml.
+
+boto3>=1.40,<2
+pydantic>=2.11,<3
