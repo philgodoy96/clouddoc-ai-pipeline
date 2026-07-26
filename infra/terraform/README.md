@@ -4,8 +4,9 @@ This directory contains the executable Terraform root for CloudDoc AI Pipeline.
 
 Infrastructure is introduced in reviewable slices. The current root provisions
 the document-processing SQS topology, the private source-document S3 ingestion
-boundary, and S3-to-SQS event delivery. Lambda packaging, IAM roles, and
-deployed AWS environments remain separate follow-up work.
+boundary, and authoritative DynamoDB document-job state. Lambda packaging, IAM
+roles, event-source mappings, and deployed AWS environments remain separate
+follow-up work.
 
 ## Current resources
 
@@ -61,10 +62,6 @@ redrivePermission = byQueue
 sourceQueueArns = [processing queue ARN]
 ```
 
-The processing queue owns delivery buffering, retries, and dead-letter
-movement. DynamoDB remains the authoritative source for `DocumentJob`
-lifecycle state.
-
 ### Document ingestion
 
 ```text
@@ -116,6 +113,42 @@ validation of the canonical object key:
 documents/{job_id}/source.txt
 ```
 
+### Document-job state
+
+```text
+aws_dynamodb_table.document_jobs
+```
+
+Table configuration:
+
+```text
+environment-scoped name
+PAY_PER_REQUEST billing
+PK string partition key
+no sort key
+STANDARD table class
+point-in-time recovery enabled
+production deletion protection
+DynamoDB Streams disabled
+no TTL
+no secondary indexes
+DynamoDB default encryption at rest
+```
+
+## Ownership boundary
+
+Each store owns a distinct concern:
+
+```text
+S3 owns raw document bytes and object versions
+SQS owns delivery attempts and redrive
+DynamoDB owns authoritative DocumentJob lifecycle state
+```
+
+SQS delivery state does not determine business lifecycle state. Message
+visibility, receive counts, and dead-letter placement describe transport
+retries only. Authoritative `DocumentJob` status lives in DynamoDB.
+
 ## Configuration
 
 Required and optional inputs:
@@ -144,6 +177,30 @@ Example bucket name:
 clouddoc-dev-123456789012-documents
 ```
 
+The document-jobs table name is derived from the project name, environment, and
+`document-jobs` suffix:
+
+```text
+${project_name}-${environment}-document-jobs
+```
+
+Examples:
+
+```text
+clouddoc-dev-document-jobs
+clouddoc-staging-document-jobs
+clouddoc-prod-document-jobs
+```
+
+Production deletion protection is derived from `environment`. There is no
+separate deletion-protection variable:
+
+```text
+dev = disabled
+staging = disabled
+prod = enabled
+```
+
 Shared provider tags:
 
 ```text
@@ -165,11 +222,12 @@ terraform validate
 terraform test
 ```
 
-Terraform tests cover both:
+Terraform native tests cover:
 
 ```text
 processing queue topology
 document ingestion topology
+document-jobs table topology
 ```
 
 Tests use a mocked AWS provider and create no resources.
@@ -194,10 +252,18 @@ documents_bucket_name
 documents_bucket_arn
 ```
 
-Future Lambda and IAM slices will consume these identifiers. Outputs expose
-resource identifiers only; they do not expose credentials or object content.
+Document-job state outputs:
 
-## Security
+```text
+document_jobs_table_name
+document_jobs_table_arn
+```
+
+Future Lambda environment variables and execution policies will consume these
+identifiers. Outputs expose resource identifiers only; they do not expose
+credentials or object content.
+
+## Security and durability
 
 The current root establishes these controls:
 
@@ -215,8 +281,34 @@ bounded lifecycle retention
 Both queues enable SQS-managed encryption at rest. The documents bucket uses
 AES256 default encryption and an explicit `aws:SecureTransport` deny.
 
+The document-jobs table declares these durability and security controls:
+
+```text
+PITR enabled
+production deletion protection
+DynamoDB default encryption
+no resource-based cross-account policy
+no TTL without an approved retention contract
+no streams without an approved consumer
+no speculative indexes
+```
+
 Malware scanning, Object Lock, access logging, and CloudTrail data events are
-not part of this slice.
+not part of this slice. AWS Backup, global tables, DAX, Contributor Insights,
+customer-managed KMS, and CloudWatch alarms are not declared for the table.
+
+## Cost posture
+
+The document-jobs table makes these intentional cost decisions:
+
+```text
+PAY_PER_REQUEST for an unmeasured event-driven workload
+no unused secondary indexes
+no streams
+no global tables
+no DAX
+no customer-managed KMS requests
+```
 
 ## State management and deployment safety
 
@@ -261,9 +353,29 @@ CI plan and controlled deployment workflows
 operator replay tooling
 ```
 
+Document-job state capabilities remain intentionally sequenced follow-up work:
+
+```text
+Lambda table permissions
+Lambda environment variables
+DynamoDB Streams
+TTL and retention automation
+secondary indexes
+global tables
+DAX
+customer-managed KMS keys
+Contributor Insights
+CloudWatch alarms
+AWS Backup plans
+cross-region disaster recovery
+real AWS deployment and restore validation
+```
+
 ## Related documentation
 
 - [Processing queue infrastructure](../../docs/architecture/processing-queue-infrastructure.md)
 - [ADR-015: Provision standard processing queues with Terraform](../../docs/adr/ADR-015-provision-standard-processing-queues-with-terraform.md)
 - [Document ingestion infrastructure](../../docs/architecture/document-ingestion-infrastructure.md)
 - [ADR-016: Provision private versioned document ingestion](../../docs/adr/ADR-016-provision-private-versioned-document-ingestion.md)
+- [Document job state infrastructure](../../docs/architecture/document-job-state-infrastructure.md)
+- [ADR-018: Provision authoritative document job state](../../docs/adr/ADR-018-provision-authoritative-document-job-state.md)
