@@ -1,5 +1,8 @@
 """Claim-aware uploaded-document processing workflow."""
 
+from collections.abc import Callable
+from datetime import datetime
+
 from clouddoc.application.document_ports import (
     DocumentDependencyError,
     DocumentNotFoundError,
@@ -16,6 +19,8 @@ from clouddoc.application.errors import (
     ApplicationDependencyError,
     ApplicationNotFoundError,
 )
+from clouddoc.application.ports import Clock
+from clouddoc.application.processing_failures import ProcessingFailureReason
 from clouddoc.application.processing_results import (
     ProcessingStartOutcome,
 )
@@ -24,11 +29,20 @@ from clouddoc.application.start_document_processing import (
 )
 from clouddoc.delivery.events.models import UploadedDocumentEvent
 from clouddoc.domain import ProcessingAttempt
+from clouddoc.domain.document_job import DocumentJob
 from clouddoc.domain.errors import InvalidDomainValueError
 from clouddoc.providers import (
     AIProvider,
     AIProviderError,
+    AIProviderInvalidResponseError,
     AIProviderRequest,
+)
+from clouddoc.repositories import (
+    DocumentJobRepository,
+    JobAttemptMismatchError,
+    JobNotFoundError,
+    JobStateConflictError,
+    RepositoryError,
 )
 from clouddoc.schemas import AIExtractionResult
 
@@ -42,11 +56,15 @@ class ProcessUploadedDocument:
         start_processing: StartDocumentProcessing,
         document_loader: DocumentTextLoader,
         ai_provider: AIProvider,
+        repository: DocumentJobRepository,
+        clock: Clock,
     ) -> None:
         """Initialize the workflow with explicit dependencies."""
         self._start_processing = start_processing
         self._document_loader = document_loader
         self._ai_provider = ai_provider
+        self._repository = repository
+        self._clock = clock
 
     def execute(
         self,
@@ -74,26 +92,89 @@ class ProcessUploadedDocument:
                 "processing start result is missing continuation context"
             )
 
+        if event.etag is None:
+            return self._record_terminal_failure(
+                event=event,
+                attempt=attempt,
+                reason=ProcessingFailureReason.INVALID_DOCUMENT_REFERENCE,
+            )
+
         reference = self._build_document_reference(
             event=event,
         )
-        document = self._load_document(
-            event=event,
-            attempt=attempt,
-            reference=reference,
-        )
-        request = self._build_provider_request(
-            document=document,
-            attempt=attempt,
-            correlation_id=correlation_id,
-        )
-        extraction_result = self._invoke_provider(
-            event=event,
-            attempt=attempt,
-            request=request,
-        )
 
-        return DocumentProcessingResult.processed(
+        try:
+            document = self._load_document(
+                reference=reference,
+            )
+        except DocumentNotFoundError:
+            return self._record_terminal_failure(
+                event=event,
+                attempt=attempt,
+                reason=ProcessingFailureReason.DOCUMENT_NOT_FOUND,
+            )
+        except DocumentValidationError:
+            return self._record_terminal_failure(
+                event=event,
+                attempt=attempt,
+                reason=ProcessingFailureReason.DOCUMENT_VALIDATION_FAILED,
+            )
+        except DocumentDependencyError as error:
+            self._release_retryable_claim(
+                event=event,
+                attempt=attempt,
+            )
+            raise ApplicationDependencyError(
+                "failed to load uploaded document",
+                cause=error,
+                context={
+                    "job_id": event.job_id,
+                    "attempt_id": attempt.attempt_id,
+                    "object_key": event.object_key,
+                },
+            ) from error
+
+        try:
+            request = self._build_provider_request(
+                document=document,
+                attempt=attempt,
+                correlation_id=correlation_id,
+            )
+        except InvalidDomainValueError:
+            return self._record_terminal_failure(
+                event=event,
+                attempt=attempt,
+                reason=ProcessingFailureReason.INVALID_PROVIDER_REQUEST,
+            )
+
+        try:
+            extraction_result = self._invoke_provider(
+                request=request,
+            )
+        except AIProviderInvalidResponseError:
+            return self._record_terminal_failure(
+                event=event,
+                attempt=attempt,
+                reason=ProcessingFailureReason.AI_PROVIDER_INVALID_RESPONSE,
+            )
+        except AIProviderError as error:
+            self._release_retryable_claim(
+                event=event,
+                attempt=attempt,
+            )
+            provider_name = error.provider_name or self._ai_provider.provider_name
+            raise ApplicationDependencyError(
+                "failed to extract uploaded document",
+                cause=error,
+                context={
+                    "job_id": event.job_id,
+                    "attempt_id": attempt.attempt_id,
+                    "provider_name": provider_name,
+                },
+            ) from error
+
+        return self._complete_processing(
+            event=event,
             attempt=attempt,
             extraction_result=extraction_result,
         )
@@ -105,7 +186,7 @@ class ProcessUploadedDocument:
     ) -> DocumentObjectReference:
         """Build a trusted object reference from normalized event data."""
         if event.etag is None:
-            raise ApplicationConflictError("uploaded document event requires an ETag")
+            raise InvalidDomainValueError("uploaded document event requires an ETag")
 
         return DocumentObjectReference(
             object_key=event.object_key,
@@ -117,31 +198,12 @@ class ProcessUploadedDocument:
     def _load_document(
         self,
         *,
-        event: UploadedDocumentEvent,
-        attempt: ProcessingAttempt,
         reference: DocumentObjectReference,
     ) -> LoadedTextDocument:
         """Load one validated document through the application port."""
-        try:
-            return self._document_loader.load(
-                reference=reference,
-            )
-        except DocumentNotFoundError as error:
-            raise ApplicationNotFoundError("uploaded document was not found") from error
-        except DocumentValidationError as error:
-            raise ApplicationConflictError(
-                "uploaded document failed validation"
-            ) from error
-        except DocumentDependencyError as error:
-            raise ApplicationDependencyError(
-                "failed to load uploaded document",
-                cause=error,
-                context={
-                    "job_id": event.job_id,
-                    "attempt_id": attempt.attempt_id,
-                    "object_key": event.object_key,
-                },
-            ) from error
+        return self._document_loader.load(
+            reference=reference,
+        )
 
     @staticmethod
     def _build_provider_request(
@@ -151,36 +213,115 @@ class ProcessUploadedDocument:
         correlation_id: str,
     ) -> AIProviderRequest:
         """Build a normalized request using owned workflow context."""
-        try:
-            return AIProviderRequest(
-                document_text=document.content,
-                correlation_id=correlation_id,
-                processing_attempt_id=attempt.attempt_id,
-            )
-        except InvalidDomainValueError as error:
-            raise ApplicationConflictError(
-                "uploaded document cannot be processed"
-            ) from error
+        return AIProviderRequest(
+            document_text=document.content,
+            correlation_id=correlation_id,
+            processing_attempt_id=attempt.attempt_id,
+        )
 
     def _invoke_provider(
         self,
         *,
-        event: UploadedDocumentEvent,
-        attempt: ProcessingAttempt,
         request: AIProviderRequest,
     ) -> AIExtractionResult:
-        """Invoke the provider and normalize known dependency failures."""
-        try:
-            return self._ai_provider.extract(request)
-        except AIProviderError as error:
-            provider_name = error.provider_name or self._ai_provider.provider_name
+        """Invoke the provider and return one validated extraction."""
+        return self._ai_provider.extract(request)
 
+    def _complete_processing(
+        self,
+        *,
+        event: UploadedDocumentEvent,
+        attempt: ProcessingAttempt,
+        extraction_result: AIExtractionResult,
+    ) -> DocumentProcessingResult:
+        """Persist successful completion before returning PROCESSED."""
+        self._persist_finalization(
+            event=event,
+            attempt=attempt,
+            operation="complete",
+            persist=lambda finalized_at: self._repository.complete_job(
+                event.job_id,
+                attempt.attempt_id,
+                extraction_result,
+                completed_at=finalized_at,
+            ),
+        )
+        return DocumentProcessingResult.processed(
+            attempt=attempt,
+            extraction_result=extraction_result,
+        )
+
+    def _record_terminal_failure(
+        self,
+        *,
+        event: UploadedDocumentEvent,
+        attempt: ProcessingAttempt,
+        reason: ProcessingFailureReason,
+    ) -> DocumentProcessingResult:
+        """Persist a deterministic terminal failure before returning."""
+        self._persist_finalization(
+            event=event,
+            attempt=attempt,
+            operation="fail",
+            persist=lambda finalized_at: self._repository.fail_job(
+                event.job_id,
+                attempt.attempt_id,
+                reason.value,
+                failed_at=finalized_at,
+            ),
+        )
+        return DocumentProcessingResult.terminal_failure_recorded(
+            attempt=attempt,
+            failure_reason=reason,
+        )
+
+    def _release_retryable_claim(
+        self,
+        *,
+        event: UploadedDocumentEvent,
+        attempt: ProcessingAttempt,
+    ) -> None:
+        """Release ownership after a retryable dependency failure."""
+        self._persist_finalization(
+            event=event,
+            attempt=attempt,
+            operation="release",
+            persist=lambda finalized_at: self._repository.release_retryable_claim(
+                event.job_id,
+                attempt.attempt_id,
+                released_at=finalized_at,
+            ),
+        )
+
+    def _persist_finalization(
+        self,
+        *,
+        event: UploadedDocumentEvent,
+        attempt: ProcessingAttempt,
+        operation: str,
+        persist: Callable[[datetime], DocumentJob],
+    ) -> None:
+        """Run one attempt-aware repository transition with normalized errors."""
+        try:
+            persist(self._clock.now())
+        except JobNotFoundError as error:
+            raise ApplicationNotFoundError(
+                "document job was not found during processing finalization"
+            ) from error
+        except (
+            JobAttemptMismatchError,
+            JobStateConflictError,
+        ) as error:
+            raise ApplicationConflictError(
+                "document processing finalization was rejected"
+            ) from error
+        except RepositoryError as error:
             raise ApplicationDependencyError(
-                "failed to extract uploaded document",
+                "failed to persist document processing finalization",
                 cause=error,
                 context={
                     "job_id": event.job_id,
                     "attempt_id": attempt.attempt_id,
-                    "provider_name": provider_name,
+                    "operation": operation,
                 },
             ) from error
