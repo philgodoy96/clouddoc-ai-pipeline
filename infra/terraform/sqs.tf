@@ -47,3 +47,38 @@ resource "aws_sqs_queue_redrive_allow_policy" "processing_dlq" {
     ]
   })
 }
+
+resource "aws_sqs_queue" "reconciliation_failures" {
+  name = local.reconciliation_failures_queue_name
+
+  fifo_queue                 = false
+  delay_seconds              = 0
+  visibility_timeout_seconds = 180
+  message_retention_seconds  = 1209600
+  sqs_managed_sse_enabled    = true
+
+  tags = {
+    Name      = local.reconciliation_failures_queue_name
+    QueueRole = "dead-letter-reconciliation-quarantine"
+  }
+}
+
+resource "aws_sqs_queue_redrive_policy" "processing_dlq_reconciliation" {
+  queue_url = aws_sqs_queue.processing_dlq.url
+
+  redrive_policy = jsonencode({
+    deadLetterTargetArn = aws_sqs_queue.reconciliation_failures.arn
+    maxReceiveCount     = 3
+  })
+}
+
+resource "aws_sqs_queue_redrive_allow_policy" "reconciliation_failures" {
+  queue_url = aws_sqs_queue.reconciliation_failures.url
+
+  redrive_allow_policy = jsonencode({
+    redrivePermission = "byQueue"
+    sourceQueueArns = [
+      aws_sqs_queue.processing_dlq.arn,
+    ]
+  })
+}
