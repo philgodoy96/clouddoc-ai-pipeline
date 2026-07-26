@@ -10,6 +10,8 @@ UPLOAD_URL_EXPIRATION_SECONDS_ENV_VAR = "CLOUDDOC_UPLOAD_URL_EXPIRATION_SECONDS"
 DEFAULT_UPLOAD_URL_EXPIRATION_SECONDS = 900
 PROCESSING_LEASE_DURATION_SECONDS_ENV_VAR = "CLOUDDOC_PROCESSING_LEASE_DURATION_SECONDS"
 DEFAULT_PROCESSING_LEASE_DURATION_SECONDS = 300
+MAX_DOCUMENT_SIZE_BYTES_ENV_VAR = "CLOUDDOC_MAX_DOCUMENT_SIZE_BYTES"
+DEFAULT_MAX_DOCUMENT_SIZE_BYTES = 65_536
 
 
 class RuntimeConfigurationError(Exception):
@@ -50,6 +52,7 @@ class RuntimeSettings:
     documents_bucket_name: str
     upload_url_expiration_seconds: int
     processing_lease_duration_seconds: int
+    max_document_size_bytes: int
 
     @classmethod
     def from_environment(
@@ -98,10 +101,16 @@ class RuntimeSettings:
             PROCESSING_LEASE_DURATION_SECONDS_ENV_VAR,
             DEFAULT_PROCESSING_LEASE_DURATION_SECONDS,
         )
+        max_document_size_bytes = _parse_positive_integer_setting(
+            source.get(MAX_DOCUMENT_SIZE_BYTES_ENV_VAR),
+            MAX_DOCUMENT_SIZE_BYTES_ENV_VAR,
+            DEFAULT_MAX_DOCUMENT_SIZE_BYTES,
+        )
 
         return cls(
             jobs_table_name=table_name,
             documents_bucket_name=bucket_name,
             upload_url_expiration_seconds=upload_url_expiration_seconds,
             processing_lease_duration_seconds=processing_lease_duration_seconds,
+            max_document_size_bytes=max_document_size_bytes,
         )

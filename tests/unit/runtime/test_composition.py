@@ -108,6 +108,7 @@ def make_settings() -> RuntimeSettings:
         documents_bucket_name="clouddoc-documents",
         upload_url_expiration_seconds=900,
         processing_lease_duration_seconds=300,
+        max_document_size_bytes=65_536,
     )
 
 
@@ -232,6 +233,7 @@ def test_document_upload_provider_uses_custom_settings() -> None:
         documents_bucket_name="custom-documents-bucket",
         upload_url_expiration_seconds=600,
         processing_lease_duration_seconds=300,
+        max_document_size_bytes=65_536,
     )
 
     provider = build_document_upload_provider(
@@ -323,6 +325,7 @@ def test_uploaded_document_processor_propagates_custom_lease() -> None:
         documents_bucket_name="clouddoc-documents",
         upload_url_expiration_seconds=900,
         processing_lease_duration_seconds=600,
+        max_document_size_bytes=65_536,
     )
 
     processor = build_uploaded_document_processor(
