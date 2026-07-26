@@ -65,7 +65,11 @@ class StartDocumentProcessing:
             authoritative_job_id=job.job_id,
         )
 
-        if job.status is JobStatus.SUCCEEDED:
+        if job.status in {
+            JobStatus.SUCCEEDED,
+            JobStatus.FAILED,
+            JobStatus.DEAD,
+        }:
             return ProcessingStartResult.effect_already_applied()
 
         if job.status is JobStatus.PROCESSING:
@@ -77,7 +81,7 @@ class StartDocumentProcessing:
                 )
 
             if not active_attempt.is_lease_expired(claimed_at):
-                return ProcessingStartResult.effect_already_applied()
+                return ProcessingStartResult.processing_already_active()
 
         elif job.status is not JobStatus.PENDING_UPLOAD:
             raise ApplicationConflictError(
@@ -155,7 +159,11 @@ class StartDocumentProcessing:
         """Resolve a conditional claim race against authoritative state."""
         current_job = self._get_job(job_id)
 
-        if current_job.status is JobStatus.SUCCEEDED:
+        if current_job.status in {
+            JobStatus.SUCCEEDED,
+            JobStatus.FAILED,
+            JobStatus.DEAD,
+        }:
             return ProcessingStartResult.effect_already_applied()
 
         if current_job.status is JobStatus.PROCESSING:
@@ -164,7 +172,7 @@ class StartDocumentProcessing:
             if active_attempt is not None and not active_attempt.is_lease_expired(
                 observed_at
             ):
-                return ProcessingStartResult.effect_already_applied()
+                return ProcessingStartResult.processing_already_active()
 
         raise ApplicationConflictError(
             f"document job {job_id} could not acquire processing ownership"

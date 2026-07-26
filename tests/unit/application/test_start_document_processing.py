@@ -298,8 +298,8 @@ def test_claims_pending_job() -> None:
     assert generator.calls == 1
 
 
-def test_active_processing_claim_is_idempotent() -> None:
-    """A duplicate should accept an already-active claim."""
+def test_active_processing_claim_returns_already_active() -> None:
+    """An unexpired competing claim must not authorize this worker."""
     repository = InMemoryDocumentJobRepository()
     repository.create_job(
         make_processing_job(
@@ -320,7 +320,7 @@ def test_active_processing_claim_is_idempotent() -> None:
 
     stored_job = repository.get_job("job-001")
 
-    assert result.outcome is ProcessingStartOutcome.EFFECT_ALREADY_APPLIED
+    assert result.outcome is ProcessingStartOutcome.PROCESSING_ALREADY_ACTIVE
     assert result.attempt is None
     assert result.correlation_id is None
     assert stored_job is not None
@@ -365,10 +365,20 @@ def test_reclaims_expired_processing_lease() -> None:
     assert result.attempt == stored_job.active_attempt
 
 
-def test_succeeded_job_is_idempotent() -> None:
-    """A late duplicate should not regress a succeeded job."""
+@pytest.mark.parametrize(
+    "status",
+    [
+        JobStatus.SUCCEEDED,
+        JobStatus.FAILED,
+        JobStatus.DEAD,
+    ],
+)
+def test_terminal_job_is_already_applied(
+    status: JobStatus,
+) -> None:
+    """A late duplicate must not restart a terminal job."""
     repository = InMemoryDocumentJobRepository()
-    repository.create_job(make_terminal_job(JobStatus.SUCCEEDED))
+    repository.create_job(make_terminal_job(status))
     generator = FixedAttemptIdGenerator()
     service = make_service(
         repository=repository,
@@ -385,34 +395,8 @@ def test_succeeded_job_is_idempotent() -> None:
     assert result.attempt is None
     assert result.correlation_id is None
     assert stored_job is not None
-    assert stored_job.status is JobStatus.SUCCEEDED
+    assert stored_job.status is status
     assert generator.calls == 0
-
-
-@pytest.mark.parametrize(
-    "status",
-    [
-        JobStatus.FAILED,
-        JobStatus.DEAD,
-    ],
-)
-def test_rejects_terminal_failure_states(
-    status: JobStatus,
-) -> None:
-    """Upload duplication must not restart terminal failures."""
-    repository = InMemoryDocumentJobRepository()
-    repository.create_job(make_terminal_job(status))
-    service = make_service(
-        repository=repository,
-    )
-
-    with pytest.raises(
-        ApplicationConflictError,
-        match=(f"job job-001 cannot start processing from {status.value}"),
-    ):
-        service.execute(
-            event=make_event(),
-        )
 
 
 def test_rejects_object_ownership_mismatch() -> None:
@@ -498,8 +482,8 @@ def test_translates_repository_claim_failure() -> None:
     }
 
 
-def test_reconciles_competing_active_claim_as_success() -> None:
-    """A competing worker claim should satisfy the desired effect."""
+def test_reconciles_competing_active_claim_as_already_active() -> None:
+    """A competing worker claim should report active ownership."""
     repository = ReconciledConflictRepository(
         initial_job=make_pending_job(),
         reconciled_job=make_processing_job(
@@ -516,18 +500,28 @@ def test_reconciles_competing_active_claim_as_success() -> None:
         event=make_event(),
     )
 
-    assert result.outcome is ProcessingStartOutcome.EFFECT_ALREADY_APPLIED
+    assert result.outcome is ProcessingStartOutcome.PROCESSING_ALREADY_ACTIVE
     assert result.attempt is None
     assert result.correlation_id is None
     assert repository.claim_calls == 1
     assert repository.get_calls == 2
 
 
-def test_reconciles_succeeded_race_as_already_applied() -> None:
-    """A claim race that lands on succeeded should accept the effect."""
+@pytest.mark.parametrize(
+    "status",
+    [
+        JobStatus.SUCCEEDED,
+        JobStatus.FAILED,
+        JobStatus.DEAD,
+    ],
+)
+def test_reconciles_terminal_race_as_already_applied(
+    status: JobStatus,
+) -> None:
+    """A claim race that lands on a terminal job should accept the effect."""
     repository = ReconciledConflictRepository(
         initial_job=make_pending_job(),
-        reconciled_job=make_terminal_job(JobStatus.SUCCEEDED),
+        reconciled_job=make_terminal_job(status),
     )
     service = make_service(
         repository=repository,
@@ -546,7 +540,7 @@ def test_rejects_unresolved_claim_conflict() -> None:
     """A conflict with incompatible authoritative state should fail."""
     repository = ReconciledConflictRepository(
         initial_job=make_pending_job(),
-        reconciled_job=make_terminal_job(JobStatus.FAILED),
+        reconciled_job=make_pending_job(),
     )
     service = make_service(
         repository=repository,

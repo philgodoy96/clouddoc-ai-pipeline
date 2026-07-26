@@ -356,6 +356,39 @@ def test_already_applied_effect_skips_document_and_provider() -> None:
     assert ai_provider.requests == []
 
 
+def test_active_processing_claim_raises_conflict() -> None:
+    """An active competing claim must remain retryable."""
+    start_processing = RecordingStartProcessing(
+        result=(ProcessingStartResult.processing_already_active()),
+    )
+    document_loader = RecordingDocumentTextLoader(
+        result=make_loaded_document(),
+    )
+    ai_provider = RecordingAIProvider(
+        result=make_extraction_result(),
+    )
+    service = ProcessUploadedDocument(
+        start_processing=start_processing,
+        document_loader=document_loader,
+        ai_provider=ai_provider,
+    )
+    event = make_event()
+
+    with pytest.raises(
+        ApplicationConflictError,
+        match="document job already has an active processing attempt",
+    ):
+        service.execute(
+            event=event,
+        )
+
+    assert start_processing.events == [
+        event,
+    ]
+    assert document_loader.references == []
+    assert ai_provider.requests == []
+
+
 @pytest.mark.parametrize(
     "error",
     [
