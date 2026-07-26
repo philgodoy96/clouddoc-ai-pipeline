@@ -11,6 +11,8 @@ from clouddoc.application import (
     ApplicationNotFoundError,
     Clock,
     ProcessingAttemptIdGenerator,
+    ProcessingStartOutcome,
+    ProcessingStartResult,
 )
 from clouddoc.application.start_document_processing import (
     StartDocumentProcessing,
@@ -278,10 +280,10 @@ def test_claims_pending_job() -> None:
         event=make_event(),
     )
 
-    assert result is None
-
     stored_job = repository.get_job("job-001")
 
+    assert isinstance(result, ProcessingStartResult)
+    assert result.outcome is ProcessingStartOutcome.CLAIM_ACQUIRED
     assert stored_job is not None
     assert stored_job.status is JobStatus.PROCESSING
     assert stored_job.attempts == 1
@@ -290,6 +292,7 @@ def test_claims_pending_job() -> None:
         started_at=FIXED_TIME,
         lease_expires_at=FIXED_TIME + LEASE_DURATION,
     )
+    assert result.attempt == stored_job.active_attempt
     assert clock.calls == 1
     assert generator.calls == 1
 
@@ -310,12 +313,14 @@ def test_active_processing_claim_is_idempotent() -> None:
         generator=generator,
     )
 
-    service.execute(
+    result = service.execute(
         event=make_event(),
     )
 
     stored_job = repository.get_job("job-001")
 
+    assert result.outcome is ProcessingStartOutcome.EFFECT_ALREADY_APPLIED
+    assert result.attempt is None
     assert stored_job is not None
     assert stored_job.attempts == 1
     assert stored_job.active_attempt is not None
@@ -339,12 +344,13 @@ def test_reclaims_expired_processing_lease() -> None:
         generator=FixedAttemptIdGenerator("attempt-replacement"),
     )
 
-    service.execute(
+    result = service.execute(
         event=make_event(),
     )
 
     stored_job = repository.get_job("job-001")
 
+    assert result.outcome is ProcessingStartOutcome.CLAIM_ACQUIRED
     assert stored_job is not None
     assert stored_job.status is JobStatus.PROCESSING
     assert stored_job.attempts == 2
@@ -353,6 +359,7 @@ def test_reclaims_expired_processing_lease() -> None:
         started_at=claimed_at,
         lease_expires_at=claimed_at + LEASE_DURATION,
     )
+    assert result.attempt == stored_job.active_attempt
 
 
 def test_succeeded_job_is_idempotent() -> None:
@@ -365,12 +372,14 @@ def test_succeeded_job_is_idempotent() -> None:
         generator=generator,
     )
 
-    service.execute(
+    result = service.execute(
         event=make_event(),
     )
 
     stored_job = repository.get_job("job-001")
 
+    assert result.outcome is ProcessingStartOutcome.EFFECT_ALREADY_APPLIED
+    assert result.attempt is None
     assert stored_job is not None
     assert stored_job.status is JobStatus.SUCCEEDED
     assert generator.calls == 0
@@ -499,12 +508,32 @@ def test_reconciles_competing_active_claim_as_success() -> None:
         repository=repository,
     )
 
-    service.execute(
+    result = service.execute(
         event=make_event(),
     )
 
+    assert result.outcome is ProcessingStartOutcome.EFFECT_ALREADY_APPLIED
+    assert result.attempt is None
     assert repository.claim_calls == 1
     assert repository.get_calls == 2
+
+
+def test_reconciles_succeeded_race_as_already_applied() -> None:
+    """A claim race that lands on succeeded should accept the effect."""
+    repository = ReconciledConflictRepository(
+        initial_job=make_pending_job(),
+        reconciled_job=make_terminal_job(JobStatus.SUCCEEDED),
+    )
+    service = make_service(
+        repository=repository,
+    )
+
+    result = service.execute(
+        event=make_event(),
+    )
+
+    assert result.outcome is ProcessingStartOutcome.EFFECT_ALREADY_APPLIED
+    assert result.attempt is None
 
 
 def test_rejects_unresolved_claim_conflict() -> None:
