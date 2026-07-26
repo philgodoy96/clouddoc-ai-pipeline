@@ -120,6 +120,7 @@ def build_uploaded_document_processor(
     *,
     settings: RuntimeSettings,
     dynamodb_resource_factory: DynamoDBResourceFactory = boto3.resource,
+    s3_client_factory: S3ClientFactory = boto3.client,
 ) -> UploadedDocumentProcessor:
     """Build the uploaded-document processor."""
     repository = build_document_job_repository(
@@ -134,7 +135,12 @@ def build_uploaded_document_processor(
             seconds=settings.processing_lease_duration_seconds,
         ),
     )
+    document_loader = build_document_text_loader(
+        settings=settings,
+        s3_client_factory=s3_client_factory,
+    )
 
     return ApplicationUploadedDocumentProcessor(
         service=service,
+        document_loader=document_loader,
     )
