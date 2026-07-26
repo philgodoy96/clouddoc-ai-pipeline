@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+import clouddoc.handlers.process_uploaded_document as handler_module
 from clouddoc.application.processing_ports import (
     UploadedDocumentProcessingError,
 )
@@ -13,8 +14,70 @@ from clouddoc.delivery.events.errors import (
 )
 from clouddoc.delivery.events.models import UploadedDocumentEvent
 from clouddoc.handlers.process_uploaded_document import handle
+from clouddoc.runtime.settings import RuntimeSettings
 
 EXPECTED_BUCKET = "clouddoc-documents"
+
+
+def make_runtime_settings() -> RuntimeSettings:
+    """Create immutable runtime settings for Lambda entrypoint tests."""
+    return RuntimeSettings(
+        jobs_table_name="clouddoc-document-jobs",
+        documents_bucket_name=EXPECTED_BUCKET,
+        upload_url_expiration_seconds=900,
+        processing_lease_duration_seconds=300,
+    )
+
+
+def install_fake_settings(
+    monkeypatch: pytest.MonkeyPatch,
+    settings: RuntimeSettings,
+) -> None:
+    """Replace RuntimeSettings.from_environment without mutating os.environ."""
+
+    class FakeRuntimeSettings:
+        """Settings loader double that returns configured settings."""
+
+        @classmethod
+        def from_environment(cls) -> RuntimeSettings:
+            """Return the configured runtime settings."""
+            return settings
+
+    monkeypatch.setattr(
+        handler_module,
+        "RuntimeSettings",
+        FakeRuntimeSettings,
+    )
+
+
+def install_recording_builder(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    processor: "RecordingProcessor",
+    raise_error: Exception | None = None,
+) -> list[RuntimeSettings]:
+    """Monkeypatch the processor builder and record settings arguments."""
+    recorded_settings: list[RuntimeSettings] = []
+
+    def fake_build_uploaded_document_processor(
+        *,
+        settings: RuntimeSettings,
+    ) -> RecordingProcessor:
+        """Require settings and return the recording processor."""
+        recorded_settings.append(settings)
+
+        if raise_error is not None:
+            raise raise_error
+
+        return processor
+
+    monkeypatch.setattr(
+        handler_module,
+        "build_uploaded_document_processor",
+        fake_build_uploaded_document_processor,
+    )
+
+    return recorded_settings
 
 
 class RecordingProcessor:
@@ -504,3 +567,112 @@ def test_valid_messages_after_failed_message_are_processed() -> None:
         "job-001",
         "job-002",
     ]
+
+
+def test_lambda_handler_propagates_settings_to_processor_builder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Lambda entrypoint should load settings and pass them to composition."""
+    monkeypatch.setattr(handler_module, "_PROCESSOR", None)
+
+    settings = make_runtime_settings()
+    processor = RecordingProcessor()
+    recorded_settings = install_recording_builder(
+        monkeypatch,
+        processor=processor,
+    )
+    install_fake_settings(monkeypatch, settings)
+
+    response = handler_module.lambda_handler(
+        make_event(
+            make_queue_record(),
+        ),
+        None,
+    )
+
+    assert recorded_settings == [settings]
+    assert response == {
+        "batchItemFailures": [],
+    }
+    assert [event.job_id for event in processor.events] == [
+        "job-001",
+    ]
+    assert settings.documents_bucket_name == EXPECTED_BUCKET
+
+
+def test_lambda_handler_caches_composed_processor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Warm invocations should reuse the cached processor composition."""
+    monkeypatch.setattr(handler_module, "_PROCESSOR", None)
+
+    settings = make_runtime_settings()
+    processor = RecordingProcessor()
+    recorded_settings = install_recording_builder(
+        monkeypatch,
+        processor=processor,
+    )
+    install_fake_settings(monkeypatch, settings)
+
+    first_response = handler_module.lambda_handler(
+        make_event(
+            make_queue_record(
+                message_id="message-001",
+                s3_records=[
+                    make_s3_record(
+                        job_id="job-001",
+                    )
+                ],
+            )
+        ),
+        None,
+    )
+    second_response = handler_module.lambda_handler(
+        make_event(
+            make_queue_record(
+                message_id="message-002",
+                s3_records=[
+                    make_s3_record(
+                        job_id="job-002",
+                    )
+                ],
+            )
+        ),
+        None,
+    )
+
+    assert recorded_settings == [settings]
+    assert first_response == {
+        "batchItemFailures": [],
+    }
+    assert second_response == {
+        "batchItemFailures": [],
+    }
+    assert [event.job_id for event in processor.events] == [
+        "job-001",
+        "job-002",
+    ]
+    assert handler_module._PROCESSOR is processor
+
+
+def test_lambda_handler_builder_failure_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cold-start composition failures must fail the entire invocation."""
+    monkeypatch.setattr(handler_module, "_PROCESSOR", None)
+
+    settings = make_runtime_settings()
+    install_recording_builder(
+        monkeypatch,
+        processor=RecordingProcessor(),
+        raise_error=RuntimeError("composition failed"),
+    )
+    install_fake_settings(monkeypatch, settings)
+
+    with pytest.raises(RuntimeError, match="composition failed"):
+        handler_module.lambda_handler(
+            make_event(
+                make_queue_record(),
+            ),
+            None,
+        )

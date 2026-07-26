@@ -1,6 +1,7 @@
 """Runtime dependency composition for CloudDoc application services."""
 
 from collections.abc import Callable
+from datetime import timedelta
 from typing import Any
 
 import boto3
@@ -8,14 +9,16 @@ import boto3
 from clouddoc.application import (
     CreateDocumentJob,
     GetDocumentJob,
+    StartDocumentProcessing,
 )
 from clouddoc.application.processing_ports import UploadedDocumentProcessor
 from clouddoc.application.upload_ports import DocumentUploadProvider
 from clouddoc.infrastructure import (
-    NoOpUploadedDocumentProcessor,
+    ApplicationUploadedDocumentProcessor,
     S3PresignedDocumentUploadProvider,
     SystemClock,
     UUIDJobIdGenerator,
+    UUIDProcessingAttemptIdGenerator,
 )
 from clouddoc.repositories import (
     DocumentJobRepository,
@@ -96,6 +99,25 @@ def build_get_document_job_service(
     )
 
 
-def build_uploaded_document_processor() -> UploadedDocumentProcessor:
+def build_uploaded_document_processor(
+    *,
+    settings: RuntimeSettings,
+    dynamodb_resource_factory: DynamoDBResourceFactory = boto3.resource,
+) -> UploadedDocumentProcessor:
     """Build the uploaded-document processor."""
-    return NoOpUploadedDocumentProcessor()
+    repository = build_document_job_repository(
+        settings=settings,
+        dynamodb_resource_factory=dynamodb_resource_factory,
+    )
+    service = StartDocumentProcessing(
+        repository=repository,
+        clock=SystemClock(),
+        attempt_id_generator=UUIDProcessingAttemptIdGenerator(),
+        lease_duration=timedelta(
+            seconds=settings.processing_lease_duration_seconds,
+        ),
+    )
+
+    return ApplicationUploadedDocumentProcessor(
+        service=service,
+    )
