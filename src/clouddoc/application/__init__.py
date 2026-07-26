@@ -4,6 +4,11 @@ from clouddoc.application.create_document_job import (
     CreateDocumentJob,
     CreateDocumentJobCommand,
 )
+from clouddoc.application.dead_letter_reasons import DeadLetterReason
+from clouddoc.application.dead_letter_results import (
+    DeadLetterReconciliationOutcome,
+    DeadLetterReconciliationResult,
+)
 from clouddoc.application.document_ports import (
     DocumentDependencyError,
     DocumentLoadError,
@@ -48,6 +53,9 @@ __all__ = [
     "Clock",
     "CreateDocumentJob",
     "CreateDocumentJobCommand",
+    "DeadLetterReason",
+    "DeadLetterReconciliationOutcome",
+    "DeadLetterReconciliationResult",
     "DocumentDependencyError",
     "DocumentLoadError",
     "DocumentNotFoundError",
