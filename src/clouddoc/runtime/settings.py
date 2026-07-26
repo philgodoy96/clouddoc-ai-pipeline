@@ -8,6 +8,8 @@ JOBS_TABLE_NAME_ENV_VAR = "CLOUDDOC_JOBS_TABLE_NAME"
 DOCUMENTS_BUCKET_NAME_ENV_VAR = "CLOUDDOC_DOCUMENTS_BUCKET_NAME"
 UPLOAD_URL_EXPIRATION_SECONDS_ENV_VAR = "CLOUDDOC_UPLOAD_URL_EXPIRATION_SECONDS"
 DEFAULT_UPLOAD_URL_EXPIRATION_SECONDS = 900
+PROCESSING_LEASE_DURATION_SECONDS_ENV_VAR = "CLOUDDOC_PROCESSING_LEASE_DURATION_SECONDS"
+DEFAULT_PROCESSING_LEASE_DURATION_SECONDS = 300
 
 
 class RuntimeConfigurationError(Exception):
@@ -47,6 +49,7 @@ class RuntimeSettings:
     jobs_table_name: str
     documents_bucket_name: str
     upload_url_expiration_seconds: int
+    processing_lease_duration_seconds: int
 
     @classmethod
     def from_environment(
@@ -90,9 +93,15 @@ class RuntimeSettings:
             UPLOAD_URL_EXPIRATION_SECONDS_ENV_VAR,
             DEFAULT_UPLOAD_URL_EXPIRATION_SECONDS,
         )
+        processing_lease_duration_seconds = _parse_positive_integer_setting(
+            source.get(PROCESSING_LEASE_DURATION_SECONDS_ENV_VAR),
+            PROCESSING_LEASE_DURATION_SECONDS_ENV_VAR,
+            DEFAULT_PROCESSING_LEASE_DURATION_SECONDS,
+        )
 
         return cls(
             jobs_table_name=table_name,
             documents_bucket_name=bucket_name,
             upload_url_expiration_seconds=upload_url_expiration_seconds,
+            processing_lease_duration_seconds=processing_lease_duration_seconds,
         )

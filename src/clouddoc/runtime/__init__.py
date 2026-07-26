@@ -8,18 +8,22 @@ from clouddoc.runtime.composition import (
     build_uploaded_document_processor,
 )
 from clouddoc.runtime.settings import (
+    DEFAULT_PROCESSING_LEASE_DURATION_SECONDS,
     DEFAULT_UPLOAD_URL_EXPIRATION_SECONDS,
     DOCUMENTS_BUCKET_NAME_ENV_VAR,
     JOBS_TABLE_NAME_ENV_VAR,
+    PROCESSING_LEASE_DURATION_SECONDS_ENV_VAR,
     UPLOAD_URL_EXPIRATION_SECONDS_ENV_VAR,
     RuntimeConfigurationError,
     RuntimeSettings,
 )
 
 __all__ = [
+    "DEFAULT_PROCESSING_LEASE_DURATION_SECONDS",
     "DEFAULT_UPLOAD_URL_EXPIRATION_SECONDS",
     "DOCUMENTS_BUCKET_NAME_ENV_VAR",
     "JOBS_TABLE_NAME_ENV_VAR",
+    "PROCESSING_LEASE_DURATION_SECONDS_ENV_VAR",
     "UPLOAD_URL_EXPIRATION_SECONDS_ENV_VAR",
     "RuntimeConfigurationError",
     "RuntimeSettings",

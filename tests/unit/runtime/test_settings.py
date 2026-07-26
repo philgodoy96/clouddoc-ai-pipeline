@@ -8,8 +8,10 @@ from clouddoc.runtime import (
     RuntimeSettings,
 )
 from clouddoc.runtime.settings import (
+    DEFAULT_PROCESSING_LEASE_DURATION_SECONDS,
     DEFAULT_UPLOAD_URL_EXPIRATION_SECONDS,
     DOCUMENTS_BUCKET_NAME_ENV_VAR,
+    PROCESSING_LEASE_DURATION_SECONDS_ENV_VAR,
     UPLOAD_URL_EXPIRATION_SECONDS_ENV_VAR,
 )
 
@@ -36,6 +38,7 @@ def test_loads_jobs_table_name_from_environment_mapping() -> None:
         jobs_table_name=VALID_JOBS_TABLE_NAME,
         documents_bucket_name=VALID_DOCUMENTS_BUCKET_NAME,
         upload_url_expiration_seconds=DEFAULT_UPLOAD_URL_EXPIRATION_SECONDS,
+        processing_lease_duration_seconds=DEFAULT_PROCESSING_LEASE_DURATION_SECONDS,
     )
 
 
@@ -257,12 +260,73 @@ def test_rejects_invalid_upload_url_expiration(
         )
 
 
+def test_missing_processing_lease_duration_uses_default() -> None:
+    """Missing lease duration should fall back to the documented default."""
+    settings = RuntimeSettings.from_environment(_valid_environment())
+
+    assert settings.processing_lease_duration_seconds == 300
+
+
+def test_loads_configured_processing_lease_duration() -> None:
+    """A valid configured lease duration should be parsed as an integer."""
+    settings = RuntimeSettings.from_environment(
+        _valid_environment(
+            **{PROCESSING_LEASE_DURATION_SECONDS_ENV_VAR: "600"},
+        )
+    )
+
+    assert settings.processing_lease_duration_seconds == 600
+
+
+def test_trims_processing_lease_duration() -> None:
+    """Surrounding whitespace around a valid lease duration should be accepted."""
+    settings = RuntimeSettings.from_environment(
+        _valid_environment(
+            **{PROCESSING_LEASE_DURATION_SECONDS_ENV_VAR: "  600  "},
+        )
+    )
+
+    assert settings.processing_lease_duration_seconds == 600
+
+
+@pytest.mark.parametrize(
+    "lease_duration",
+    [
+        "",
+        " ",
+        "   ",
+        "\t",
+        "\n",
+        "0",
+        "-1",
+        "-300",
+        "300.0",
+        "abc",
+        "6a0",
+    ],
+)
+def test_rejects_invalid_processing_lease_duration(
+    lease_duration: str,
+) -> None:
+    """Invalid lease duration values must fail with a stable error message."""
+    with pytest.raises(
+        RuntimeConfigurationError,
+        match=("CLOUDDOC_PROCESSING_LEASE_DURATION_SECONDS must be a positive integer"),
+    ):
+        RuntimeSettings.from_environment(
+            _valid_environment(
+                **{PROCESSING_LEASE_DURATION_SECONDS_ENV_VAR: lease_duration},
+            )
+        )
+
+
 def test_settings_are_immutable() -> None:
     """Runtime configuration should not change after startup."""
     settings = RuntimeSettings(
         jobs_table_name=VALID_JOBS_TABLE_NAME,
         documents_bucket_name=VALID_DOCUMENTS_BUCKET_NAME,
         upload_url_expiration_seconds=900,
+        processing_lease_duration_seconds=300,
     )
 
     with pytest.raises(AttributeError):
