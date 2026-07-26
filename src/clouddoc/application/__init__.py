@@ -36,6 +36,7 @@ from clouddoc.application.processing_results import (
     ProcessingStartOutcome,
     ProcessingStartResult,
 )
+from clouddoc.application.process_uploaded_document import ProcessUploadedDocument
 from clouddoc.application.start_document_processing import StartDocumentProcessing
 
 __all__ = [
@@ -58,6 +59,7 @@ __all__ = [
     "GetDocumentJobQuery",
     "JobIdGenerator",
     "LoadedTextDocument",
+    "ProcessUploadedDocument",
     "ProcessingAttemptIdGenerator",
     "ProcessingStartOutcome",
     "ProcessingStartResult",
