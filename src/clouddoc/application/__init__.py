@@ -32,11 +32,11 @@ from clouddoc.application.ports import (
     JobIdGenerator,
     ProcessingAttemptIdGenerator,
 )
+from clouddoc.application.process_uploaded_document import ProcessUploadedDocument
 from clouddoc.application.processing_results import (
     ProcessingStartOutcome,
     ProcessingStartResult,
 )
-from clouddoc.application.process_uploaded_document import ProcessUploadedDocument
 from clouddoc.application.start_document_processing import StartDocumentProcessing
 
 __all__ = [
