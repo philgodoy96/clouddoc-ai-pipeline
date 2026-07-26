@@ -2,11 +2,19 @@
 
 This directory contains the executable Terraform root for CloudDoc AI Pipeline.
 
-Infrastructure is introduced in reviewable slices. The current root provisions
-the document-processing SQS topology, the private source-document S3 ingestion
-boundary, and authoritative DynamoDB document-job state. Lambda packaging, IAM
-roles, event-source mappings, and deployed AWS environments remain separate
-follow-up work.
+Infrastructure is introduced in reviewable slices. The current root declares:
+
+```text
+processing SQS topology
+private S3 document ingestion
+authoritative DynamoDB document-job state
+four Lambda runtime functions
+four independent Lambda execution roles
+four managed CloudWatch log groups
+```
+
+Invocation sources, API Gateway, Bedrock permissions, CloudWatch alarms, and
+real AWS deployment remain separate follow-up work.
 
 ## Current resources
 
@@ -135,6 +143,138 @@ no secondary indexes
 DynamoDB default encryption at rest
 ```
 
+### Lambda runtime functions
+
+```text
+aws_lambda_function.create_job
+aws_lambda_function.get_job
+aws_lambda_function.processor
+aws_lambda_function.dead_letter_reconciler
+```
+
+Each function has a separate least-privilege execution identity:
+
+```text
+aws_iam_role.create_job
+aws_iam_role.get_job
+aws_iam_role.processor
+aws_iam_role.dead_letter_reconciler
+```
+
+Managed CloudWatch log groups:
+
+```text
+aws_cloudwatch_log_group.create_job
+aws_cloudwatch_log_group.get_job
+aws_cloudwatch_log_group.processor
+aws_cloudwatch_log_group.dead_letter_reconciler
+```
+
+| Function | Handler | Memory | Timeout | Purpose |
+| --- | --- | --- | --- | --- |
+| Create Job | `clouddoc.handlers.create_job.lambda_handler` | 256 MB | 10 seconds | Creates authoritative job state and returns a presigned upload URL |
+| Get Job | `clouddoc.handlers.get_job.lambda_handler` | 256 MB | 5 seconds | Retrieves one authoritative document job |
+| Document Processor | `clouddoc.handlers.process_uploaded_document.lambda_handler` | 1024 MB | 120 seconds | Processes uploaded source documents and persists attempt-aware outcomes |
+| Dead-Letter Reconciler | `clouddoc.handlers.reconcile_dead_lettered_document.lambda_handler` | 512 MB | 30 seconds | Reconciles exhausted deliveries into authoritative job state |
+
+#### Runtime platform
+
+All four functions use:
+
+```text
+Python 3.12
+x86_64
+Zip package type
+JSON logging
+publish disabled
+```
+
+The runtime architecture matches the deterministic package builder. Changing the
+runtime or architecture requires updating the packaging contract in the same
+approved engineering decision.
+
+#### Shared artifact
+
+All functions consume the same deployment package:
+
+```text
+artifacts/lambda/clouddoc-app.zip
+```
+
+The build system produces the ZIP. Terraform consumes the ZIP. `source_code_hash`
+is calculated when the artifact exists. Offline `validate` and mocked tests remain
+possible without the generated artifact. Real deployment must build and verify
+the artifact first.
+
+Package the shared artifact:
+
+```bash
+make lambda-package
+```
+
+Build and verify the artifact SHA-256:
+
+```bash
+make lambda-package-check
+```
+
+Generated ZIP and checksum files under `artifacts/lambda/` are local build
+outputs. Do not commit them.
+
+#### Runtime environment
+
+Every function receives the same non-secret environment map:
+
+```text
+CLOUDDOC_JOBS_TABLE_NAME
+CLOUDDOC_DOCUMENTS_BUCKET_NAME
+CLOUDDOC_UPLOAD_URL_EXPIRATION_SECONDS
+CLOUDDOC_PROCESSING_LEASE_DURATION_SECONDS
+CLOUDDOC_MAX_DOCUMENT_SIZE_BYTES
+```
+
+Configured values:
+
+```text
+upload URL expiration = 900 seconds
+processing lease duration = 300 seconds
+maximum document size = 65536 bytes
+```
+
+Resource names identify tables and buckets; they do not grant resource access.
+Access remains controlled by each function's execution role. Secrets are not
+stored in Lambda environment variables.
+
+#### IAM boundaries
+
+| Function | Permissions |
+| --- | --- |
+| Create Job | `dynamodb:PutItem`; `s3:PutObject` under `documents/*` |
+| Get Job | `dynamodb:GetItem` |
+| Processor | `dynamodb:GetItem`; `dynamodb:PutItem`; `s3:GetObject`; `s3:GetObjectVersion` under `documents/*` |
+| Dead-Letter Reconciler | `dynamodb:GetItem`; `dynamodb:PutItem` |
+
+Each function has its own role. Each role trusts only `lambda.amazonaws.com`.
+Logging permissions target only that function's log group streams.
+`logs:CreateLogGroup` is not granted. No AWS-managed basic execution policy is
+attached.
+
+SQS and Bedrock permissions are intentionally absent. Queue consumption and
+provider integration remain separate follow-up slices.
+
+#### Logging
+
+Terraform owns four `/aws/lambda/<function-name>` log groups and their retention:
+
+```text
+dev = 14 days
+staging = 14 days
+prod = 30 days
+```
+
+Terraform owns log-group creation and retention. Runtime roles may create streams
+and put events only within their own log group.
+
 ## Ownership boundary
 
 Each store owns a distinct concern:
@@ -222,15 +362,17 @@ terraform validate
 terraform test
 ```
 
-Terraform native tests cover:
+Terraform native tests now cover:
 
 ```text
 processing queue topology
 document ingestion topology
 document-jobs table topology
+Lambda runtime and IAM topology
 ```
 
-Tests use a mocked AWS provider and create no resources.
+The current total is ten offline test runs. Tests use a mocked AWS provider and
+create no resources.
 
 ## Outputs
 
@@ -259,9 +401,22 @@ document_jobs_table_name
 document_jobs_table_arn
 ```
 
-Future Lambda environment variables and execution policies will consume these
-identifiers. Outputs expose resource identifiers only; they do not expose
-credentials or object content.
+Lambda runtime outputs:
+
+```text
+create_job_function_name
+create_job_function_arn
+get_job_function_name
+get_job_function_arn
+processor_function_name
+processor_function_arn
+dead_letter_reconciler_function_name
+dead_letter_reconciler_function_arn
+```
+
+These identifiers will support future API Gateway, event-source mapping, alarm,
+and deployment integrations. Outputs expose resource identifiers only; they do
+not expose credentials or object content.
 
 ## Security and durability
 
@@ -310,6 +465,23 @@ no DAX
 no customer-managed KMS requests
 ```
 
+Lambda runtime cost decisions:
+
+```text
+small control-plane memory budgets
+explicit timeouts
+explicit log retention
+no provisioned concurrency
+no versions or aliases
+no VPC attachment
+no tracing
+one shared artifact
+```
+
+The Processor memory budget is intentionally larger because it owns document
+loading, validation, and AI orchestration. That budget requires deployed
+measurement later.
+
 ## State management and deployment safety
 
 The root intentionally uses local state for offline validation.
@@ -321,6 +493,10 @@ Do not treat `terraform apply` as part of the documented validation path for
 this repository slice. Offline `init`, `fmt`, `validate`, and `test` are the
 approved checks.
 
+Artifact absence is accepted for offline validation but not for real
+deployment. A controlled deployment workflow must build and verify
+`artifacts/lambda/clouddoc-app.zip` before any real plan or apply.
+
 Terraform state files remain excluded from Git.
 
 ## Intentionally deferred
@@ -328,44 +504,44 @@ Terraform state files remain excluded from Git.
 The following remain intentionally sequenced follow-up work:
 
 ```text
-API Lambda IAM
-Processor Lambda S3 access
-Lambda packaging and deployment
-SQS event-source mappings
+API Gateway
+Lambda invoke permissions
+processing queue event-source mapping
+processing queue consumer permissions
+DLQ event-source mapping
+DLQ consumer permissions
+partial batch response configuration
+event-source concurrency
+Bedrock integration
+Bedrock permissions
+reserved concurrency
+CloudWatch alarms and dashboards
+X-Ray
+Secrets Manager
+versions and aliases
+artifact publication to S3
+code signing
+real AWS deployment
+```
+
+Additional deferred items from earlier slices also remain separate:
+
+```text
 CORS
 CloudTrail S3 data events
 S3 access logging
 customer-managed KMS
 malware scanning
 quarantine workflow
-real AWS deployment validation
-```
-
-Additional deferred items from the queue slice also remain separate:
-
-```text
-DLQ Reconciler Lambda packaging and deployment
-ReportBatchItemFailures
-Lambda timeout and concurrency controls
-CloudWatch log groups, metrics, and alarms
 remote Terraform state
 CI plan and controlled deployment workflows
 operator replay tooling
-```
-
-Document-job state capabilities remain intentionally sequenced follow-up work:
-
-```text
-Lambda table permissions
-Lambda environment variables
 DynamoDB Streams
 TTL and retention automation
 secondary indexes
 global tables
 DAX
-customer-managed KMS keys
 Contributor Insights
-CloudWatch alarms
 AWS Backup plans
 cross-region disaster recovery
 real AWS deployment and restore validation
@@ -379,3 +555,5 @@ real AWS deployment and restore validation
 - [ADR-016: Provision private versioned document ingestion](../../docs/adr/ADR-016-provision-private-versioned-document-ingestion.md)
 - [Document job state infrastructure](../../docs/architecture/document-job-state-infrastructure.md)
 - [ADR-018: Provision authoritative document job state](../../docs/adr/ADR-018-provision-authoritative-document-job-state.md)
+- [Lambda runtime infrastructure](../../docs/architecture/lambda-runtime-infrastructure.md)
+- [ADR-019: Provision separate Lambda runtime boundaries](../../docs/adr/ADR-019-provision-separate-lambda-runtime-boundaries.md)
