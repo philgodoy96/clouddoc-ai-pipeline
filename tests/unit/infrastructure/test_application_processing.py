@@ -1,7 +1,10 @@
 """Tests for the application-backed uploaded-document processor."""
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 
+from clouddoc.application import ProcessingStartResult
 from clouddoc.application.errors import (
     ApplicationConflictError,
     ApplicationDependencyError,
@@ -12,6 +15,7 @@ from clouddoc.application.processing_ports import (
     UploadedDocumentProcessor,
 )
 from clouddoc.delivery.events.models import UploadedDocumentEvent
+from clouddoc.domain import ProcessingAttempt
 from clouddoc.infrastructure.application_processing import (
     ApplicationUploadedDocumentProcessor,
 )
@@ -32,20 +36,43 @@ def make_event() -> UploadedDocumentEvent:
     )
 
 
+def claim_acquired_result() -> ProcessingStartResult:
+    """Create one deterministic claim-acquired processing result."""
+    started_at = datetime(2026, 7, 26, 12, 0, tzinfo=UTC)
+    return ProcessingStartResult.claim_acquired(
+        attempt=ProcessingAttempt(
+            attempt_id="attempt-001",
+            started_at=started_at,
+            lease_expires_at=started_at + timedelta(minutes=5),
+        ),
+    )
+
+
+def effect_already_applied_result() -> ProcessingStartResult:
+    """Create one deterministic already-applied processing result."""
+    return ProcessingStartResult.effect_already_applied()
+
+
 class RecordingStartDocumentProcessing:
     """Application-service double that records execution requests."""
 
-    def __init__(self) -> None:
-        """Initialize call tracking."""
+    def __init__(
+        self,
+        *,
+        result: ProcessingStartResult,
+    ) -> None:
+        """Initialize call tracking with one configured result."""
+        self._result = result
         self.events: list[UploadedDocumentEvent] = []
 
     def execute(
         self,
         *,
         event: UploadedDocumentEvent,
-    ) -> None:
-        """Record one processing-start request."""
+    ) -> ProcessingStartResult:
+        """Record one processing-start request and return the configured result."""
         self.events.append(event)
+        return self._result
 
 
 class FailingStartDocumentProcessing:
@@ -86,7 +113,9 @@ class UnexpectedFailingStartDocumentProcessing:
 def test_adapter_satisfies_uploaded_document_processor_contract() -> None:
     """The adapter should satisfy the structural processing port."""
     processor = ApplicationUploadedDocumentProcessor(
-        service=RecordingStartDocumentProcessing(),
+        service=RecordingStartDocumentProcessing(
+            result=claim_acquired_result(),
+        ),
     )
 
     assert isinstance(
@@ -97,7 +126,29 @@ def test_adapter_satisfies_uploaded_document_processor_contract() -> None:
 
 def test_delegates_event_exactly_once() -> None:
     """The adapter should invoke the application service once."""
-    service = RecordingStartDocumentProcessing()
+    service = RecordingStartDocumentProcessing(
+        result=claim_acquired_result(),
+    )
+    processor = ApplicationUploadedDocumentProcessor(
+        service=service,
+    )
+    event = make_event()
+
+    result = processor.process(
+        event=event,
+    )
+
+    assert result is None
+    assert service.events == [
+        event,
+    ]
+
+
+def test_absorbs_effect_already_applied_result() -> None:
+    """Already-applied outcomes should still satisfy the delivery None contract."""
+    service = RecordingStartDocumentProcessing(
+        result=effect_already_applied_result(),
+    )
     processor = ApplicationUploadedDocumentProcessor(
         service=service,
     )
