@@ -20,3 +20,12 @@ class JobIdGenerator(Protocol):
     def generate(self) -> str:
         """Return a new document job identifier."""
         ...
+
+
+@runtime_checkable
+class ProcessingAttemptIdGenerator(Protocol):
+    """Generate processing-attempt identifiers."""
+
+    def generate(self) -> str:
+        """Return a new processing-attempt identifier."""
+        ...
