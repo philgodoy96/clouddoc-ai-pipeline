@@ -8,6 +8,7 @@ import pytest
 from clouddoc.application import (
     DocumentProcessingOutcome,
     DocumentProcessingResult,
+    ProcessingFailureReason,
 )
 from clouddoc.domain import ProcessingAttempt
 from clouddoc.schemas import (
@@ -62,6 +63,22 @@ def test_processed_factory_preserves_owned_workflow_result() -> None:
     assert result.outcome is DocumentProcessingOutcome.PROCESSED
     assert result.attempt is attempt
     assert result.extraction_result is extraction_result
+    assert result.failure_reason is None
+
+
+def test_terminal_failure_recorded_factory_preserves_owned_failure() -> None:
+    """A recorded terminal failure should retain ownership and reason."""
+    attempt = make_attempt()
+
+    result = DocumentProcessingResult.terminal_failure_recorded(
+        attempt=attempt,
+        failure_reason=ProcessingFailureReason.DOCUMENT_VALIDATION_FAILED,
+    )
+
+    assert result.outcome is DocumentProcessingOutcome.TERMINAL_FAILURE_RECORDED
+    assert result.attempt is attempt
+    assert result.extraction_result is None
+    assert result.failure_reason is ProcessingFailureReason.DOCUMENT_VALIDATION_FAILED
 
 
 def test_effect_already_applied_factory_omits_workflow_effects() -> None:
@@ -71,6 +88,7 @@ def test_effect_already_applied_factory_omits_workflow_effects() -> None:
     assert result.outcome is DocumentProcessingOutcome.EFFECT_ALREADY_APPLIED
     assert result.attempt is None
     assert result.extraction_result is None
+    assert result.failure_reason is None
 
 
 def test_processed_outcome_requires_attempt() -> None:
@@ -83,6 +101,7 @@ def test_processed_outcome_requires_attempt() -> None:
             outcome=DocumentProcessingOutcome.PROCESSED,
             attempt=None,
             extraction_result=make_extraction_result(),
+            failure_reason=None,
         )
 
 
@@ -96,6 +115,65 @@ def test_processed_outcome_requires_extraction_result() -> None:
             outcome=DocumentProcessingOutcome.PROCESSED,
             attempt=make_attempt(),
             extraction_result=None,
+            failure_reason=None,
+        )
+
+
+def test_processed_outcome_rejects_failure_reason() -> None:
+    """A processed result must not expose a terminal failure reason."""
+    with pytest.raises(
+        ValueError,
+        match="processed outcome must not include a failure reason",
+    ):
+        DocumentProcessingResult(
+            outcome=DocumentProcessingOutcome.PROCESSED,
+            attempt=make_attempt(),
+            extraction_result=make_extraction_result(),
+            failure_reason=ProcessingFailureReason.DOCUMENT_VALIDATION_FAILED,
+        )
+
+
+def test_terminal_failure_recorded_requires_attempt() -> None:
+    """A terminal failure requires current-worker ownership."""
+    with pytest.raises(
+        ValueError,
+        match="terminal_failure_recorded outcome requires an attempt",
+    ):
+        DocumentProcessingResult(
+            outcome=DocumentProcessingOutcome.TERMINAL_FAILURE_RECORDED,
+            attempt=None,
+            extraction_result=None,
+            failure_reason=ProcessingFailureReason.DOCUMENT_VALIDATION_FAILED,
+        )
+
+
+def test_terminal_failure_recorded_rejects_extraction_result() -> None:
+    """A terminal failure must not expose validated provider output."""
+    with pytest.raises(
+        ValueError,
+        match=(
+            "terminal_failure_recorded outcome must not include an extraction result"
+        ),
+    ):
+        DocumentProcessingResult(
+            outcome=DocumentProcessingOutcome.TERMINAL_FAILURE_RECORDED,
+            attempt=make_attempt(),
+            extraction_result=make_extraction_result(),
+            failure_reason=ProcessingFailureReason.DOCUMENT_VALIDATION_FAILED,
+        )
+
+
+def test_terminal_failure_recorded_requires_failure_reason() -> None:
+    """A terminal failure requires a normalized failure reason."""
+    with pytest.raises(
+        ValueError,
+        match="terminal_failure_recorded outcome requires a failure reason",
+    ):
+        DocumentProcessingResult(
+            outcome=DocumentProcessingOutcome.TERMINAL_FAILURE_RECORDED,
+            attempt=make_attempt(),
+            extraction_result=None,
+            failure_reason=None,
         )
 
 
@@ -109,6 +187,7 @@ def test_effect_already_applied_rejects_attempt() -> None:
             outcome=(DocumentProcessingOutcome.EFFECT_ALREADY_APPLIED),
             attempt=make_attempt(),
             extraction_result=None,
+            failure_reason=None,
         )
 
 
@@ -122,6 +201,21 @@ def test_effect_already_applied_rejects_extraction_result() -> None:
             outcome=(DocumentProcessingOutcome.EFFECT_ALREADY_APPLIED),
             attempt=None,
             extraction_result=make_extraction_result(),
+            failure_reason=None,
+        )
+
+
+def test_effect_already_applied_rejects_failure_reason() -> None:
+    """An applied duplicate must not expose a terminal failure reason."""
+    with pytest.raises(
+        ValueError,
+        match=("effect_already_applied outcome must not include a failure reason"),
+    ):
+        DocumentProcessingResult(
+            outcome=(DocumentProcessingOutcome.EFFECT_ALREADY_APPLIED),
+            attempt=None,
+            extraction_result=None,
+            failure_reason=ProcessingFailureReason.DOCUMENT_NOT_FOUND,
         )
 
 
@@ -140,6 +234,10 @@ def test_outcome_values_are_stable_strings() -> None:
     """Outcome values should remain suitable for logs and metrics."""
     assert DocumentProcessingOutcome.PROCESSED.value == "processed"
     assert (
+        DocumentProcessingOutcome.TERMINAL_FAILURE_RECORDED.value
+        == "terminal_failure_recorded"
+    )
+    assert (
         DocumentProcessingOutcome.EFFECT_ALREADY_APPLIED.value
         == "effect_already_applied"
     )
@@ -152,6 +250,10 @@ def test_outcome_values_are_stable_strings() -> None:
             attempt=make_attempt(),
             extraction_result=make_extraction_result(),
         ),
+        DocumentProcessingResult.terminal_failure_recorded(
+            attempt=make_attempt(),
+            failure_reason=ProcessingFailureReason.DOCUMENT_VALIDATION_FAILED,
+        ),
         DocumentProcessingResult.effect_already_applied(),
     ],
 )
@@ -161,5 +263,6 @@ def test_result_preserves_one_explicit_outcome(
     """Every valid result should expose one workflow decision."""
     assert result.outcome in {
         DocumentProcessingOutcome.PROCESSED,
+        DocumentProcessingOutcome.TERMINAL_FAILURE_RECORDED,
         DocumentProcessingOutcome.EFFECT_ALREADY_APPLIED,
     }
