@@ -121,6 +121,7 @@ class StartDocumentProcessing:
 
         return ProcessingStartResult.claim_acquired(
             attempt=attempt,
+            correlation_id=job.correlation_context.correlation_id,
         )
 
     def _get_job(
