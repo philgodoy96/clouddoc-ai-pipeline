@@ -260,6 +260,31 @@ resource "aws_iam_role_policy" "processor_permissions" {
   policy = data.aws_iam_policy_document.processor_permissions.json
 }
 
+data "aws_iam_policy_document" "processor_queue_consumer" {
+  version = "2012-10-17"
+
+  statement {
+    sid    = "ConsumeProcessingQueue"
+    effect = "Allow"
+
+    actions = [
+      "sqs:DeleteMessage",
+      "sqs:GetQueueAttributes",
+      "sqs:ReceiveMessage",
+    ]
+
+    resources = [
+      aws_sqs_queue.processing.arn,
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "processor_queue_consumer" {
+  name   = "${local.processor_function_name}-processing-queue"
+  role   = aws_iam_role.processor.id
+  policy = data.aws_iam_policy_document.processor_queue_consumer.json
+}
+
 data "aws_iam_policy_document" "dead_letter_reconciler_permissions" {
   version = "2012-10-17"
 
