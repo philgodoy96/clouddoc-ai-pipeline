@@ -167,12 +167,65 @@ is manually triggered
 uses a reviewed reusable workflow
 performs no repository checkout
 executes no project source
+runs a permanent OIDC claim preflight before AWS credential configuration
 requests a 900-second session
 validates the expected AWS account
 masks the AWS account ID
 uses the GitHub run ID in the STS session name
 proves identity with GetCallerIdentity
 ```
+
+### OIDC claim preflight
+
+CloudDoc validates the issued GitHub OIDC payload against the expected
+workload identity contract before calling AWS STS.
+
+The fail-fast identity contract:
+
+```text
+requests a token with audience sts.amazonaws.com
+decodes only the JWT payload
+compares eight exact claims
+logs only sanitized claim diagnostics
+fails before AWS STS on mismatch
+uses process-memory-only token handling
+uses Python standard library only
+```
+
+Validated claims:
+
+```text
+aud
+sub
+repository
+repository_id
+repository_owner_id
+ref
+environment
+job_workflow_ref
+```
+
+Why the preflight exists:
+
+```text
+generic AWS assume-role errors do not identify the mismatched claim
+fail-fast diagnostics reduce unsafe trial-and-error trust changes
+exact claim comparison supports least privilege
+sanitized logs improve operability without exposing the JWT
+```
+
+Security boundaries:
+
+```text
+The preflight is not a trust anchor.
+The preflight does not verify token signatures.
+The preflight does not authorize AWS access.
+AWS remains authoritative for token and IAM validation.
+```
+
+AWS remains authoritative for signature and issuer verification and for IAM
+trust-policy evaluation. Authentication before authorization remains
+unchanged: the role remains a permissionless identity role.
 
 A later slice will introduce authorization through separate, least-privilege role and policy decisions.
 
@@ -189,6 +242,8 @@ avoid broad repository or branch wildcards
 support clear audit correlation
 preserve small focused pull requests
 keep each implementation commit testable
+fail-fast identity contract before AWS STS
+sanitized claim diagnostics without JWT exposure
 ```
 
 ## Trust Strategy
@@ -293,6 +348,14 @@ The environment is encoded directly in the subject.
 
 The trust no longer depends on an implicit sub check.
 
+Claim mismatches are visible before AWS STS retries.
+
+Trust corrections can be evidence-driven.
+
+No third-party OIDC debugger dependency is introduced.
+
+JWT material is not persisted.
+
 The identity workflow has a small auditable execution surface.
 
 The STS session is correlated to a GitHub run ID.
@@ -324,6 +387,14 @@ Incorrect numeric IDs make the role unassumable.
 The subject must match the repository OIDC customization actually in effect.
 
 Repository identity changes require a reviewed trust update.
+
+The workflow contains additional security-sensitive validation logic.
+
+GitHub claim-shape changes may fail the workflow before AWS.
+
+Static tests must protect sanitization and ordering contracts.
+
+The preflight cannot diagnose AWS-side signature or provider failures.
 ```
 
 ### Neutral
@@ -491,6 +562,37 @@ The identity proof requires no repository source.
 
 No checkout reduces execution surface during the temporary AWS session.
 
+### Rely only on configure-aws-credentials errors
+
+Rejected.
+
+The AWS credential-action error is too generic for safe trust diagnosis.
+A permanent OIDC claim preflight provides sanitized claim diagnostics before
+STS retries.
+
+### Use a third-party OIDC debugger action
+
+Rejected.
+
+A third-party debugger would add another supply-chain dependency and an
+unnecessary token exposure surface. CloudDoc keeps process-memory-only token
+handling inside the reviewed reusable workflow.
+
+### Print the JWT payload directly
+
+Rejected.
+
+Direct payload printing can expose immutable identifiers and other token
+metadata beyond operational need. Logs may contain only sanitized claim
+diagnostics.
+
+### Remove strict trust conditions temporarily
+
+Rejected.
+
+Diagnosis must not broaden production trust. Fail-fast identity contract
+validation must preserve exact claim comparison and least privilege.
+
 ## Security Invariants
 
 ```text
@@ -520,6 +622,14 @@ AssumeRoleWithWebIdentity only.
 
 Permissionless verification role.
 
+OIDC claim preflight before AWS credential configuration.
+
+Process-memory-only token handling.
+
+No JWT or runtime request-token logging.
+
+AWS remains authoritative for signature, issuer, and IAM trust.
+
 No project checkout during AWS session.
 
 Expected AWS account validation.
@@ -543,18 +653,23 @@ static bootstrap tests
 GitHub Actions source contracts
 full repository quality gates
 source tests require eight exact claims
+CI contract tests validate the preflight source
 ```
 
 Corrective and real verification requirements:
 
 ```text
+CI contract tests validate the preflight source
+manual AWS Identity Check validates real token claims
+AWS STS validates cryptographic and IAM trust
+GetCallerIdentity validates the assumed principal
+role-policy inspection confirms the role remains permissionless
 corrective Terraform plan must contain one in-place role update
 effective AWS trust must contain exact ID-qualified sub
-AWS Identity Check must succeed
-role must still have no attached or inline policies
 ```
 
 These corrective verification steps are not yet complete.
+Manual AWS Identity Check validation is not yet complete.
 
 Real verification also includes:
 
