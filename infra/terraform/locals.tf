@@ -22,6 +22,21 @@ locals {
     CLOUDDOC_MAX_DOCUMENT_SIZE_BYTES           = "65536"
   })
 
+  bedrock_model_id             = "amazon.nova-micro-v1:0"
+  bedrock_max_output_tokens    = "1200"
+  bedrock_temperature          = "0.00001"
+  bedrock_foundation_model_arn = "arn:${data.aws_partition.current.partition}:bedrock:${var.aws_region}::foundation-model/${local.bedrock_model_id}"
+
+  processor_runtime_environment = tomap(merge(
+    local.lambda_runtime_environment,
+    {
+      CLOUDDOC_AI_PROVIDER               = "bedrock"
+      CLOUDDOC_BEDROCK_MODEL_ID          = local.bedrock_model_id
+      CLOUDDOC_BEDROCK_MAX_OUTPUT_TOKENS = local.bedrock_max_output_tokens
+      CLOUDDOC_BEDROCK_TEMPERATURE       = local.bedrock_temperature
+    },
+  ))
+
   is_production                        = var.environment == "prod"
   lambda_log_retention_days            = local.is_production ? 30 : 14
   control_plane_api_log_retention_days = local.is_production ? 30 : 14

@@ -124,32 +124,36 @@ run "lambda_runtime_topology" {
     condition = alltrue([
       for function in [
         {
-          actual  = aws_lambda_function.create_job
-          name    = "clouddoc-dev-create-job"
-          handler = "clouddoc.handlers.create_job.lambda_handler"
-          memory  = 256
-          timeout = 10
+          actual      = aws_lambda_function.create_job
+          name        = "clouddoc-dev-create-job"
+          handler     = "clouddoc.handlers.create_job.lambda_handler"
+          memory      = 256
+          timeout     = 10
+          environment = local.lambda_runtime_environment
         },
         {
-          actual  = aws_lambda_function.get_job
-          name    = "clouddoc-dev-get-job"
-          handler = "clouddoc.handlers.get_job.lambda_handler"
-          memory  = 256
-          timeout = 5
+          actual      = aws_lambda_function.get_job
+          name        = "clouddoc-dev-get-job"
+          handler     = "clouddoc.handlers.get_job.lambda_handler"
+          memory      = 256
+          timeout     = 5
+          environment = local.lambda_runtime_environment
         },
         {
-          actual  = aws_lambda_function.processor
-          name    = "clouddoc-dev-process-document"
-          handler = "clouddoc.handlers.process_uploaded_document.lambda_handler"
-          memory  = 1024
-          timeout = 120
+          actual      = aws_lambda_function.processor
+          name        = "clouddoc-dev-process-document"
+          handler     = "clouddoc.handlers.process_uploaded_document.lambda_handler"
+          memory      = 1024
+          timeout     = 120
+          environment = local.processor_runtime_environment
         },
         {
-          actual  = aws_lambda_function.dead_letter_reconciler
-          name    = "clouddoc-dev-reconcile-dead-letter"
-          handler = "clouddoc.handlers.reconcile_dead_lettered_document.lambda_handler"
-          memory  = 512
-          timeout = 30
+          actual      = aws_lambda_function.dead_letter_reconciler
+          name        = "clouddoc-dev-reconcile-dead-letter"
+          handler     = "clouddoc.handlers.reconcile_dead_lettered_document.lambda_handler"
+          memory      = 512
+          timeout     = 30
+          environment = local.lambda_runtime_environment
         },
         ] : (
         function.actual.function_name == function.name &&
@@ -162,12 +166,11 @@ run "lambda_runtime_topology" {
         toset(function.actual.architectures) == toset(["x86_64"]) &&
         function.actual.filename == local.lambda_artifact_path &&
         function.actual.source_code_hash == local.lambda_source_code_hash &&
-        one(function.actual.environment).variables ==
-        local.lambda_runtime_environment &&
+        one(function.actual.environment).variables == function.environment &&
         one(function.actual.logging_config).log_format == "JSON"
       )
     ])
-    error_message = "Every Lambda function must match the approved runtime, handler, package, memory, timeout, environment, and logging contract."
+    error_message = "Every Lambda function must match the approved runtime, handler, package, memory, timeout, function-specific environment, and logging contract."
   }
 
   assert {
