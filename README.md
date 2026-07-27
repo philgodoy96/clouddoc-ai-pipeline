@@ -14,6 +14,15 @@ Foundations already implemented in the repository include:
 * Terraform processing queues
 * private S3 document ingestion
 * deterministic Lambda ZIP packaging
+* four Terraform-managed Lambda functions
+* processing and DLQ event-source mappings
+* API Gateway HTTP control plane
+* Amazon Bedrock production provider adapter
+* runtime provider selection
+* strict JSON and AIExtractionResult validation
+* Processor-only Nova Micro configuration
+* Processor-only least-privilege model invocation permission
+* offline provider and Terraform tests
 * offline automated tests
 
 Architecture and delivery foundations already defined include:
@@ -32,7 +41,7 @@ Architecture and delivery foundations already defined include:
 * Terraform ownership boundaries
 * professional contribution and pull request workflow
 
-Implemented-in-repository foundations are distinct from deployed-and-validated-in-AWS behavior. Remaining application and infrastructure slices will continue to land incrementally.
+Implemented-in-repository foundations are distinct from deployed-and-validated-in-AWS behavior. AWS deployment, real Bedrock invocation, and deployed end-to-end validation remain future work.
 
 ## Business Problem
 
@@ -50,7 +59,7 @@ Manual document processing creates recurring operational issues:
 
 CloudDoc AI Pipeline is designed to transform uploaded business documents into validated, structured results through an asynchronous AWS workflow.
 
-## Planned Processing Flow
+## Implemented Architecture
 
 ```text
 Client Application
@@ -93,18 +102,18 @@ DLQ Reconciler Lambda
 DynamoDB job status = dead
 ```
 
-The repository now contains Lambda-compatible handlers and a shared ZIP builder for that runtime. Terraform Lambda function resources remain a follow-up slice; the diagram describes the approved AWS flow, not an already active deployment.
+The repository now declares the control plane, queues, event-source mappings, Lambdas, runtime composition, Bedrock adapter, and exact IAM boundary. Real AWS deployment and validation remain pending. The diagram describes the approved architecture as implemented in the repository, not an already active AWS deployment.
 
-## Planned V1 Capabilities
+## V1 Capabilities
 
-The first complete version is designed to include:
+### Implemented in the repository
 
 * document job creation
 * direct uploads through time-limited S3 pre-signed URLs
 * asynchronous processing through SQS
 * Lambda-based API and processor runtimes
 * UTF-8 plain-text document support
-* Amazon Bedrock classification and extraction
+* Amazon Bedrock production provider adapter
 * structured result validation
 * deterministic mock AI provider
 * DynamoDB job-state persistence
@@ -112,14 +121,19 @@ The first complete version is designed to include:
 * bounded retries
 * dead-letter queue handling
 * dead-letter state reconciliation
-* structured CloudWatch logs
-* request and correlation identifier propagation
-* least-privilege IAM
+* least-privilege IAM declarations
 * Terraform-managed infrastructure
-* automated tests without real Bedrock calls
-* manual AWS end-to-end validation
+* offline automated tests without real Bedrock calls
 
-## Planned Structured Result
+### Remaining before validated v1
+
+* observability completion
+* structured CloudWatch operational alarms and dashboards
+* controlled deployment
+* real AWS invocation and deployed end-to-end validation
+* request and correlation identifier propagation in operational telemetry
+
+## Structured Result Contract
 
 ```json
 {
@@ -134,9 +148,9 @@ The first complete version is designed to include:
 }
 ```
 
-Model responses will be treated as untrusted external input.
+Model responses are treated as untrusted external input.
 
-A provider request completing successfully will not be sufficient to mark a job as successful. Results must pass application-owned validation and be persisted durably.
+A provider request completing successfully is not sufficient to mark a job as successful. The Bedrock adapter requires strict JSON parsing and application-owned `AIExtractionResult` validation before persistence.
 
 ## Architecture Principles
 
@@ -166,9 +180,11 @@ Detailed principles are documented in:
 * [System Design](docs/architecture/system-design.md)
 * [Engineering Principles](docs/architecture/engineering-principles.md)
 * [Lambda Packaging Architecture](docs/architecture/lambda-packaging.md)
+* [Bedrock AI Provider Integration](docs/architecture/bedrock-ai-provider-integration.md)
 * [ADR-017: Package Python Lambdas as a Shared Deterministic ZIP](docs/adr/ADR-017-package-python-lambdas-as-a-shared-zip.md)
+* [ADR-023: Use Amazon Nova Micro through Bedrock Converse](docs/adr/ADR-023-use-amazon-nova-micro-through-bedrock-converse.md)
 
-## Planned AWS Architecture
+## AWS Architecture
 
 The v1 architecture uses:
 
@@ -182,6 +198,8 @@ The v1 architecture uses:
 * Amazon CloudWatch
 * AWS Identity and Access Management
 * Terraform
+
+The repository declares these components and the Bedrock processing-path adapter. Declared code and infrastructure remain distinct from deployed-and-validated AWS behavior.
 
 The initial processing path is:
 
@@ -220,7 +238,7 @@ EventBridge is intentionally deferred from the primary v1 path because the curre
 * Git
 * pip-tools
 
-Lambda ZIP packaging targets Python 3.12 on Linux x86_64. Some listed technologies remain part of the approved implementation plan and have not yet been introduced into every delivery path.
+Lambda ZIP packaging targets Python 3.12 on Linux x86_64. Bedrock is integrated in the Processor application path and Terraform IAM boundary; real AWS deployment and inference validation remain pending.
 
 ## Repository Structure
 
@@ -404,26 +422,29 @@ Equivalent inputs produce a stable archive hash because ordering, timestamps, pe
 
 ## Testing Strategy
 
-Automated tests will not require real Amazon Bedrock calls.
+Automated tests do not perform real Bedrock calls.
 
-The project currently covers or plans coverage for:
+Current coverage includes:
 
 * unit tests for domain rules and state transitions
 * unit tests for AI output validation
 * deterministic mock-provider tests
+* Bedrock provider unit tests with an injected fake client
+* runtime provider-selection tests
+* strict JSON and response-envelope tests
+* provider error-normalization tests
 * handler tests
 * duplicate-event tests
 * retry and failure classification tests
 * repository integration tests
 * event contract tests
 * Lambda package builder tooling tests
+* offline Terraform tests for Processor-only Bedrock configuration and IAM
 * Terraform validation
-* manual deployed-environment checks
-* manual end-to-end AWS validation
 
 Builder-tooling tests use temporary directories and local dependency fixtures. They do not install real packages, do not access AWS, and do not require network access.
 
-Manual deployed AWS validation remains future work.
+Manual deployed-environment checks and end-to-end AWS validation remain future work.
 
 Testing guidance will evolve under:
 
@@ -440,9 +461,13 @@ The project is designed to:
 * block public access
 * encrypt stored data
 * separate Lambda IAM roles
+* allow only the Processor role to invoke the selected model
+* grant `bedrock:InvokeModel` against one exact foundation-model ARN
+* avoid Bedrock wildcard actions or resources
+* avoid streaming permission
 * avoid static AWS credentials
 * avoid broad administrator policies
-* avoid logging full documents or model payloads
+* avoid logging full documents, raw model responses, or model payloads
 * keep Terraform state and environment files out of Git
 * use Secrets Manager only when a real secret exists
 
@@ -458,7 +483,7 @@ Packaging security boundaries:
 
 The system assumes duplicate delivery and partial failure.
 
-V1 will use:
+Implemented reliability controls include:
 
 * DynamoDB conditional writes
 * bounded processing leases
@@ -466,24 +491,36 @@ V1 will use:
 * limited queue retries
 * dead-letter preservation
 * dead-letter job reconciliation
-* structured operational logs
 * correlation identifiers
 * explicit state transitions
 
-The project does not claim exactly-once Lambda execution or exactly-once Bedrock inference.
+Provider failure classification:
+
+* invalid model response is terminal
+* timeout, throttling, and temporary unavailability are retryable
+* configuration failure is an operational dependency failure
+* retryable provider failure releases the owned processing claim
+
+Structured operational logging and CloudWatch alarms remain follow-up work. The project does not claim exactly-once Lambda execution or exactly-once Bedrock inference.
 
 ## Cost-Aware Design
 
-The planned v1 controls costs through:
+Implemented cost controls include:
 
 * direct S3 uploads
 * Lambda-based compute with no idle servers
 * DynamoDB on-demand capacity
-* deterministic mock inference for tests
+* Amazon Nova Micro as the selected model
+* text-only input
+* 65,536-byte document limit
+* 1,200 output-token limit
+* maximum event-source concurrency of five
+* two total SDK attempts
+* deterministic mock provider in tests
+* no streaming
+* no provisioned throughput
 * bounded queue retries
-* limited document size
 * restricted content types
-* controlled processor concurrency
 * explicit CloudWatch retention
 * S3 lifecycle rules
 * no provisioned concurrency
@@ -514,20 +551,20 @@ The following product capabilities are intentionally deferred:
 
 These decisions keep the first release focused on one complete, observable, recoverable serverless document-processing workflow.
 
-Deployment and packaging follow-ups are intentionally sequenced after the shared ZIP foundation:
+Remaining deployment and operational follow-ups:
 
-* Lambda Terraform resources
-* execution roles and IAM
-* event-source mappings
-* runtime environment variables
-* CloudWatch log groups
+* CloudWatch alarms and dashboard
+* remote Terraform state
+* CI packaging and infrastructure gates
+* controlled deployment
+* real AWS invocation
+* deployed end-to-end validation
+* operator runbooks
 * artifact publication
-* CI packaging
 * code signing
 * Lambda layers
 * container-image packaging
 * arm64
-* real AWS invocation
 
 ## Architecture Decision Records
 
@@ -549,6 +586,7 @@ Planned and recorded ADR topics include:
 * plain-text input for v1
 * dead-letter reconciliation
 * shared deterministic Lambda ZIP packaging
+* Amazon Nova Micro through Bedrock Converse
 
 ## Contributing
 
