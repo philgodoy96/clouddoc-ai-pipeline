@@ -1,0 +1,8 @@
+# Copy this file to terraform.tfvars before operating the bootstrap root.
+# terraform.tfvars is intentionally ignored by Git.
+
+aws_region   = "us-east-1"
+project_name = "clouddoc"
+
+# Retain recoverable historical state versions for one year.
+noncurrent_version_retention_days = 365
