@@ -1,0 +1,24 @@
+name: AWS Identity Check
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: aws-identity-check-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify-aws-identity:
+    name: Verify AWS identity
+    uses: ./.github/workflows/reusable-aws-identity.yml
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      aws_account_id: ${{ vars.CLOUDDOC_AWS_ACCOUNT_ID }}
+      aws_region: us-east-1
+      role_arn: ${{ vars.CLOUDDOC_DEV_IDENTITY_ROLE_ARN }}
