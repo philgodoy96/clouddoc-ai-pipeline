@@ -14,7 +14,17 @@ WORKFLOWS_ROOT = GITHUB_ROOT / "workflows"
 
 PYTHON_WORKFLOW = WORKFLOWS_ROOT / "python-quality.yml"
 INFRASTRUCTURE_WORKFLOW = WORKFLOWS_ROOT / "infrastructure-quality.yml"
+AWS_IDENTITY_WORKFLOW = WORKFLOWS_ROOT / "aws-identity-check.yml"
+REUSABLE_AWS_IDENTITY_WORKFLOW = WORKFLOWS_ROOT / "reusable-aws-identity.yml"
 DEPENDABOT_CONFIG = GITHUB_ROOT / "dependabot.yml"
+
+VALIDATION_WORKFLOWS = (PYTHON_WORKFLOW, INFRASTRUCTURE_WORKFLOW)
+IDENTITY_WORKFLOWS = (
+    AWS_IDENTITY_WORKFLOW,
+    REUSABLE_AWS_IDENTITY_WORKFLOW,
+)
+
+LOCAL_REUSABLE_WORKFLOW_USES = "uses: ./.github/workflows/reusable-aws-identity.yml"
 
 EXPECTED_ACTIONS = {
     "actions/checkout": (
@@ -29,11 +39,16 @@ EXPECTED_ACTIONS = {
         "dfe3c3f87815947d99a8997f908cb6525fc44e9e",
         "v4.0.1",
     ),
+    "aws-actions/configure-aws-credentials": (
+        "e6de054238d6b7531b4efff3b6587d9aade6a06c",
+        "v6.2.3",
+    ),
 }
 EXPECTED_ACTION_COUNTS = {
     "actions/checkout": 3,
     "actions/setup-python": 3,
     "hashicorp/setup-terraform": 1,
+    "aws-actions/configure-aws-credentials": 1,
 }
 
 ACTION_REFERENCE_PATTERN = re.compile(
@@ -103,6 +118,8 @@ def test_expected_ci_configuration_files_exist() -> None:
     """The repository must contain both workflows and Dependabot policy."""
     assert PYTHON_WORKFLOW.is_file()
     assert INFRASTRUCTURE_WORKFLOW.is_file()
+    assert AWS_IDENTITY_WORKFLOW.is_file()
+    assert REUSABLE_AWS_IDENTITY_WORKFLOW.is_file()
     assert DEPENDABOT_CONFIG.is_file()
 
 
@@ -111,6 +128,8 @@ def test_expected_ci_configuration_files_exist() -> None:
     [
         (PYTHON_WORKFLOW, "Python Quality"),
         (INFRASTRUCTURE_WORKFLOW, "Infrastructure Quality"),
+        (AWS_IDENTITY_WORKFLOW, "AWS Identity Check"),
+        (REUSABLE_AWS_IDENTITY_WORKFLOW, "Reusable AWS Identity"),
     ],
 )
 def test_workflow_names_are_stable(
@@ -138,9 +157,46 @@ def test_workflows_use_the_approved_triggers(path: Path) -> None:
     assert "pull_request_target:" not in triggers
 
 
+def test_aws_identity_caller_is_manual_only() -> None:
+    """Identity verification must start only from an explicit manual run."""
+    triggers = extract_top_level_block(
+        read_text(AWS_IDENTITY_WORKFLOW),
+        "on",
+    )
+
+    assert "workflow_dispatch:" in triggers
+    assert "pull_request:" not in triggers
+    assert "pull_request_target:" not in triggers
+    assert "push:" not in triggers
+    assert "schedule:" not in triggers
+    assert "workflow_run:" not in triggers
+    assert "workflow_call:" not in triggers
+
+
+def test_reusable_aws_identity_uses_workflow_call_only() -> None:
+    """The reusable identity workflow must be callable and never standalone."""
+    triggers = extract_top_level_block(
+        read_text(REUSABLE_AWS_IDENTITY_WORKFLOW),
+        "on",
+    )
+
+    assert "workflow_call:" in triggers
+    assert "workflow_dispatch:" not in triggers
+    assert "pull_request:" not in triggers
+    assert "pull_request_target:" not in triggers
+    assert "push:" not in triggers
+    assert "schedule:" not in triggers
+    assert "workflow_run:" not in triggers
+
+
 @pytest.mark.parametrize(
     "path",
-    [PYTHON_WORKFLOW, INFRASTRUCTURE_WORKFLOW],
+    [
+        PYTHON_WORKFLOW,
+        INFRASTRUCTURE_WORKFLOW,
+        AWS_IDENTITY_WORKFLOW,
+        REUSABLE_AWS_IDENTITY_WORKFLOW,
+    ],
 )
 def test_workflows_do_not_use_path_filters(path: Path) -> None:
     """Required checks must not disappear because a path filter skipped them."""
@@ -154,7 +210,7 @@ def test_workflows_do_not_use_path_filters(path: Path) -> None:
     "path",
     [PYTHON_WORKFLOW, INFRASTRUCTURE_WORKFLOW],
 )
-def test_workflows_have_read_only_permissions(path: Path) -> None:
+def test_validation_workflows_have_read_only_permissions(path: Path) -> None:
     """Validation workflows require repository read access only."""
     permissions = extract_top_level_block(
         read_text(path),
@@ -162,6 +218,20 @@ def test_workflows_have_read_only_permissions(path: Path) -> None:
     )
 
     assert permissions.strip() == "permissions:\n  contents: read"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [AWS_IDENTITY_WORKFLOW, REUSABLE_AWS_IDENTITY_WORKFLOW],
+)
+def test_identity_workflows_have_exact_oidc_permissions(path: Path) -> None:
+    """Identity workflows may request OIDC write plus repository read only."""
+    permissions = extract_top_level_block(
+        read_text(path),
+        "permissions",
+    )
+
+    assert permissions.strip() == ("permissions:\n  contents: read\n  id-token: write")
 
 
 @pytest.mark.parametrize(
@@ -178,6 +248,20 @@ def test_workflows_cancel_obsolete_branch_runs(path: Path) -> None:
     assert "${{ github.workflow }}" in concurrency
     assert "${{ github.ref }}" in concurrency
     assert "cancel-in-progress: true" in concurrency
+
+
+def test_aws_identity_caller_uses_non_cancelling_concurrency() -> None:
+    """Manual identity verification must keep the active run for a ref."""
+    concurrency = extract_top_level_block(
+        read_text(AWS_IDENTITY_WORKFLOW),
+        "concurrency",
+    )
+
+    assert concurrency.strip() == (
+        "concurrency:\n"
+        "  group: aws-identity-check-${{ github.ref }}\n"
+        "  cancel-in-progress: false"
+    )
 
 
 def test_python_quality_check_name_and_timeout_are_stable() -> None:
@@ -203,6 +287,24 @@ def test_infrastructure_check_names_and_timeouts_are_stable() -> None:
     assert "timeout-minutes: 15" in terraform_job
 
 
+def test_aws_identity_check_names_are_stable() -> None:
+    """Identity check names must remain predictable for operators."""
+    caller = extract_job_block(
+        read_text(AWS_IDENTITY_WORKFLOW),
+        "verify-aws-identity",
+    )
+    reusable = extract_job_block(
+        read_text(REUSABLE_AWS_IDENTITY_WORKFLOW),
+        "verify-identity",
+    )
+
+    assert "name: Verify AWS identity" in caller
+    assert "name: Assume permissionless role" in reusable
+    assert "runs-on: ubuntu-latest" in reusable
+    assert "timeout-minutes: 5" in reusable
+    assert "environment: dev" in reusable
+
+
 def test_infrastructure_jobs_are_independent() -> None:
     """Terraform validation must start from its own clean checkout."""
     source = read_text(INFRASTRUCTURE_WORKFLOW)
@@ -219,7 +321,7 @@ def test_every_external_action_uses_an_approved_full_sha() -> None:
         for reference in action_references(source)
     ]
 
-    assert len(references) == 7
+    assert len(references) == 8
 
     for action, reference, comment in references:
         assert action in EXPECTED_ACTIONS
@@ -253,9 +355,15 @@ def test_no_mutable_action_reference_remains() -> None:
         assert action_lines, f"No action references found in {path}"
 
         for line in action_lines:
+            if line == LOCAL_REUSABLE_WORKFLOW_USES:
+                continue
+
             match = ACTION_REFERENCE_PATTERN.fullmatch(line)
             assert match is not None, f"Unrecognized action reference in {path}: {line}"
             assert FULL_SHA_PATTERN.fullmatch(match.group("reference"))
+            assert not line.startswith("uses: ./"), (
+                f"Unapproved local workflow path in {path}: {line}"
+            )
 
 
 def test_every_checkout_disables_persisted_credentials() -> None:
@@ -265,6 +373,20 @@ def test_every_checkout_disables_persisted_credentials() -> None:
 
     assert combined.count("actions/checkout@") == 3
     assert combined.count("persist-credentials: false") == 3
+
+
+@pytest.mark.parametrize(
+    "path",
+    [AWS_IDENTITY_WORKFLOW, REUSABLE_AWS_IDENTITY_WORKFLOW],
+)
+def test_identity_workflows_do_not_check_out_the_repository(
+    path: Path,
+) -> None:
+    """Identity verification must never clone repository contents."""
+    source = read_text(path)
+
+    assert "actions/checkout" not in source
+    assert "name: Check out repository" not in source
 
 
 def test_python_quality_behavior_remains_intact() -> None:
@@ -354,9 +476,9 @@ def test_terraform_job_does_not_build_or_consume_lambda_artifacts() -> None:
     assert "download-artifact" not in job
 
 
-def test_workflows_contain_no_authenticated_aws_inputs() -> None:
+def test_validation_workflows_contain_no_authenticated_aws_inputs() -> None:
     """Validation must remain independent from AWS identity and state."""
-    combined = "\n".join(workflow_sources().values())
+    combined = "\n".join(read_text(path) for path in VALIDATION_WORKFLOWS)
 
     forbidden = (
         "secrets.",
@@ -367,6 +489,149 @@ def test_workflows_contain_no_authenticated_aws_inputs() -> None:
         "TF_VAR_expected_aws_account_id",
         "id-token:",
         "aws-actions/",
+        "environment:",
+    )
+
+    for value in forbidden:
+        assert value not in combined
+
+
+def test_aws_identity_caller_delegates_to_the_reusable_workflow() -> None:
+    """The caller must only pass reviewed variables into the reusable job."""
+    source = read_text(AWS_IDENTITY_WORKFLOW)
+    job = extract_job_block(source, "verify-aws-identity")
+
+    assert LOCAL_REUSABLE_WORKFLOW_USES in job
+    assert "aws_account_id: ${{ vars.CLOUDDOC_AWS_ACCOUNT_ID }}" in job
+    assert "aws_region: us-east-1" in job
+    assert "role_arn: ${{ vars.CLOUDDOC_DEV_IDENTITY_ROLE_ARN }}" in job
+    assert ("permissions:\n      contents: read\n      id-token: write") in job
+
+    forbidden = (
+        "secrets.",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "environment:",
+        "runs-on:",
+        "steps:",
+    )
+
+    for value in forbidden:
+        assert value not in job
+
+
+def test_reusable_aws_identity_declares_exact_workflow_call_inputs() -> None:
+    """The reusable workflow accepts only the three reviewed string inputs."""
+    triggers = extract_top_level_block(
+        read_text(REUSABLE_AWS_IDENTITY_WORKFLOW),
+        "on",
+    )
+
+    for input_name in ("aws_account_id", "aws_region", "role_arn"):
+        assert f"{input_name}:" in triggers
+
+    assert triggers.count("required: true") == 3
+    assert triggers.count("type: string") == 3
+    assert "secrets:" not in triggers
+
+
+def test_reusable_aws_identity_validates_trusted_context() -> None:
+    """Preflight must reject unexpected repository, ref, event, and role."""
+    source = read_text(REUSABLE_AWS_IDENTITY_WORKFLOW)
+
+    assert "set -euo pipefail" in source
+    assert "GITHUB_REPOSITORY" in source
+    assert "philgodoy96/clouddoc-ai-pipeline" in source
+    assert "GITHUB_REF" in source
+    assert "refs/heads/main" in source
+    assert "GITHUB_EVENT_NAME" in source
+    assert "workflow_dispatch" in source
+    assert r"^[0-9]{12}$" in source
+    assert (
+        "arn:aws:iam::${EXPECTED_ACCOUNT_ID}:role/clouddoc-dev-github-identity"
+    ) in source
+    assert "us-east-1" in source
+
+
+def test_reusable_aws_identity_configures_credentials_exactly() -> None:
+    """OIDC assumption must use the pinned action and reviewed inputs."""
+    source = read_text(REUSABLE_AWS_IDENTITY_WORKFLOW)
+
+    assert (
+        "uses: aws-actions/configure-aws-credentials@"
+        "e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3"
+    ) in source
+    assert "role-to-assume: ${{ inputs.role_arn }}" in source
+    assert "aws-region: ${{ inputs.aws_region }}" in source
+    assert "allowed-account-ids: ${{ inputs.aws_account_id }}" in source
+    assert "role-duration-seconds: 900" in source
+    assert ("role-session-name: clouddoc-identity-${{ github.run_id }}") in source
+    assert "mask-aws-account-id: true" in source
+    assert "unset-current-credentials: true" in source
+
+    forbidden = (
+        "aws-access-key-id",
+        "aws-secret-access-key",
+        "aws-session-token",
+        "role-chaining",
+        "inline-session-policy",
+        "managed-session-policies",
+        "force-skip-oidc",
+        "use-existing-credentials",
+    )
+
+    for value in forbidden:
+        assert value not in source
+
+
+def test_reusable_aws_identity_proves_the_assumed_role() -> None:
+    """The reusable workflow must prove the temporary session identity."""
+    source = read_text(REUSABLE_AWS_IDENTITY_WORKFLOW)
+
+    assert "aws sts get-caller-identity" in source
+    assert "--query Arn" in source
+    assert "--output text" in source
+    assert "EXPECTED_ROLE_NAME: clouddoc-dev-github-identity" in source
+    assert ("EXPECTED_SESSION_NAME: clouddoc-identity-${{ github.run_id }}") in source
+    assert (":assumed-role/${EXPECTED_ROLE_NAME}/${EXPECTED_SESSION_NAME}") in source
+    assert "AWS OIDC identity federation verified." in source
+
+
+def test_identity_workflows_do_not_execute_project_code() -> None:
+    """Identity verification must not install packages or run project tools."""
+    combined = "\n".join(read_text(path) for path in IDENTITY_WORKFLOWS)
+
+    forbidden = (
+        "actions/checkout",
+        "setup-python",
+        "setup-terraform",
+        "pip install",
+        "make",
+        "pytest",
+        "ruff",
+        "terraform",
+        "scripts/",
+        "artifacts/",
+        "upload-artifact",
+        "download-artifact",
+    )
+
+    for value in forbidden:
+        assert value not in combined
+
+
+def test_workflows_forbid_static_aws_credentials() -> None:
+    """No workflow may introduce static AWS keys or secret-backed identity."""
+    combined = "\n".join(workflow_sources().values())
+
+    forbidden = (
+        "secrets.AWS_ACCESS_KEY_ID",
+        "secrets.AWS_SECRET_ACCESS_KEY",
+        "secrets.AWS_SESSION_TOKEN",
+        "aws-access-key-id:",
+        "aws-secret-access-key:",
+        "aws-session-token:",
     )
 
     for value in forbidden:
@@ -374,7 +639,7 @@ def test_workflows_contain_no_authenticated_aws_inputs() -> None:
 
 
 def test_workflows_contain_no_deployment_or_state_mutation_commands() -> None:
-    """Infrastructure quality must never mutate remote infrastructure."""
+    """Workflows must never mutate remote infrastructure or publish releases."""
     combined = "\n".join(workflow_sources().values()).lower()
 
     forbidden = (
@@ -385,12 +650,25 @@ def test_workflows_contain_no_deployment_or_state_mutation_commands() -> None:
         "migrate-state",
         "-lock=false",
         "-auto-approve",
-        "workflow_run:",
-        "environment:",
+        "actions/upload-artifact",
+        "actions/download-artifact",
+        "gh release",
+        "aws s3",
     )
 
     for value in forbidden:
         assert value not in combined
+
+
+def test_only_reusable_identity_uses_the_dev_environment() -> None:
+    """Exactly one GitHub Environment reference must exist, on the reusable job."""
+    sources = workflow_sources()
+    combined = "\n".join(sources.values())
+
+    assert combined.count("environment:") == 1
+    assert combined.count("environment: dev") == 1
+    assert "environment:" not in read_text(AWS_IDENTITY_WORKFLOW)
+    assert "environment: dev" in read_text(REUSABLE_AWS_IDENTITY_WORKFLOW)
 
 
 def test_workflows_use_no_artifact_transfer_action() -> None:
