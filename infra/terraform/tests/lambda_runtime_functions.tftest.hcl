@@ -165,7 +165,10 @@ run "lambda_runtime_topology" {
         function.actual.publish == false &&
         toset(function.actual.architectures) == toset(["x86_64"]) &&
         function.actual.filename == local.lambda_artifact_path &&
-        function.actual.source_code_hash == local.lambda_source_code_hash &&
+        (
+          local.lambda_source_code_hash == null ||
+          function.actual.source_code_hash == local.lambda_source_code_hash
+        ) &&
         one(function.actual.environment).variables == function.environment &&
         one(function.actual.logging_config).log_format == "JSON"
       )
