@@ -17,11 +17,18 @@ the processing DLQ to Dead-Letter Reconciler event source mapping
 the Dead-Letter Reconciler processing-DLQ consumer boundary
 the reconciliation failure quarantine queue
 the processing-DLQ-to-quarantine redrive path
+an API Gateway HTTP control plane
+Create Job and Get Job Lambda proxy integrations
+two explicit AWS IAM-protected routes
+an environment-named auto-deploy stage
+structured API access logging
+route-specific throttling
+route-scoped Lambda invocation permissions
+stable API outputs
 ```
 
-API Gateway, Bedrock permissions, CloudWatch alarms, automatic replay,
-operator recovery tooling, and real AWS deployment remain separate follow-up
-work.
+Bedrock permissions, CloudWatch alarms, automatic replay, operator recovery
+tooling, and real AWS deployment remain separate follow-up work.
 
 ## Current resources
 
@@ -312,6 +319,47 @@ Terraform declares the enabled event source mapping from the processing DLQ to
 the Dead-Letter Reconciler Lambda, plus a dedicated Dead-Letter Reconciler
 processing-DLQ inline policy.
 
+### HTTP control plane
+
+```text
+aws_apigatewayv2_api.control_plane
+aws_apigatewayv2_integration.create_job
+aws_apigatewayv2_integration.get_job
+aws_apigatewayv2_route.create_job
+aws_apigatewayv2_route.get_job
+aws_apigatewayv2_stage.control_plane
+aws_cloudwatch_log_group.control_plane_api_access
+aws_lambda_permission.control_plane_create_job
+aws_lambda_permission.control_plane_get_job
+```
+
+API name:
+
+```text
+${project_name}-${environment}-control-plane
+```
+
+Default local values produce:
+
+```text
+clouddoc-dev-control-plane
+```
+
+## Control-plane flow
+
+```text
+authenticated AWS caller
+    → API Gateway HTTP API
+        → POST /v1/document-jobs
+            → Create Job Lambda
+        → GET /v1/document-jobs/{job_id}
+            → Get Job Lambda
+```
+
+The control plane does not proxy document bytes. Create Job returns a
+presigned S3 upload URL. Document processing remains asynchronous through S3,
+SQS, and Lambda. DynamoDB remains authoritative for `DocumentJob` state.
+
 ## Processing flow
 
 ```text
@@ -338,6 +386,199 @@ Ownership remains split:
 DynamoDB owns authoritative DocumentJob state
 SQS owns delivery, retry, and redrive
 the quarantine queue owns terminal operational evidence
+```
+
+## HTTP API
+
+Terraform declares:
+
+```text
+aws_apigatewayv2_api.control_plane
+```
+
+Configured properties:
+
+```text
+protocol type = HTTP
+environment-scoped name
+default execute-api endpoint enabled
+```
+
+The default execute-api endpoint remains enabled to support controlled
+validation before a custom-domain decision.
+
+## Routes
+
+The API declares exactly two routes:
+
+```text
+POST /v1/document-jobs
+GET /v1/document-jobs/{job_id}
+```
+
+Both routes use:
+
+```text
+authorization_type = AWS_IAM
+```
+
+No `$default`, `ANY /`, or `ANY /{proxy+}` route exists. Unknown methods and
+paths therefore do not reach a Lambda integration.
+
+## Integrations
+
+Both integrations use:
+
+```text
+integration type = AWS_PROXY
+integration method = POST
+payload format version = 2.0
+```
+
+The integration method is the Lambda Invoke API method. It is independent of
+the client-facing route method.
+
+Configured timeout relationships:
+
+```text
+Create Job integration = 15 seconds
+Create Job Lambda = 10 seconds
+
+Get Job integration = 10 seconds
+Get Job Lambda = 5 seconds
+```
+
+Each API integration timeout remains longer than the target Lambda timeout.
+This keeps the Lambda function as the primary application timeout boundary
+while allowing API Gateway time to receive the result.
+
+## Authorization boundary
+
+Callers must sign requests with AWS Signature Version 4 or Version 4a.
+Callers require `execute-api:Invoke` permission matching the route.
+
+This stack does not create caller IAM users, roles, long-lived keys, or caller
+policies. Caller identity ownership belongs to the deployment and operations
+security boundary.
+
+Request IDs and correlation IDs are traceability values. They are not identity
+or authorization.
+
+## Stage
+
+Terraform declares:
+
+```text
+aws_apigatewayv2_stage.control_plane
+```
+
+Configured properties:
+
+```text
+stage name = environment
+auto deploy = true
+```
+
+No standalone API Gateway deployment resource is declared. Stage updates
+publish through auto-deploy.
+
+## Access logs
+
+Terraform owns the managed access-log group:
+
+```text
+/aws/apigateway/${control_plane_api_name}
+```
+
+Retention:
+
+```text
+dev = 14 days
+staging = 14 days
+prod = 30 days
+```
+
+The stage emits structured JSON access logs with exactly these fields:
+
+```text
+requestId
+requestTimeEpoch
+routeKey
+stage
+status
+responseLength
+integrationStatus
+integrationLatency
+integrationErrorMessage
+sourceIp
+userAgent
+```
+
+Access logs exclude:
+
+```text
+request bodies
+response bodies
+Authorization headers
+presigned upload URLs
+document content
+credentials
+```
+
+`integrationErrorMessage` supports diagnosis of integration and permission
+failures without logging sensitive payloads. Lambda application logs remain
+separate from API edge access logs.
+
+## Route throttling
+
+Create Job:
+
+```text
+rate 2 requests per second
+burst 5
+```
+
+Get Job:
+
+```text
+rate 10 requests per second
+burst 20
+```
+
+Create Job receives the lower limit because it performs a state mutation and
+creates a presigned upload capability. Get Job is read-only and receives a
+higher initial threshold.
+
+Throttling is best-effort operational protection. It is not authorization,
+billing enforcement, or a hard cost ceiling.
+
+## Route-scoped Lambda permissions
+
+Terraform declares two independent Lambda resource-based permissions.
+
+Create Job:
+
+```text
+environment stage + POST + /v1/document-jobs
+```
+
+Get Job:
+
+```text
+environment stage + GET + /v1/document-jobs/*
+```
+
+Each permission targets only its corresponding Lambda. The Get Job wildcard
+covers only the dynamic `job_id` segment. No API-wide `/*/*` permission exists.
+
+These concerns are distinct:
+
+```text
+AWS_IAM route authorization
+    → decides whether a signed caller may invoke the route
+
+Lambda resource-based invocation permission
+    → decides whether API Gateway may invoke the target function
 ```
 
 ## Quarantine queue
@@ -546,15 +787,18 @@ authorization, auditability, idempotency, and rate controls.
 Each store owns a distinct concern:
 
 ```text
+API Gateway owns the authenticated HTTP control-plane boundary
 S3 owns raw document bytes and object versions
 SQS owns delivery attempts and redrive
 DynamoDB owns authoritative DocumentJob lifecycle state
 the quarantine queue owns terminal operational evidence
 ```
 
-SQS delivery state does not determine business lifecycle state. Message
-visibility, receive counts, and dead-letter placement describe transport
-retries only. Authoritative `DocumentJob` status lives in DynamoDB.
+The control plane returns job metadata and a presigned upload URL. Document
+bytes bypass API Gateway through direct S3 upload. SQS delivery state does not
+determine business lifecycle state. Message visibility, receive counts, and
+dead-letter placement describe transport retries only. Authoritative
+`DocumentJob` status lives in DynamoDB.
 
 ## Configuration
 
@@ -638,12 +882,13 @@ document-jobs table topology
 Lambda runtime and IAM topology
 processing event-source topology
 dead-letter reconciliation topology
+API Gateway control-plane topology
 ```
 
 The current validated total is:
 
 ```text
-17 passed, 0 failed
+22 passed, 0 failed
 ```
 
 The dead-letter reconciliation tests validate:
@@ -660,6 +905,25 @@ timeout ratio
 retention
 encryption
 outputs
+```
+
+The API Gateway control-plane tests validate:
+
+```text
+environment naming
+HTTP protocol
+development and production log retention
+integration ownership
+payload format
+timeout relationships
+exact route keys
+AWS_IAM authorization
+stage behavior
+access-log fields
+route throttling
+route-scoped Lambda permissions
+outputs
+stage base URL
 ```
 
 Tests use a mocked AWS provider and create no resources. Plan-time computed
@@ -710,9 +974,20 @@ dead_letter_reconciler_function_name
 dead_letter_reconciler_function_arn
 ```
 
-These identifiers will support future API Gateway, alarm, runbook, operator
-inspection, and deployment verification integrations. Outputs expose resource
-identifiers only; they do not expose credentials or object content.
+HTTP control-plane outputs:
+
+```text
+control_plane_api_id
+control_plane_api_execution_arn
+control_plane_api_base_url
+control_plane_api_stage_name
+control_plane_api_access_log_group_name
+```
+
+The base URL includes the named stage and excludes route paths. These
+identifiers support alarm wiring, runbook inspection, caller policy design, and
+deployment verification. Outputs expose resource identifiers only; they do not
+expose credentials or object content.
 
 ## Security and durability
 
@@ -743,6 +1018,15 @@ no resource-based cross-account policy
 no TTL without an approved retention contract
 no streams without an approved consumer
 no speculative indexes
+```
+
+The HTTP control plane declares these security controls:
+
+```text
+AWS_IAM on both routes
+route-scoped Lambda invoke permissions
+structured access logging without payload bodies
+no anonymous default or catch-all routes
 ```
 
 Malware scanning, Object Lock, access logging, and CloudTrail data events are
@@ -811,6 +1095,22 @@ no automatic replay
 These settings prioritize bounded retry cost, failure isolation, and operator
 signal.
 
+HTTP control-plane cost decisions:
+
+```text
+two explicit routes
+route-level throttling
+bounded log retention
+no payload-body access logging
+no provisioned concurrency
+no custom domain
+no API Gateway caching
+```
+
+Document bytes bypass API Gateway through presigned S3 upload. The control
+plane therefore remains a low-volume authenticated boundary rather than a
+document-transfer path.
+
 The Processor memory budget is intentionally larger because it owns document
 loading, validation, and AI orchestration. That budget requires deployed
 measurement later.
@@ -837,8 +1137,29 @@ Terraform state files remain excluded from Git.
 The following remain intentionally sequenced follow-up work:
 
 ```text
-API Gateway
-Lambda invoke permissions
+JWT authorizer
+Amazon Cognito
+OAuth
+browser frontend
+CORS
+custom domain
+ACM certificate
+API keys
+usage plans
+request models
+request transformation
+response transformation
+API Gateway caching
+AWS WAF
+X-Ray tracing
+CloudWatch alarms
+dashboards
+synthetic monitoring
+caller IAM identities
+CI caller identity
+reserved Lambda concurrency
+deployed smoke tests
+load testing
 quarantine consumer
 automatic replay
 operator replay API
@@ -848,7 +1169,6 @@ quarantine depth alarm
 message-age alarm
 reconciler failure alarm
 manual recovery runbook
-reserved concurrency
 provisioned concurrency
 provisioned pollers
 batch size greater than 1
@@ -858,22 +1178,21 @@ DLQ-depth alarms
 Lambda throttling alarms
 Bedrock integration
 Bedrock permissions
-CloudWatch alarms and dashboards
-X-Ray
 Secrets Manager
 versions and aliases
 artifact publication to S3
 code signing
 real AWS deployment
-load testing
 failure injection
 recovery testing
 ```
 
+OAuth and JWT remain intentionally deferred while the project establishes a
+secure first-party AWS control plane and explicit invocation boundaries.
+
 Additional deferred items from earlier slices also remain separate:
 
 ```text
-CORS
 CloudTrail S3 data events
 S3 access logging
 customer-managed KMS
@@ -907,3 +1226,5 @@ real AWS deployment and restore validation
 - [ADR-020: Connect processing queue to Processor Lambda](../../docs/adr/ADR-020-connect-processing-queue-to-processor-lambda.md)
 - [Dead-letter reconciliation infrastructure](../../docs/architecture/dead-letter-reconciliation-infrastructure.md)
 - [ADR-021: Connect processing DLQ to Reconciler Lambda](../../docs/adr/ADR-021-connect-processing-dlq-to-reconciler-lambda.md)
+- [API Gateway control-plane infrastructure](../../docs/architecture/api-gateway-control-plane-infrastructure.md)
+- [ADR-022: Use API Gateway HTTP API for the control plane](../../docs/adr/ADR-022-use-http-api-for-control-plane.md)
