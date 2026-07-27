@@ -3,7 +3,7 @@
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
-from threading import Barrier
+from threading import Barrier, Lock
 from typing import Any
 
 import boto3
@@ -31,6 +31,46 @@ BASE_TIME = datetime(2026, 7, 25, 12, 0, tzinfo=UTC)
 CLAIMED_AT = BASE_TIME + timedelta(seconds=1)
 LEASE_DURATION = timedelta(minutes=5)
 TABLE_NAME = "clouddoc-processing-concurrency-test"
+
+
+# Moto does not reliably preserve DynamoDB conditional-write atomicity
+# across concurrent threads. Serialize put_item calls in this fixture so
+# the integration test reproduces the per-item atomicity guaranteed by
+# DynamoDB rather than testing a race condition in the emulator.
+# Do not reuse this wrapper in tests that measure parallelism across
+# independent items.
+class AtomicConditionalTable:
+    """Serialize put_item for this concurrency fixture only."""
+
+    def __init__(
+        self,
+        table: Any,
+    ) -> None:
+        """Wrap one DynamoDB table resource."""
+        self._table = table
+        self._write_lock = Lock()
+
+    def put_item(
+        self,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        """Forward put_item unchanged under an exclusive write lock."""
+        with self._write_lock:
+            return self._table.put_item(
+                *args,
+                **kwargs,
+            )
+
+    def __getattr__(
+        self,
+        name: str,
+    ) -> Any:
+        """Delegate remaining table attributes and methods to Moto."""
+        return getattr(
+            self._table,
+            name,
+        )
 
 
 class FixedClock:
@@ -152,7 +192,7 @@ def dynamodb_table(
         )
         table.wait_until_exists()
 
-        yield table
+        yield AtomicConditionalTable(table)
 
 
 def make_pending_job() -> DocumentJob:
