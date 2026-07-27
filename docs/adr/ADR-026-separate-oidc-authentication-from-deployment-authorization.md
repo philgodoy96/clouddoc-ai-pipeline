@@ -95,6 +95,7 @@ The role trust requires exact values for:
 
 ```text
 aud
+sub
 repository
 repository_id
 repository_owner_id
@@ -103,11 +104,47 @@ environment
 job_workflow_ref
 ```
 
+All eight conditions use `StringEquals`. No wildcard is allowed.
+
+CloudDoc pins:
+
+```text
+repository name
+immutable repository ID
+immutable repository-owner ID
+ID-qualified environment subject
+main ref
+dev environment
+reusable workflow ref
+```
+
+The exact ID-qualified subject strategy:
+
+```text
+repo:${github_repository_owner}@${github_repository_owner_id}/${github_repository_name}@${github_repository_id}:environment:${github_environment}
+```
+
+Approved CloudDoc shape with placeholders:
+
+```text
+repo:philgodoy96@<github_repository_owner_id>/clouddoc-ai-pipeline@<github_repository_id>:environment:dev
+```
+
+AWS evaluates the subject through:
+
+```text
+token.actions.githubusercontent.com:sub
+```
+
 The trusted workload is:
 
 ```text
 repository:
     philgodoy96/clouddoc-ai-pipeline
+
+subject:
+    repo:philgodoy96@<github_repository_owner_id>/
+    clouddoc-ai-pipeline@<github_repository_id>:environment:dev
 
 ref:
     refs/heads/main
@@ -120,6 +157,8 @@ reusable workflow:
 ```
 
 The numeric GitHub repository and owner IDs are required runtime inputs.
+
+`job_workflow_ref` remains ref-based. `job_workflow_sha` is a separate claim and is intentionally not part of this trust contract.
 
 The identity workflow:
 
@@ -154,12 +193,13 @@ keep each implementation commit testable
 
 ## Trust Strategy
 
-CloudDoc will not rely only on a broad `sub` pattern.
+CloudDoc will not rely on a broad `sub` pattern or an implicit subject check.
 
 The trust policy uses exact `StringEquals` conditions for:
 
 ```text
 STS audience
+exact ID-qualified subject
 repository name
 immutable repository ID
 immutable repository-owner ID
@@ -169,6 +209,10 @@ reviewed reusable workflow ref
 ```
 
 This creates defense in depth across mutable and immutable identity attributes.
+
+The exact subject condition is environment-scoped and embeds the immutable repository ID and immutable repository-owner ID.
+
+The subject complements the separate `repository_id` and `repository_owner_id` claims and complements `job_workflow_ref`.
 
 The role cannot be assumed by:
 
@@ -181,6 +225,7 @@ a tag
 another environment
 another workflow file
 a fork
+a classic owner/repository subject that does not match the ID-qualified token
 ```
 
 ## Workflow Strategy
@@ -240,6 +285,14 @@ The trust names one repository, branch, environment, and reusable workflow.
 
 Immutable GitHub IDs remain stable across repository renames.
 
+AWS receives an explicit shared-provider subject boundary.
+
+The subject remains stable across repository/owner renames when IDs remain.
+
+The environment is encoded directly in the subject.
+
+The trust no longer depends on an implicit sub check.
+
 The identity workflow has a small auditable execution surface.
 
 The STS session is correlated to a GitHub run ID.
@@ -265,6 +318,12 @@ GitHub Environment and repository variables require manual configuration.
 Future authorization needs another design and implementation slice.
 
 Exact workflow and branch conditions make intentional renames require trust-policy updates.
+
+Incorrect numeric IDs make the role unassumable.
+
+The subject must match the repository OIDC customization actually in effect.
+
+Repository identity changes require a reviewed trust update.
 ```
 
 ### Neutral
@@ -277,6 +336,10 @@ The role maximum session duration is 3600 seconds, while the verification workfl
 The identity workflow can call STS GetCallerIdentity without an attached identity policy.
 
 Branch protection remains separate repository configuration.
+
+The corrected trust contract is implemented in repository source.
+
+It is not yet applied to the AWS role and has not yet been re-verified against AWS.
 ```
 
 ## Alternatives Considered
@@ -325,6 +388,33 @@ Reasons:
 any workflow change could reach AWS
 pull-request and branch boundaries become harder to reason about
 reusable workflow identity would not be enforced
+```
+
+### Classic owner/repository environment subject
+
+Rejected for this repository because CloudTrail proved that the token
+used the ID-qualified form.
+
+Example of the rejected classic form:
+
+```text
+repo:philgodoy96/clouddoc-ai-pipeline:environment:dev
+```
+
+### Wildcard subject
+
+Rejected because it broadens trust and violates the exact workload
+boundary.
+
+### Replace `job_workflow_ref` with SHA
+
+Rejected because `job_workflow_ref` and `job_workflow_sha` are separate
+claims, and no evidence identified workflow SHA as the failure.
+
+`job_workflow_ref` remains ref-based:
+
+```text
+...reusable-aws-identity.yml@refs/heads/main
 ```
 
 ### Trust every repository owned by the user
@@ -416,6 +506,8 @@ Workflow-call-only reusable identity workflow.
 
 Exact repository identity.
 
+Exact ID-qualified subject.
+
 Exact main ref.
 
 Exact dev environment.
@@ -450,9 +542,21 @@ mocked Terraform tests
 static bootstrap tests
 GitHub Actions source contracts
 full repository quality gates
+source tests require eight exact claims
 ```
 
-Real verification:
+Corrective and real verification requirements:
+
+```text
+corrective Terraform plan must contain one in-place role update
+effective AWS trust must contain exact ID-qualified sub
+AWS Identity Check must succeed
+role must still have no attached or inline policies
+```
+
+These corrective verification steps are not yet complete.
+
+Real verification also includes:
 
 ```text
 apply OIDC bootstrap root

@@ -2,15 +2,29 @@
 
 ## Status
 
-Implemented in repository source.
+```text
+Initial OIDC bootstrap was provisioned.
+Initial identity verification reached AWS but was denied.
+CloudTrail identified the ID-qualified subject.
+The exact subject correction is implemented in source.
+The corrective role update is not yet applied.
+End-to-end federation has not yet been re-verified.
+```
 
-Not yet provisioned or verified against a real AWS account.
+Preserve the distinction between:
+
+```text
+source implementation
+AWS provisioning
+end-to-end operational evidence
+authorization
+```
 
 The repository now contains:
 
 ```text
 GitHub OIDC Terraform bootstrap root
-strict GitHub-to-AWS role trust policy
+strict GitHub-to-AWS role trust policy with exact subject condition
 permissionless development identity role
 mocked Terraform trust tests
 static bootstrap security tests
@@ -19,16 +33,11 @@ reusable AWS identity workflow
 static GitHub Actions identity contracts
 ```
 
-The following account and repository configuration remains intentionally pending:
+The following remain intentionally pending:
 
 ```text
-AWS IAM OIDC provider creation
-AWS IAM identity role creation
-local bootstrap apply
-GitHub Environment: dev
-GitHub repository variables
-end-to-end AssumeRoleWithWebIdentity verification
-branch-protection update for the new source changes
+corrective AWS role trust apply
+AWS Identity Check re-verification
 deployment authorization
 ```
 
@@ -381,12 +390,13 @@ All trust conditions use:
 StringEquals
 ```
 
-The policy contains no wildcard claim values.
+Eight exact claims. The policy contains no wildcard claim values.
 
 ### Required claims
 
 ```text
 aud
+sub
 repository
 repository_id
 repository_owner_id
@@ -403,6 +413,34 @@ token.actions.githubusercontent.com:aud
 ```
 
 This binds the GitHub token to the AWS STS audience.
+
+### Subject
+
+```text
+token.actions.githubusercontent.com:sub
+    =
+repo:philgodoy96@<github_repository_owner_id>/clouddoc-ai-pipeline@<github_repository_id>:environment:dev
+```
+
+The ID-qualified subject is constructed from reviewed Terraform variables:
+
+```text
+repo:${github_repository_owner}@${github_repository_owner_id}/${github_repository_name}@${github_repository_id}:environment:${github_environment}
+```
+
+The exact subject condition is environment-scoped and embeds the immutable repository ID and immutable repository-owner ID.
+
+Why the subject uses immutable IDs in addition to the separate ID claims:
+
+```text
+the subject itself must match the token exactly
+separate ID claims provide independently reviewable defense in depth
+repository and owner names preserve human-readable review context
+```
+
+AWS evaluates the subject through `token.actions.githubusercontent.com:sub`.
+
+The subject contains no wildcard.
 
 ### Repository name
 
@@ -464,6 +502,15 @@ token.actions.githubusercontent.com:job_workflow_ref
       reusable-aws-identity.yml@refs/heads/main
 ```
 
+`job_workflow_ref` remains:
+
+```text
+...reusable-aws-identity.yml@refs/heads/main
+```
+
+`job_workflow_sha` is a separate claim and is intentionally not part of this
+hotfix.
+
 This restricts role assumption to the reviewed reusable identity workflow on `main`.
 
 A different workflow file cannot assume the role merely because it belongs to the same repository.
@@ -485,7 +532,7 @@ refs/heads/*
 environment:*
 ```
 
-CloudDoc instead uses multiple exact workload claims.
+CloudDoc instead uses eight exact workload claims, including the exact ID-qualified subject.
 
 This makes trust-policy changes visible and reviewable when:
 
@@ -494,6 +541,7 @@ repository ownership changes
 workflow path changes
 trusted branch changes
 trusted environment changes
+immutable IDs embedded in the subject change
 ```
 
 ## Terraform Inputs
@@ -880,8 +928,12 @@ provider tags
 single trust statement
 AssumeRoleWithWebIdentity only
 federated principal
-seven exact StringEquals conditions
+eight exact StringEquals conditions
+ID-qualified subject construction
+exact sub condition
 no wildcard claim values
+job_workflow_ref remains ref-based
+job_workflow_sha absent
 canonical role name
 maximum session duration
 verification tags
@@ -905,8 +957,12 @@ shared provider lock
 Terraform version contract
 exact resource ownership
 local-state boundary
-exact trust claims
+eight exact trust claims
+ID-qualified subject construction
+exact sub condition
 absence of wildcard trust
+job_workflow_ref remains ref-based
+job_workflow_sha absent
 absence of authorization policies
 absence of static credentials
 placeholder repository IDs
@@ -1115,9 +1171,61 @@ AWS Identity Check
 
 through manual workflow dispatch on `main`.
 
+## Initial Federation Incident
+
+An initial AWS Identity Check run was dispatched manually on `main`.
+
+Observed sequence:
+
+```text
+manual dispatch on main
+preflight passed
+AWS credential action reached STS
+AssumeRoleWithWebIdentity was denied
+CloudTrail recorded the ID-qualified environment subject
+trust lacked sub
+SHA hypothesis rejected
+```
+
+CloudTrail showed that this repository receives an ID-qualified environment-scoped subject.
+
+The previous trust policy evaluated seven exact claims but did not evaluate:
+
+```text
+token.actions.githubusercontent.com:sub
+```
+
+The source hotfix adds an eighth exact `StringEquals` condition for `sub`, constructed from the existing immutable repository and owner ID variables.
+
+`job_workflow_ref` was not changed.
+
+`job_workflow_sha` was not introduced.
+
+The corrected trust contract is implemented in repository source.
+
+It is not yet applied to the AWS role and has not yet been re-verified against AWS.
+
+## Corrective Operational Sequence
+
+Next reviewed steps:
+
+```text
+review hotfix PR
+merge hotfix
+generate saved plan
+verify one in-place role trust update
+apply reviewed plan
+verify eight exact conditions in AWS
+rerun AWS Identity Check
+record successful federation evidence
+verify role remains permissionless
+```
+
+These steps are not yet complete.
+
 ## End-to-End Verification
 
-Expected flow:
+Expected flow after the corrective trust is applied:
 
 ```text
 manual workflow dispatch
@@ -1128,7 +1236,7 @@ dev environment
         ↓
 GitHub OIDC token
         ↓
-AWS trust-policy validation
+AWS trust-policy validation including exact sub
         ↓
 15-minute permissionless role session
         ↓
@@ -1164,6 +1272,8 @@ runtime correctness
 rollback readiness
 ```
 
+End-to-end federation has not yet been re-verified.
+
 ## Failure Modes
 
 ### OIDC provider absent
@@ -1188,6 +1298,38 @@ Result:
 
 ```text
 preflight fails before credential exchange
+```
+
+### `sub` absent from trust
+
+Result:
+
+```text
+AWS denies AssumeRoleWithWebIdentity
+```
+
+### Classic subject configured for an ID-qualified token
+
+Result:
+
+```text
+AWS denies role assumption
+```
+
+### Wrong immutable IDs embedded in `sub`
+
+Result:
+
+```text
+AWS denies role assumption
+```
+
+### Wrong environment embedded in `sub`
+
+Result:
+
+```text
+AWS denies role assumption
 ```
 
 ### Wrong repository ID
@@ -1297,6 +1439,12 @@ The reusable workflow is workflow-call-only.
 
 The role trust names one repository.
 
+The trust evaluates the exact ID-qualified subject.
+
+The subject is scoped to the dev environment.
+
+The subject contains no wildcard.
+
 The trust uses immutable repository and owner IDs.
 
 The trust requires main.
@@ -1385,7 +1533,7 @@ The AWS IAM OIDC provider and IAM role do not introduce material recurring compu
 
 ```text
 OIDC Terraform root
-strict trust policy
+strict trust policy with exact ID-qualified subject
 permissionless identity role
 Terraform mocked tests
 static bootstrap tests
@@ -1395,14 +1543,26 @@ workflow contract tests
 documentation
 ```
 
-### Not yet provisioned
+### Provisioned previously
 
 ```text
 AWS IAM OIDC provider
 AWS IAM identity role
 GitHub dev Environment
 GitHub repository variables
-real OIDC session
+```
+
+### Not yet applied
+
+```text
+corrective AWS role trust update with exact sub
+```
+
+### Not yet re-verified against AWS
+
+```text
+successful AssumeRoleWithWebIdentity
+successful GetCallerIdentity federation evidence
 ```
 
 ### Not yet authorized

@@ -166,6 +166,7 @@ Required token claims:
 
 ```text
 aud
+sub
 repository
 repository_id
 repository_owner_id
@@ -174,11 +175,57 @@ environment
 job_workflow_ref
 ```
 
+Eight exact claims. No wildcard.
+
+### Exact subject condition
+
+AWS evaluates the environment-scoped subject through:
+
+```text
+token.actions.githubusercontent.com:sub
+```
+
+The ID-qualified subject is constructed from reviewed Terraform variables:
+
+```text
+repo:${github_repository_owner}@${github_repository_owner_id}/${github_repository_name}@${github_repository_id}:environment:${github_environment}
+```
+
+Approved CloudDoc shape with placeholders:
+
+```text
+repo:philgodoy96@<github_repository_owner_id>/clouddoc-ai-pipeline@<github_repository_id>:environment:dev
+```
+
+The exact subject condition:
+
+```text
+is exact
+is environment-scoped
+embeds the immutable repository ID
+embeds the immutable repository-owner ID
+complements the separate repository_id and repository_owner_id claims
+complements job_workflow_ref
+contains no wildcard
+```
+
+`job_workflow_ref` remains ref-based:
+
+```text
+...reusable-aws-identity.yml@refs/heads/main
+```
+
+`job_workflow_sha` is a separate GitHub claim and is intentionally not part of this trust contract.
+
 Default trusted values:
 
 ```text
 aud
     = sts.amazonaws.com
+
+sub
+    = repo:philgodoy96@<github_repository_owner_id>/
+      clouddoc-ai-pipeline@<github_repository_id>:environment:dev
 
 repository
     = philgodoy96/clouddoc-ai-pipeline
@@ -195,6 +242,21 @@ job_workflow_ref
 ```
 
 The immutable numeric repository and owner IDs are required runtime inputs.
+
+## Incident Note
+
+An initial identity verification run reached AWS STS but was denied because
+the role trust did not evaluate `sub`.
+
+CloudTrail showed that this repository receives an ID-qualified environment
+subject.
+
+The source hotfix adds the exact subject condition.
+
+The corrected trust contract is implemented in repository source.
+
+It is not yet applied to the AWS role and has not yet been re-verified through
+the AWS Identity Check workflow.
 
 ## Wildcard Boundary
 
@@ -383,6 +445,24 @@ No AWS access key or secret key will be added to GitHub.
 
 ## Failure Modes
 
+### Missing exact sub condition
+
+```text
+AWS denies AssumeRoleWithWebIdentity
+```
+
+### Classic owner/repository subject used instead of the ID-qualified subject
+
+```text
+AWS denies role assumption
+```
+
+### Incorrect repository or owner numeric IDs inside the subject
+
+```text
+AWS denies role assumption
+```
+
 ### Wrong repository ID
 
 ```text
@@ -434,6 +514,12 @@ reviewed Terraform import or recovery required
 ```text
 No AWS access keys are committed.
 
+The trust evaluates the exact ID-qualified subject.
+
+The subject is scoped to the dev environment.
+
+The subject contains no wildcard.
+
 The trust policy uses immutable repository and owner IDs.
 
 The trust policy requires the exact repository name.
@@ -458,11 +544,8 @@ Local bootstrap state remains outside Git.
 ## Intentionally Deferred
 
 ```text
-GitHub identity verification workflows
-real AWS bootstrap apply
-GitHub Environment creation
-repository variables
-end-to-end OIDC verification
+corrective AWS role trust apply
+AWS Identity Check re-verification
 Terraform state access policy
 Terraform plan policy
 Terraform apply policy
