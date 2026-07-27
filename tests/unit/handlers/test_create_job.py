@@ -1,7 +1,12 @@
 """Tests for the create-document-job Lambda handler."""
 
+from __future__ import annotations
+
 import json
 from datetime import UTC, datetime
+from typing import NamedTuple
+
+import pytest
 
 from clouddoc.application import (
     ApplicationConflictError,
@@ -9,6 +14,7 @@ from clouddoc.application import (
     CreateDocumentJobCommand,
 )
 from clouddoc.domain import JobStatus
+from clouddoc.handlers import create_job as create_job_module
 from clouddoc.handlers.create_job import handle
 from clouddoc.schemas.job_views import DocumentJobView
 from clouddoc.schemas.upload_views import (
@@ -22,6 +28,97 @@ FIXED_UPLOAD = PresignedDocumentUpload.create(
     object_key="documents/job-001/source.txt",
     expires_in_seconds=900,
 )
+
+SENSITIVE_FRAGMENTS = (
+    "https://example.com/presigned-upload",
+    "documents/job-001/source.txt",
+    "clouddoc-secret-table",
+    "DynamoDB unavailable",
+    "duplicate job",
+)
+
+
+class RecordedOperationalEvent(NamedTuple):
+    """One captured operational logger emission."""
+
+    level: str
+    event_name: str
+    fields: dict[str, object]
+
+
+class RecordingOperationalLogger:
+    """Operational logger double that records every emission."""
+
+    def __init__(self) -> None:
+        """Initialize an empty event list."""
+        self.events: list[RecordedOperationalEvent] = []
+
+    def info(self, event_name: str, **fields: object) -> None:
+        """Record an informational event."""
+        self.events.append(
+            RecordedOperationalEvent(
+                level="info",
+                event_name=event_name,
+                fields=dict(fields),
+            )
+        )
+
+    def warning(self, event_name: str, **fields: object) -> None:
+        """Record a warning event."""
+        self.events.append(
+            RecordedOperationalEvent(
+                level="warning",
+                event_name=event_name,
+                fields=dict(fields),
+            )
+        )
+
+    def error(self, event_name: str, **fields: object) -> None:
+        """Record an error event."""
+        self.events.append(
+            RecordedOperationalEvent(
+                level="error",
+                event_name=event_name,
+                fields=dict(fields),
+            )
+        )
+
+
+class RaisingOperationalLogger:
+    """Operational logger double that fails every emission."""
+
+    def info(self, event_name: str, **fields: object) -> None:
+        """Fail informational emission."""
+        del event_name, fields
+        raise RuntimeError("logger info failure")
+
+    def warning(self, event_name: str, **fields: object) -> None:
+        """Fail warning emission."""
+        del event_name, fields
+        raise RuntimeError("logger warning failure")
+
+    def error(self, event_name: str, **fields: object) -> None:
+        """Fail error emission."""
+        del event_name, fields
+        raise RuntimeError("logger error failure")
+
+
+class SequenceTimer:
+    """Deterministic timer that returns a fixed sequence of values."""
+
+    def __init__(self, *values: float) -> None:
+        """Store the values that will be returned on successive calls."""
+        self._values = list(values)
+        self._index = 0
+
+    def __call__(self) -> float:
+        """Return the next configured timer value."""
+        if self._index >= len(self._values):
+            raise RuntimeError("SequenceTimer exhausted")
+
+        value = self._values[self._index]
+        self._index += 1
+        return value
 
 
 def make_create_result(
@@ -131,6 +228,16 @@ def parse_body(
     assert isinstance(parsed, dict)
 
     return parsed
+
+
+def assert_fields_exclude_sensitive_content(
+    fields: dict[str, object],
+) -> None:
+    """Prove structured fields omit sensitive payload and message content."""
+    serialized = json.dumps(fields)
+
+    for fragment in SENSITIVE_FRAGMENTS:
+        assert fragment not in serialized
 
 
 def test_returns_created_document_job() -> None:
@@ -353,3 +460,207 @@ def test_rejects_non_mapping_event() -> None:
     assert error["code"] == "invalid_request"
     assert isinstance(error["request_id"], str)
     assert error["correlation_id"] == error["request_id"]
+
+
+def test_successful_creation_emits_one_info_completion_event() -> None:
+    """Successful creation should emit exactly one safe info event."""
+    logger = RecordingOperationalLogger()
+    timer = SequenceTimer(10.0, 10.125)
+
+    response = handle(
+        make_event(body="{}"),
+        None,
+        service=RecordingCreateService(),
+        logger=logger,
+        timer=timer,
+    )
+
+    assert response["statusCode"] == 201
+    assert len(logger.events) == 1
+
+    event = logger.events[0]
+
+    assert event.level == "info"
+    assert event.event_name == "control_plane.request_completed"
+    assert event.fields == {
+        "operation": "create_document_job",
+        "outcome": "succeeded",
+        "status_code": 201,
+        "request_id": "request-001",
+        "correlation_id": "correlation-001",
+        "duration_ms": 125.0,
+        "job_id": "job-001",
+    }
+    assert "error_code" not in event.fields
+    assert "exception_type" not in event.fields
+    assert_fields_exclude_sensitive_content(event.fields)
+
+
+def test_invalid_body_emits_one_warning_completion_event() -> None:
+    """Invalid request bodies should emit one warning without secrets."""
+    logger = RecordingOperationalLogger()
+    timer = SequenceTimer(10.0, 10.125)
+
+    response = handle(
+        make_event(body="{invalid"),
+        None,
+        service=RecordingCreateService(),
+        logger=logger,
+        timer=timer,
+    )
+
+    assert response["statusCode"] == 400
+    assert len(logger.events) == 1
+
+    event = logger.events[0]
+
+    assert event.level == "warning"
+    assert event.event_name == "control_plane.request_completed"
+    assert event.fields == {
+        "operation": "create_document_job",
+        "outcome": "invalid_request",
+        "status_code": 400,
+        "request_id": "request-001",
+        "correlation_id": "correlation-001",
+        "duration_ms": 125.0,
+        "error_code": "invalid_request",
+        "exception_type": "ValueError",
+    }
+    assert_fields_exclude_sensitive_content(event.fields)
+
+
+@pytest.mark.parametrize(
+    ("service", "status_code", "level", "outcome", "error_code", "exception_type"),
+    [
+        (
+            ConflictCreateService(),
+            409,
+            "warning",
+            "conflict",
+            "job_conflict",
+            "ApplicationConflictError",
+        ),
+        (
+            FailingCreateService(),
+            503,
+            "error",
+            "dependency_failure",
+            "service_unavailable",
+            "ApplicationDependencyError",
+        ),
+        (
+            UnexpectedFailureService(),
+            500,
+            "error",
+            "internal_error",
+            "internal_error",
+            "RuntimeError",
+        ),
+    ],
+)
+def test_mapped_failures_emit_one_completion_event(
+    service: object,
+    status_code: int,
+    level: str,
+    outcome: str,
+    error_code: str,
+    exception_type: str,
+) -> None:
+    """Mapped application failures should emit exactly one completion event."""
+    logger = RecordingOperationalLogger()
+    timer = SequenceTimer(10.0, 10.125)
+
+    response = handle(
+        make_event(),
+        None,
+        service=service,  # type: ignore[arg-type]
+        logger=logger,
+        timer=timer,
+    )
+
+    assert response["statusCode"] == status_code
+    assert len(logger.events) == 1
+
+    event = logger.events[0]
+
+    assert event.level == level
+    assert event.event_name == "control_plane.request_completed"
+    assert event.fields == {
+        "operation": "create_document_job",
+        "outcome": outcome,
+        "status_code": status_code,
+        "request_id": "request-001",
+        "correlation_id": "correlation-001",
+        "duration_ms": 125.0,
+        "error_code": error_code,
+        "exception_type": exception_type,
+    }
+    assert "job_id" not in event.fields
+    assert_fields_exclude_sensitive_content(event.fields)
+
+
+def test_non_mapping_event_emits_one_warning_without_exception_type() -> None:
+    """Non-mapping events should emit one warning without an exception type."""
+    logger = RecordingOperationalLogger()
+    timer = SequenceTimer(10.0, 10.125)
+
+    response = handle(
+        ["invalid-event"],
+        None,
+        service=RecordingCreateService(),
+        logger=logger,
+        timer=timer,
+    )
+
+    assert response["statusCode"] == 400
+    assert len(logger.events) == 1
+
+    event = logger.events[0]
+
+    assert event.level == "warning"
+    assert event.event_name == "control_plane.request_completed"
+    assert event.fields["outcome"] == "invalid_request"
+    assert event.fields["error_code"] == "invalid_request"
+    assert "exception_type" not in event.fields
+    assert "job_id" not in event.fields
+    assert_fields_exclude_sensitive_content(event.fields)
+
+
+def test_raising_logger_does_not_change_successful_response() -> None:
+    """Logger failures must not alter the successful HTTP response."""
+    response = handle(
+        make_event(body="{}"),
+        None,
+        service=RecordingCreateService(),
+        logger=RaisingOperationalLogger(),
+        timer=SequenceTimer(10.0, 10.125),
+    )
+
+    assert response["statusCode"] == 201
+    assert parse_body(response)["job"]["job_id"] == "job-001"
+    assert response["headers"] == {
+        "content-type": "application/json",
+        "x-request-id": "request-001",
+        "x-correlation-id": "correlation-001",
+    }
+
+
+def test_lambda_handler_passes_module_logger(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Production entrypoint should wire the module-level operational logger."""
+    logger = RecordingOperationalLogger()
+    service = RecordingCreateService()
+
+    monkeypatch.setattr(create_job_module, "_LOGGER", logger)
+    monkeypatch.setattr(create_job_module, "_get_service", lambda: service)
+
+    response = create_job_module.lambda_handler(
+        make_event(body="{}"),
+        None,
+    )
+
+    assert response["statusCode"] == 201
+    assert len(logger.events) == 1
+    assert logger.events[0].event_name == "control_plane.request_completed"
+    assert logger.events[0].fields["outcome"] == "succeeded"

@@ -1,7 +1,12 @@
 """Tests for the get-document-job Lambda handler."""
 
+from __future__ import annotations
+
 import json
 from datetime import UTC, datetime
+from typing import NamedTuple
+
+import pytest
 
 from clouddoc.application import (
     ApplicationDependencyError,
@@ -9,10 +14,102 @@ from clouddoc.application import (
     GetDocumentJobQuery,
 )
 from clouddoc.domain import JobStatus
+from clouddoc.handlers import get_job as get_job_module
 from clouddoc.handlers.get_job import handle
 from clouddoc.schemas.job_views import DocumentJobView
 
 FIXED_TIME = datetime(2026, 7, 25, 12, 0, tzinfo=UTC)
+
+SENSITIVE_FRAGMENTS = (
+    "https://example.com/presigned-upload",
+    "documents/job-001/source.txt",
+    "clouddoc-secret-table",
+    "DynamoDB unavailable",
+    "job missing",
+)
+
+
+class RecordedOperationalEvent(NamedTuple):
+    """One captured operational logger emission."""
+
+    level: str
+    event_name: str
+    fields: dict[str, object]
+
+
+class RecordingOperationalLogger:
+    """Operational logger double that records every emission."""
+
+    def __init__(self) -> None:
+        """Initialize an empty event list."""
+        self.events: list[RecordedOperationalEvent] = []
+
+    def info(self, event_name: str, **fields: object) -> None:
+        """Record an informational event."""
+        self.events.append(
+            RecordedOperationalEvent(
+                level="info",
+                event_name=event_name,
+                fields=dict(fields),
+            )
+        )
+
+    def warning(self, event_name: str, **fields: object) -> None:
+        """Record a warning event."""
+        self.events.append(
+            RecordedOperationalEvent(
+                level="warning",
+                event_name=event_name,
+                fields=dict(fields),
+            )
+        )
+
+    def error(self, event_name: str, **fields: object) -> None:
+        """Record an error event."""
+        self.events.append(
+            RecordedOperationalEvent(
+                level="error",
+                event_name=event_name,
+                fields=dict(fields),
+            )
+        )
+
+
+class RaisingOperationalLogger:
+    """Operational logger double that fails every emission."""
+
+    def info(self, event_name: str, **fields: object) -> None:
+        """Fail informational emission."""
+        del event_name, fields
+        raise RuntimeError("logger info failure")
+
+    def warning(self, event_name: str, **fields: object) -> None:
+        """Fail warning emission."""
+        del event_name, fields
+        raise RuntimeError("logger warning failure")
+
+    def error(self, event_name: str, **fields: object) -> None:
+        """Fail error emission."""
+        del event_name, fields
+        raise RuntimeError("logger error failure")
+
+
+class SequenceTimer:
+    """Deterministic timer that returns a fixed sequence of values."""
+
+    def __init__(self, *values: float) -> None:
+        """Store the values that will be returned on successive calls."""
+        self._values = list(values)
+        self._index = 0
+
+    def __call__(self) -> float:
+        """Return the next configured timer value."""
+        if self._index >= len(self._values):
+            raise RuntimeError("SequenceTimer exhausted")
+
+        value = self._values[self._index]
+        self._index += 1
+        return value
 
 
 class RecordingGetService:
@@ -110,6 +207,16 @@ def parse_body(
     assert isinstance(parsed, dict)
 
     return parsed
+
+
+def assert_fields_exclude_sensitive_content(
+    fields: dict[str, object],
+) -> None:
+    """Prove structured fields omit sensitive payload and message content."""
+    serialized = json.dumps(fields)
+
+    for fragment in SENSITIVE_FRAGMENTS:
+        assert fragment not in serialized
 
 
 def test_returns_document_job() -> None:
@@ -338,3 +445,255 @@ def test_response_trace_headers_use_current_request_context() -> None:
         "x-request-id": "request-special",
         "x-correlation-id": "correlation-special",
     }
+
+
+def test_successful_retrieval_emits_one_info_completion_event() -> None:
+    """Successful retrieval should emit exactly one safe info event."""
+    logger = RecordingOperationalLogger()
+    timer = SequenceTimer(10.0, 10.125)
+
+    response = handle(
+        make_event(),
+        None,
+        service=RecordingGetService(),
+        logger=logger,
+        timer=timer,
+    )
+
+    assert response["statusCode"] == 200
+    assert len(logger.events) == 1
+
+    event = logger.events[0]
+
+    assert event.level == "info"
+    assert event.event_name == "control_plane.request_completed"
+    assert event.fields == {
+        "operation": "get_document_job",
+        "outcome": "succeeded",
+        "status_code": 200,
+        "request_id": "request-001",
+        "correlation_id": "correlation-001",
+        "duration_ms": 125.0,
+        "job_id": "job-001",
+    }
+    assert "error_code" not in event.fields
+    assert "exception_type" not in event.fields
+    assert_fields_exclude_sensitive_content(event.fields)
+
+
+def test_logged_job_id_excludes_surrounding_whitespace() -> None:
+    """Logged job identity should use the normalized path parameter."""
+    logger = RecordingOperationalLogger()
+
+    response = handle(
+        make_event(
+            path_parameters={
+                "job_id": "  job-001  ",
+            }
+        ),
+        None,
+        service=RecordingGetService(),
+        logger=logger,
+        timer=SequenceTimer(10.0, 10.125),
+    )
+
+    assert response["statusCode"] == 200
+    assert len(logger.events) == 1
+    assert logger.events[0].fields["job_id"] == "job-001"
+
+
+def test_missing_job_emits_one_warning_completion_event() -> None:
+    """Missing jobs should emit one warning with the normalized job ID."""
+    logger = RecordingOperationalLogger()
+    timer = SequenceTimer(10.0, 10.125)
+
+    response = handle(
+        make_event(),
+        None,
+        service=MissingGetService(),
+        logger=logger,
+        timer=timer,
+    )
+
+    assert response["statusCode"] == 404
+    assert len(logger.events) == 1
+
+    event = logger.events[0]
+
+    assert event.level == "warning"
+    assert event.event_name == "control_plane.request_completed"
+    assert event.fields == {
+        "operation": "get_document_job",
+        "outcome": "not_found",
+        "status_code": 404,
+        "request_id": "request-001",
+        "correlation_id": "correlation-001",
+        "duration_ms": 125.0,
+        "job_id": "job-001",
+        "error_code": "job_not_found",
+        "exception_type": "ApplicationNotFoundError",
+    }
+    assert_fields_exclude_sensitive_content(event.fields)
+
+
+def test_invalid_path_emits_one_warning_without_job_id() -> None:
+    """Invalid path parameters should emit one warning without job_id."""
+    logger = RecordingOperationalLogger()
+    timer = SequenceTimer(10.0, 10.125)
+
+    response = handle(
+        make_event(path_parameters={}),
+        None,
+        service=RecordingGetService(),
+        logger=logger,
+        timer=timer,
+    )
+
+    assert response["statusCode"] == 400
+    assert len(logger.events) == 1
+
+    event = logger.events[0]
+
+    assert event.level == "warning"
+    assert event.event_name == "control_plane.request_completed"
+    assert event.fields == {
+        "operation": "get_document_job",
+        "outcome": "invalid_request",
+        "status_code": 400,
+        "request_id": "request-001",
+        "correlation_id": "correlation-001",
+        "duration_ms": 125.0,
+        "error_code": "invalid_request",
+        "exception_type": "ValueError",
+    }
+    assert "job_id" not in event.fields
+    assert_fields_exclude_sensitive_content(event.fields)
+
+
+@pytest.mark.parametrize(
+    ("service", "status_code", "level", "outcome", "error_code", "exception_type"),
+    [
+        (
+            FailingGetService(),
+            503,
+            "error",
+            "dependency_failure",
+            "service_unavailable",
+            "ApplicationDependencyError",
+        ),
+        (
+            UnexpectedFailureService(),
+            500,
+            "error",
+            "internal_error",
+            "internal_error",
+            "RuntimeError",
+        ),
+    ],
+)
+def test_mapped_failures_emit_one_completion_event_with_job_id(
+    service: object,
+    status_code: int,
+    level: str,
+    outcome: str,
+    error_code: str,
+    exception_type: str,
+) -> None:
+    """Dependency and unexpected failures should include the parsed job ID."""
+    logger = RecordingOperationalLogger()
+    timer = SequenceTimer(10.0, 10.125)
+
+    response = handle(
+        make_event(),
+        None,
+        service=service,  # type: ignore[arg-type]
+        logger=logger,
+        timer=timer,
+    )
+
+    assert response["statusCode"] == status_code
+    assert len(logger.events) == 1
+
+    event = logger.events[0]
+
+    assert event.level == level
+    assert event.event_name == "control_plane.request_completed"
+    assert event.fields == {
+        "operation": "get_document_job",
+        "outcome": outcome,
+        "status_code": status_code,
+        "request_id": "request-001",
+        "correlation_id": "correlation-001",
+        "duration_ms": 125.0,
+        "job_id": "job-001",
+        "error_code": error_code,
+        "exception_type": exception_type,
+    }
+    assert_fields_exclude_sensitive_content(event.fields)
+
+
+def test_non_mapping_event_emits_one_warning_without_job_id_or_exception() -> None:
+    """Non-mapping events should emit one warning without job_id or exception."""
+    logger = RecordingOperationalLogger()
+    timer = SequenceTimer(10.0, 10.125)
+
+    response = handle(
+        "invalid-event",
+        None,
+        service=RecordingGetService(),
+        logger=logger,
+        timer=timer,
+    )
+
+    assert response["statusCode"] == 400
+    assert len(logger.events) == 1
+
+    event = logger.events[0]
+
+    assert event.level == "warning"
+    assert event.event_name == "control_plane.request_completed"
+    assert event.fields["outcome"] == "invalid_request"
+    assert event.fields["error_code"] == "invalid_request"
+    assert "job_id" not in event.fields
+    assert "exception_type" not in event.fields
+    assert_fields_exclude_sensitive_content(event.fields)
+
+
+def test_raising_logger_does_not_change_successful_response() -> None:
+    """Logger failures must not alter the successful HTTP response."""
+    response = handle(
+        make_event(),
+        None,
+        service=RecordingGetService(),
+        logger=RaisingOperationalLogger(),
+        timer=SequenceTimer(10.0, 10.125),
+    )
+
+    assert response["statusCode"] == 200
+    assert parse_body(response)["job_id"] == "job-001"
+    assert response["headers"] == {
+        "content-type": "application/json",
+        "x-request-id": "request-001",
+        "x-correlation-id": "correlation-001",
+    }
+
+
+def test_lambda_handler_passes_module_logger(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Production entrypoint should wire the module-level operational logger."""
+    logger = RecordingOperationalLogger()
+    service = RecordingGetService()
+
+    monkeypatch.setattr(get_job_module, "_LOGGER", logger)
+    monkeypatch.setattr(get_job_module, "_get_service", lambda: service)
+
+    response = get_job_module.lambda_handler(
+        make_event(),
+        None,
+    )
+
+    assert response["statusCode"] == 200
+    assert len(logger.events) == 1
+    assert logger.events[0].event_name == "control_plane.request_completed"
+    assert logger.events[0].fields["outcome"] == "succeeded"
