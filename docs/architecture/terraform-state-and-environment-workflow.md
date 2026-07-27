@@ -20,6 +20,18 @@ saved-plan integrity manifests
 local-state migration guard
 offline Terraform bootstrap tests
 offline Python workflow tests
+credential-free Terraform offline CI
+```
+
+Credential-free Terraform offline CI is implemented. CI invokes the same `python scripts/terraform_workflow.py offline-check` command used by local operators. CI pins Terraform to `1.15.8`, disables the wrapper (`terraform_wrapper: false`), and validates the application and bootstrap roots independently from AWS.
+
+CI does not:
+
+```text
+initialize the remote backend
+supply state bucket or account values
+run plan
+run apply
 ```
 
 The state bucket has not yet been created in AWS.
@@ -47,7 +59,7 @@ committing state or credentials
 direct unreviewed apply from configuration
 ```
 
-The implemented workflow introduces explicit ownership and execution boundaries before CI/CD and real AWS deployment.
+The implemented workflow introduces explicit ownership and execution boundaries before remote plan, apply, and real AWS deployment.
 
 ## Architecture Overview
 
@@ -1418,18 +1430,18 @@ remote backend initialization
 real dev plan
 real dev apply
 state migration
-GitHub Actions infrastructure checks
-GitHub OIDC provider
-CI plan identity
+GitHub OIDC
+remote plan
+state IAM
 deployment identity
-environment approval gates
+apply workflow
+environment approvals
 pull-request plan publication
 automatic deployment
 automatic destroy
 automatic force-unlock
 scheduled drift detection
 automatic drift remediation
-state-access IAM policies
 customer-managed KMS
 cross-region replication
 S3 Object Lock
@@ -1492,6 +1504,7 @@ Repository implementation remains distinct from real AWS deployment.
 
 ## Related Documentation
 
+- [Infrastructure CI Validation](infrastructure-ci-validation.md)
 - [Terraform Infrastructure](../../infra/terraform/README.md)
 - [Terraform State Bootstrap](../../infra/bootstrap/terraform-state/README.md)
 - [Lambda Runtime Infrastructure](lambda-runtime-infrastructure.md)

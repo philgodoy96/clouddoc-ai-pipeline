@@ -43,7 +43,7 @@ offline bootstrap and workflow tests
 
 Backend declaration, bootstrap root, environment files, and the guarded workflow are implemented in the repository. Real AWS state-bucket creation, remote backend initialization, and environment plan/apply against AWS remain pending.
 
-Automatic replay, operator recovery tooling, CI/CD, real AWS deployment, and real CloudWatch validation remain separate follow-up work.
+Credential-free infrastructure CI validation is implemented. Automatic replay, operator recovery tooling, deployment workflow, real AWS deployment, and real CloudWatch validation remain separate follow-up work.
 
 ## Backend and state
 
@@ -102,6 +102,47 @@ python scripts/terraform_workflow.py output --environment dev
 * `show-plan` validates a local saved plan and manifest without calling AWS.
 
 The script verifies `artifacts/lambda/clouddoc-app.zip` and its SHA-256 checksum before `plan` and `apply`. It does not expose `destroy`, `force-unlock`, `-lock=false`, or `-auto-approve`.
+
+## Continuous Integration
+
+The `Infrastructure Quality / Terraform offline` job runs:
+
+```powershell
+python scripts/terraform_workflow.py offline-check
+```
+
+CI pins Terraform to `1.15.8` with `terraform_wrapper: false`.
+
+Both roots are validated with `backend=false`:
+
+```text
+application Terraform root → 29 passing runs
+bootstrap Terraform root → 4 passing runs
+```
+
+The job supplies:
+
+```text
+no AWS credentials
+no state bucket
+no remote backend initialization
+no plan
+no apply
+```
+
+The Terraform offline job runs independently from `Infrastructure Quality / Lambda package`, so it validates the absent-artifact path on a clean runner.
+
+Lambda package CI builds and verifies the shared ZIP twice and compares SHA-256 digests; it does not publish the artifact. Full packaging and CI contracts are documented in [Infrastructure CI Validation](../../docs/architecture/infrastructure-ci-validation.md).
+
+Intended GitHub check names for branch protection (not claimed as configured):
+
+```text
+Python Quality / Format, lint, and test
+Infrastructure Quality / Lambda package
+Infrastructure Quality / Terraform offline
+```
+
+Branch protection should be configured after these workflows run successfully on `main`.
 
 ## Current resources
 
@@ -1396,7 +1437,7 @@ measurement later.
 
 ## Deployment safety
 
-Do not treat unguarded `terraform apply` as part of the documented validation path. Offline `offline-check`, `fmt`, `validate`, and `test` are the approved checks for pull requests.
+Do not treat unguarded `terraform apply` as part of the documented validation path. Offline `offline-check`, `fmt`, `validate`, and `test` are the approved checks for pull requests. CI invokes the same `offline-check` command without AWS credentials.
 
 Artifact absence is accepted for offline validation but not for real deployment. A controlled workflow must build and verify `artifacts/lambda/clouddoc-app.zip` before any future real plan or apply.
 
@@ -1464,9 +1505,14 @@ malware scanning
 quarantine workflow
 real state-bucket creation in AWS
 real remote backend initialization
-CI invocation of the implemented workflow
-GitHub OIDC identities
+GitHub OIDC
 Terraform state access IAM
+remote plan
+remote apply
+deployment workflow
+branch protection activation
+AWS CI identities
+artifact publication
 real environment plan/apply against AWS
 state audit logging
 cross-region replication
@@ -1484,6 +1530,7 @@ real AWS deployment and restore validation
 
 ## Related documentation
 
+- [Infrastructure CI Validation](../../docs/architecture/infrastructure-ci-validation.md)
 - [Terraform State and Environment Workflow](../../docs/architecture/terraform-state-and-environment-workflow.md)
 - [Terraform state bootstrap README](../bootstrap/terraform-state/README.md)
 - [ADR-025: Use S3 Native Locking and Explicit Environment State](../../docs/adr/ADR-025-use-s3-native-locking-and-explicit-environment-state.md)

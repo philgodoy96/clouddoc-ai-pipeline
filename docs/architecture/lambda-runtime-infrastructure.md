@@ -100,6 +100,8 @@ real deployment change detection
 
 A controlled deployment workflow must build and verify the artifact before any real plan or apply.
 
+CI builds and verifies the shared ZIP twice, compares both SHA-256 values, and does not upload or publish the artifact. Terraform offline CI runs on a clean independent runner without the ZIP. Real plan and apply still require the verified local artifact.
+
 ## Runtime Platform
 
 All functions use:
@@ -740,11 +742,12 @@ Secrets Manager
 Lambda aliases and versions
 artifact publication to S3
 code signing
+OIDC
 VPC integration
 real state-bucket bootstrap in AWS
 real remote backend initialization
-CI/CD deployment gates
-real AWS deployment
+deployment
+real AWS validation
 real AWS dashboard and alarm validation
 operator recovery tooling
 SLOs
@@ -773,14 +776,15 @@ No Terraform apply or AWS credentials are required for the automated validation 
 
 ## Follow-Up Work
 
-Terraform state, partial S3 backend declaration, environment files, S3-native locking, and the guarded workflow are implemented in the repository. Real state-bucket bootstrap, remote backend initialization, and environment plan/apply against AWS remain pending.
+Terraform state, partial S3 backend declaration, environment files, S3-native locking, and the guarded workflow are implemented in the repository. Credential-free packaging and Terraform offline CI validation are implemented. Real state-bucket bootstrap, remote backend initialization, and environment plan/apply against AWS remain pending.
 
-Real Lambda deployment still requires a verified `artifacts/lambda/clouddoc-app.zip` artifact and authenticated guarded plan/apply when AWS access is available.
+Real Lambda deployment still requires a verified `artifacts/lambda/clouddoc-app.zip` artifact and authenticated guarded plan/apply when AWS access is available. CI does not upload or publish that artifact.
 
-Real AWS dashboard and alarm validation, controlled deployment, CI/CD gates, notification routing, and operator recovery remain subsequent work.
+Artifact publication, signing, OIDC, controlled deployment, real AWS dashboard and alarm validation, notification routing, and operator recovery remain subsequent work.
 
 ## Related Documentation
 
+- [Infrastructure CI Validation](infrastructure-ci-validation.md)
 - [Terraform State and Environment Workflow](terraform-state-and-environment-workflow.md)
 - [ADR-025: Use S3 Native Locking and Explicit Environment State](../adr/ADR-025-use-s3-native-locking-and-explicit-environment-state.md)
 - [CloudWatch Observability](cloudwatch-observability.md)
