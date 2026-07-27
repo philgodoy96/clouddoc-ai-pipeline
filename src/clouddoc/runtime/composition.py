@@ -110,6 +110,7 @@ def build_ai_provider(
     *,
     settings: RuntimeSettings,
     bedrock_client_factory: BedrockRuntimeClientFactory = boto3.client,
+    operational_logger: OperationalLogger = _NULL_OPERATIONAL_LOGGER,
 ) -> AIProvider:
     """Build the configured AI provider for document extraction."""
     if settings.ai_provider == "mock":
@@ -140,6 +141,7 @@ def build_ai_provider(
             model_id=settings.bedrock_model_id,
             max_output_tokens=settings.bedrock_max_output_tokens,
             temperature=settings.bedrock_temperature,
+            logger=operational_logger,
         )
 
     supported_providers = ", ".join(sorted(SUPPORTED_AI_PROVIDERS))
@@ -221,6 +223,7 @@ def build_uploaded_document_processor(
         ai_provider = build_ai_provider(
             settings=settings,
             bedrock_client_factory=bedrock_client_factory,
+            operational_logger=operational_logger,
         )
     workflow = ProcessUploadedDocument(
         start_processing=start_processing,

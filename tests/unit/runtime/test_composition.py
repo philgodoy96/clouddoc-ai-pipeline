@@ -1005,3 +1005,108 @@ def test_uploaded_processor_logger_injection_preserves_object_graph() -> None:
     assert workflow._clock is workflow._start_processing._clock
     assert resource_factory.service_names == ["dynamodb"]
     assert client_factory.service_names == ["s3"]
+
+
+def test_build_ai_provider_injects_explicit_operational_logger_into_bedrock() -> None:
+    """Bedrock composition should inject the exact operational logger instance."""
+    logger = RecordingOperationalLogger()
+    bedrock_client_factory = RecordingBedrockClientFactory()
+
+    provider = build_ai_provider(
+        settings=make_bedrock_settings(),
+        bedrock_client_factory=bedrock_client_factory,
+        operational_logger=logger,
+    )
+
+    assert isinstance(provider, BedrockAIProvider)
+    assert provider._logger is logger
+    assert bedrock_client_factory.service_names == ["bedrock-runtime"]
+
+    config = bedrock_client_factory.call_kwargs[0]["config"]
+    assert isinstance(config, Config)
+    assert config.connect_timeout == 3
+    assert config.read_timeout == 40
+    assert config.retries["mode"] == "standard"
+    assert config.retries["total_max_attempts"] == 2
+
+
+def test_uploaded_document_processor_shares_operational_logger_with_bedrock() -> None:
+    """Uploaded processor should share one logger with Bedrock."""
+    logger = RecordingOperationalLogger()
+    bedrock_client_factory = RecordingBedrockClientFactory()
+
+    processor = build_uploaded_document_processor(
+        settings=make_bedrock_settings(),
+        dynamodb_resource_factory=RecordingResourceFactory(),
+        s3_client_factory=RecordingClientFactory(),
+        bedrock_client_factory=bedrock_client_factory,
+        operational_logger=logger,
+    )
+
+    ai_provider = processor._workflow._ai_provider
+
+    assert processor._logger is logger
+    assert isinstance(ai_provider, BedrockAIProvider)
+    assert ai_provider._logger is logger
+    assert bedrock_client_factory.service_names == ["bedrock-runtime"]
+
+
+def test_omitted_logger_preserves_null_boundary_for_bedrock_provider() -> None:
+    """Omitted logger arguments should leave Bedrock on NullOperationalLogger."""
+    provider = build_ai_provider(
+        settings=make_bedrock_settings(),
+        bedrock_client_factory=RecordingBedrockClientFactory(),
+    )
+    processor = build_uploaded_document_processor(
+        settings=make_bedrock_settings(),
+        dynamodb_resource_factory=RecordingResourceFactory(),
+        s3_client_factory=RecordingClientFactory(),
+        bedrock_client_factory=RecordingBedrockClientFactory(),
+    )
+
+    assert isinstance(provider, BedrockAIProvider)
+    assert isinstance(provider._logger, NullOperationalLogger)
+    assert isinstance(processor._logger, NullOperationalLogger)
+    assert isinstance(processor._workflow._ai_provider, BedrockAIProvider)
+    assert isinstance(
+        processor._workflow._ai_provider._logger,
+        NullOperationalLogger,
+    )
+
+
+def test_build_ai_provider_mock_selection_ignores_operational_logger() -> None:
+    """Mock selection must not wrap or depend on the operational logger."""
+    logger = RecordingOperationalLogger()
+    bedrock_client_factory = RecordingBedrockClientFactory()
+
+    provider = build_ai_provider(
+        settings=make_settings(),
+        bedrock_client_factory=bedrock_client_factory,
+        operational_logger=logger,
+    )
+
+    assert isinstance(provider, MockAIProvider)
+    assert not hasattr(provider, "_logger")
+    assert bedrock_client_factory.service_names == []
+
+
+def test_explicit_ai_provider_factory_ignores_configured_logger_for_bedrock() -> None:
+    """Explicit AI provider factories remain authoritative over Bedrock."""
+    logger = RecordingOperationalLogger()
+    recording_provider_factory = RecordingAIProviderFactory()
+    bedrock_client_factory = RecordingBedrockClientFactory()
+
+    processor = build_uploaded_document_processor(
+        settings=make_bedrock_settings(),
+        dynamodb_resource_factory=RecordingResourceFactory(),
+        s3_client_factory=RecordingClientFactory(),
+        ai_provider_factory=recording_provider_factory,
+        bedrock_client_factory=bedrock_client_factory,
+        operational_logger=logger,
+    )
+
+    assert processor._logger is logger
+    assert recording_provider_factory.calls == 1
+    assert processor._workflow._ai_provider is recording_provider_factory.provider
+    assert not isinstance(processor._workflow._ai_provider, BedrockAIProvider)
+    assert bedrock_client_factory.service_names == []
