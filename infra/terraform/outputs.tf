@@ -102,3 +102,28 @@ output "dead_letter_reconciler_function_arn" {
   description = "ARN of the Dead-Letter Reconciler Lambda function."
   value       = aws_lambda_function.dead_letter_reconciler.arn
 }
+
+output "control_plane_api_id" {
+  description = "Identifier of the CloudDoc HTTP control-plane API."
+  value       = aws_apigatewayv2_api.control_plane.id
+}
+
+output "control_plane_api_execution_arn" {
+  description = "Execution ARN prefix of the CloudDoc HTTP control-plane API."
+  value       = aws_apigatewayv2_api.control_plane.execution_arn
+}
+
+output "control_plane_api_base_url" {
+  description = "Environment-stage base URL of the CloudDoc HTTP control-plane API."
+  value       = "${aws_apigatewayv2_api.control_plane.api_endpoint}/${aws_apigatewayv2_stage.control_plane.name}"
+}
+
+output "control_plane_api_stage_name" {
+  description = "Name of the deployed CloudDoc HTTP control-plane API stage."
+  value       = aws_apigatewayv2_stage.control_plane.name
+}
+
+output "control_plane_api_access_log_group_name" {
+  description = "Name of the CloudDoc HTTP control-plane API access-log group."
+  value       = aws_cloudwatch_log_group.control_plane_api_access.name
+}
