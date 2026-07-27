@@ -585,6 +585,100 @@ def test_reusable_aws_identity_configures_credentials_exactly() -> None:
         assert value not in source
 
 
+def test_reusable_aws_identity_validates_oidc_claims_before_credentials() -> None:
+    """OIDC claim preflight must sit between context checks and AWS auth."""
+    source = read_text(REUSABLE_AWS_IDENTITY_WORKFLOW)
+    context_step = "name: Validate trusted workflow context"
+    oidc_step = "name: Validate GitHub OIDC token claims"
+    credentials_step = "name: Configure temporary AWS credentials"
+    identity_step = "name: Verify assumed AWS identity"
+
+    assert source.count(oidc_step) == 1
+    assert source.index(context_step) < source.index(oidc_step)
+    assert source.index(oidc_step) < source.index(credentials_step)
+    assert source.index(credentials_step) < source.index(identity_step)
+
+
+def test_reusable_aws_identity_oidc_preflight_requests_token_safely() -> None:
+    """The OIDC preflight must request and decode the token only in memory."""
+    source = read_text(REUSABLE_AWS_IDENTITY_WORKFLOW)
+
+    required = (
+        "ACTIONS_ID_TOKEN_REQUEST_URL",
+        "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+        "audience",
+        "sts.amazonaws.com",
+        "Authorization",
+        "Bearer",
+        "application/json",
+        "urllib.request",
+        "urllib.parse",
+        "hmac.compare_digest",
+        "GitHub OIDC token claim contract verified.",
+    )
+
+    for value in required:
+        assert value in source
+
+    forbidden = (
+        "actions-oidc-debugger",
+        "actions/github-script",
+        "npm install",
+        "pip install",
+        "continue-on-error",
+        "GITHUB_OUTPUT",
+        "GITHUB_ENV",
+        "echo $ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+        "echo $ACTIONS_ID_TOKEN_REQUEST_URL",
+        "print(jwt",
+        "print(token",
+        "job_workflow_sha",
+    )
+
+    for value in forbidden:
+        assert value not in source
+
+
+def test_reusable_aws_identity_oidc_preflight_enforces_eight_claim_contract() -> None:
+    """Preflight must compare the exact eight-claim AWS trust contract."""
+    source = read_text(REUSABLE_AWS_IDENTITY_WORKFLOW)
+
+    claim_names = (
+        "aud",
+        "sub",
+        "repository",
+        "repository_id",
+        "repository_owner_id",
+        "ref",
+        "environment",
+        "job_workflow_ref",
+    )
+
+    for claim_name in claim_names:
+        assert f'"{claim_name}":' in source
+
+    assert (
+        "CANONICAL_JOB_WORKFLOW_REF: philgodoy96/clouddoc-ai-pipeline/"
+        ".github/workflows/reusable-aws-identity.yml@refs/heads/main"
+    ) in source
+    assert "EXPECTED_JOB_WORKFLOW_REF: ${{ job.workflow_ref }}" in source
+    assert "EXPECTED_REPOSITORY: ${{ github.repository }}" in source
+    assert "EXPECTED_REPOSITORY_ID: ${{ github.repository_id }}" in source
+    assert "EXPECTED_REPOSITORY_OWNER: ${{ github.repository_owner }}" in source
+    assert ("EXPECTED_REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}") in source
+    assert "EXPECTED_REF: ${{ github.ref }}" in source
+    assert "EXPECTED_ENVIRONMENT: dev" in source
+    assert "EXPECTED_AUDIENCE: sts.amazonaws.com" in source
+    assert (
+        'f"repo:{expected_repository_owner}@{expected_repository_owner_id}/"' in source
+    )
+    assert 'f"{repository_name}@{expected_repository_id}"' in source
+    assert 'f":environment:{expected_environment}"' in source
+    assert "repo:" in source
+    assert ":environment:" in source
+    assert "job_workflow_sha" not in source
+
+
 def test_reusable_aws_identity_proves_the_assumed_role() -> None:
     """The reusable workflow must prove the temporary session identity."""
     source = read_text(REUSABLE_AWS_IDENTITY_WORKFLOW)
@@ -662,13 +756,15 @@ def test_workflows_contain_no_deployment_or_state_mutation_commands() -> None:
 
 def test_only_reusable_identity_uses_the_dev_environment() -> None:
     """Exactly one GitHub Environment reference must exist, on the reusable job."""
-    sources = workflow_sources()
-    combined = "\n".join(sources.values())
+    reusable = read_text(REUSABLE_AWS_IDENTITY_WORKFLOW)
+    caller = read_text(AWS_IDENTITY_WORKFLOW)
+    reusable_job = extract_job_block(reusable, "verify-identity")
 
-    assert combined.count("environment:") == 1
-    assert combined.count("environment: dev") == 1
-    assert "environment:" not in read_text(AWS_IDENTITY_WORKFLOW)
-    assert "environment: dev" in read_text(REUSABLE_AWS_IDENTITY_WORKFLOW)
+    assert "\n    environment: dev\n" in reusable_job
+    assert reusable.count("\n    environment: ") == 1
+    assert reusable.count("environment: dev") == 1
+    assert "environment:" not in caller
+    assert "environment: " not in read_text(AWS_IDENTITY_WORKFLOW)
 
 
 def test_workflows_use_no_artifact_transfer_action() -> None:

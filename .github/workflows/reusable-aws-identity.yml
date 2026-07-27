@@ -72,6 +72,243 @@ jobs:
             exit 1
           fi
 
+      - name: Validate GitHub OIDC token claims
+        shell: bash
+        env:
+          EXPECTED_AUDIENCE: sts.amazonaws.com
+          EXPECTED_REPOSITORY: ${{ github.repository }}
+          EXPECTED_REPOSITORY_ID: ${{ github.repository_id }}
+          EXPECTED_REPOSITORY_OWNER: ${{ github.repository_owner }}
+          EXPECTED_REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
+          EXPECTED_REF: ${{ github.ref }}
+          EXPECTED_ENVIRONMENT: dev
+          EXPECTED_JOB_WORKFLOW_REF: ${{ job.workflow_ref }}
+          CANONICAL_JOB_WORKFLOW_REF: philgodoy96/clouddoc-ai-pipeline/.github/workflows/reusable-aws-identity.yml@refs/heads/main
+        run: |
+          python - <<'PY'
+          import base64
+          import hmac
+          import json
+          import os
+          import re
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          MAX_RENDER_LENGTH = 300
+          REQUEST_TIMEOUT_SECONDS = 30
+
+
+          def fail(message: str) -> None:
+              print(f"::error::{message}")
+              raise SystemExit(1)
+
+
+          def require_env(name: str) -> str:
+              value = os.environ.get(name, "")
+              if not isinstance(value, str) or not value.strip():
+                  fail(f"Missing required environment value: {name}")
+              return value
+
+
+          def sanitize_control(value: str) -> str:
+              escaped = value.replace("\\", "\\\\")
+              escaped = escaped.replace("\r", "\\r").replace("\n", "\\n")
+              escaped = re.sub(r"[\x00-\x1f\x7f]", "?", escaped)
+              if len(escaped) > MAX_RENDER_LENGTH:
+                  return escaped[: MAX_RENDER_LENGTH - 3] + "..."
+              return escaped
+
+
+          def sanitize_id(value: object) -> str:
+              text = value if isinstance(value, str) else ""
+              if re.fullmatch(r"[0-9]+", text):
+                  return "<numeric-id>"
+              return "<invalid-id>"
+
+
+          def sanitize_sub(value: object) -> str:
+              text = value if isinstance(value, str) else str(value)
+              sanitized = re.sub(r"@([0-9]+)", "@<id>", text)
+              return sanitize_control(sanitized)
+
+
+          def sanitize_generic(value: object) -> str:
+              text = value if isinstance(value, str) else str(value)
+              sanitized = re.sub(r"[0-9]{4,}", "<number>", text)
+              return sanitize_control(sanitized)
+
+
+          def sanitize_claim(claim: str, value: object) -> str:
+              if claim in {"repository_id", "repository_owner_id"}:
+                  return sanitize_id(value)
+              if claim == "sub":
+                  return sanitize_sub(value)
+              return sanitize_generic(value)
+
+
+          def request_oidc_token(request_url: str, request_token: str, audience: str) -> str:
+              parsed = urllib.parse.urlparse(request_url)
+              query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+              query = [(key, value) for key, value in query if key != "audience"]
+              query.append(("audience", audience))
+              token_url = urllib.parse.urlunparse(
+                  parsed._replace(query=urllib.parse.urlencode(query))
+              )
+
+              request = urllib.request.Request(
+                  token_url,
+                  headers={
+                      "Authorization": f"Bearer {request_token}",
+                      "Accept": "application/json",
+                  },
+                  method="GET",
+              )
+
+              try:
+                  with urllib.request.urlopen(
+                      request,
+                      timeout=REQUEST_TIMEOUT_SECONDS,
+                  ) as response:
+                      body = response.read()
+              except urllib.error.HTTPError as exc:
+                  fail(f"OIDC token request failed with HTTP {exc.code}.")
+              except urllib.error.URLError:
+                  fail("OIDC token request failed due to a network or URL error.")
+              except TimeoutError:
+                  fail("OIDC token request timed out.")
+
+              try:
+                  payload = json.loads(body.decode("utf-8"))
+              except (UnicodeDecodeError, json.JSONDecodeError):
+                  fail("OIDC token response was not valid JSON.")
+
+              if not isinstance(payload, dict):
+                  fail("OIDC token response was not a JSON object.")
+
+              token = payload.get("value")
+              if not isinstance(token, str) or not token.strip():
+                  fail("OIDC token response did not contain a non-empty value field.")
+
+              return token
+
+
+          def decode_jwt_payload(token: str) -> dict:
+              segments = token.split(".")
+              if len(segments) != 3:
+                  fail("OIDC token did not contain exactly three JWT segments.")
+
+              payload_segment = segments[1]
+              padding = "=" * (-len(payload_segment) % 4)
+
+              try:
+                  decoded = base64.urlsafe_b64decode(payload_segment + padding)
+                  payload = json.loads(decoded.decode("utf-8"))
+              except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+                  fail("OIDC token payload could not be decoded as JSON.")
+
+              if not isinstance(payload, dict):
+                  fail("OIDC token payload was not a JSON object.")
+
+              return payload
+
+
+          expected_audience = require_env("EXPECTED_AUDIENCE")
+          expected_repository = require_env("EXPECTED_REPOSITORY")
+          expected_repository_id = require_env("EXPECTED_REPOSITORY_ID")
+          expected_repository_owner = require_env("EXPECTED_REPOSITORY_OWNER")
+          expected_repository_owner_id = require_env("EXPECTED_REPOSITORY_OWNER_ID")
+          expected_ref = require_env("EXPECTED_REF")
+          expected_environment = require_env("EXPECTED_ENVIRONMENT")
+          expected_job_workflow_ref = require_env("EXPECTED_JOB_WORKFLOW_REF")
+          canonical_job_workflow_ref = require_env("CANONICAL_JOB_WORKFLOW_REF")
+
+          if not hmac.compare_digest(
+              expected_job_workflow_ref,
+              canonical_job_workflow_ref,
+          ):
+              fail(
+                  "job.workflow_ref does not match the canonical reusable workflow ref."
+              )
+
+          repository_parts = expected_repository.split("/")
+          if len(repository_parts) != 2:
+              fail("EXPECTED_REPOSITORY must be owner/repository.")
+
+          owner_name, repository_name = repository_parts
+          if not hmac.compare_digest(owner_name, expected_repository_owner):
+              fail("EXPECTED_REPOSITORY owner does not match EXPECTED_REPOSITORY_OWNER.")
+
+          expected_subject = (
+              f"repo:{expected_repository_owner}@{expected_repository_owner_id}/"
+              f"{repository_name}@{expected_repository_id}"
+              f":environment:{expected_environment}"
+          )
+
+          expected_claims = {
+              "aud": expected_audience,
+              "sub": expected_subject,
+              "repository": expected_repository,
+              "repository_id": expected_repository_id,
+              "repository_owner_id": expected_repository_owner_id,
+              "ref": expected_ref,
+              "environment": expected_environment,
+              "job_workflow_ref": expected_job_workflow_ref,
+          }
+
+          for claim_name, claim_value in expected_claims.items():
+              if not isinstance(claim_value, str) or not claim_value.strip():
+                  fail(f"Expected OIDC claim {claim_name} must be a non-empty string.")
+
+          request_url = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_URL", "")
+          request_token = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")
+          if not isinstance(request_url, str) or not request_url.strip():
+              fail("ACTIONS_ID_TOKEN_REQUEST_URL is missing.")
+          if not isinstance(request_token, str) or not request_token.strip():
+              fail("ACTIONS_ID_TOKEN_REQUEST_TOKEN is missing.")
+
+          oidc_token = request_oidc_token(
+              request_url,
+              request_token,
+              expected_audience,
+          )
+          actual_claims = decode_jwt_payload(oidc_token)
+
+          mismatches = 0
+          for claim_name, expected_value in expected_claims.items():
+              actual_value = actual_claims.get(claim_name)
+              if not isinstance(actual_value, str):
+                  print(f"OIDC claim {claim_name}: mismatch")
+                  print(
+                      "  expected="
+                      + sanitize_claim(claim_name, expected_value)
+                  )
+                  print("  actual=<non-string>")
+                  mismatches += 1
+                  continue
+
+              if hmac.compare_digest(actual_value, expected_value):
+                  print(f"OIDC claim {claim_name}: match")
+                  continue
+
+              print(f"OIDC claim {claim_name}: mismatch")
+              print(
+                  "  expected="
+                  + sanitize_claim(claim_name, expected_value)
+              )
+              print(
+                  "  actual=" + sanitize_claim(claim_name, actual_value)
+              )
+              mismatches += 1
+
+          if mismatches:
+              fail(
+                  f"GitHub OIDC token claim contract failed for {mismatches} claim(s)."
+              )
+
+          print("GitHub OIDC token claim contract verified.")
+          PY
+
       - name: Configure temporary AWS credentials
         uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
         with:
