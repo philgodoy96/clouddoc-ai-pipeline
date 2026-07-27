@@ -27,6 +27,7 @@ from clouddoc.infrastructure import (
     UUIDJobIdGenerator,
     UUIDProcessingAttemptIdGenerator,
 )
+from clouddoc.observability import NullOperationalLogger
 from clouddoc.providers import (
     AIProvider,
     AIProviderRequest,
@@ -913,3 +914,94 @@ def test_dead_lettered_document_processor_does_not_require_aws_access() -> None:
     assert resource_factory.service_names == [
         "dynamodb",
     ]
+
+
+class RecordingOperationalLogger:
+    """Operational logger double used for exact identity injection checks."""
+
+    def info(self, event_name: str, **fields: object) -> None:
+        """Ignore informational emissions."""
+        del event_name, fields
+
+    def warning(self, event_name: str, **fields: object) -> None:
+        """Ignore warning emissions."""
+        del event_name, fields
+
+    def error(self, event_name: str, **fields: object) -> None:
+        """Ignore error emissions."""
+        del event_name, fields
+
+
+def test_uploaded_document_processor_injects_explicit_operational_logger() -> None:
+    """Uploaded processor composition should inject the exact logger instance."""
+    logger = RecordingOperationalLogger()
+
+    processor = build_uploaded_document_processor(
+        settings=make_settings(),
+        dynamodb_resource_factory=RecordingResourceFactory(),
+        s3_client_factory=RecordingClientFactory(),
+        operational_logger=logger,
+    )
+
+    assert isinstance(processor, ApplicationUploadedDocumentProcessor)
+    assert processor._logger is logger
+
+
+def test_dead_lettered_document_processor_injects_explicit_operational_logger() -> None:
+    """DLQ processor composition should inject the exact logger instance."""
+    logger = RecordingOperationalLogger()
+
+    processor = build_dead_lettered_document_processor(
+        settings=make_settings(),
+        dynamodb_resource_factory=RecordingResourceFactory(),
+        operational_logger=logger,
+    )
+
+    assert isinstance(processor, ApplicationDeadLetteredDocumentProcessor)
+    assert processor._logger is logger
+
+
+def test_omitted_operational_logger_preserves_null_boundary() -> None:
+    """Omitted logger arguments should preserve a NullOperationalLogger boundary."""
+    uploaded = build_uploaded_document_processor(
+        settings=make_settings(),
+        dynamodb_resource_factory=RecordingResourceFactory(),
+        s3_client_factory=RecordingClientFactory(),
+    )
+    dead_lettered = build_dead_lettered_document_processor(
+        settings=make_settings(),
+        dynamodb_resource_factory=RecordingResourceFactory(),
+    )
+
+    assert isinstance(uploaded._logger, NullOperationalLogger)
+    assert isinstance(dead_lettered._logger, NullOperationalLogger)
+
+
+def test_uploaded_processor_logger_injection_preserves_object_graph() -> None:
+    """Logger injection must not alter AI factory precedence or shared wiring."""
+    resource_factory = RecordingResourceFactory()
+    client_factory = RecordingClientFactory()
+    recording_provider_factory = RecordingAIProviderFactory()
+    bedrock_client_factory = RecordingBedrockClientFactory()
+    logger = RecordingOperationalLogger()
+
+    processor = build_uploaded_document_processor(
+        settings=make_bedrock_settings(),
+        dynamodb_resource_factory=resource_factory,
+        s3_client_factory=client_factory,
+        ai_provider_factory=recording_provider_factory,
+        bedrock_client_factory=bedrock_client_factory,
+        operational_logger=logger,
+    )
+
+    workflow = processor._workflow
+
+    assert processor._logger is logger
+    assert recording_provider_factory.calls == 1
+    assert workflow._ai_provider is recording_provider_factory.provider
+    assert not isinstance(workflow._ai_provider, BedrockAIProvider)
+    assert bedrock_client_factory.service_names == []
+    assert workflow._repository is workflow._start_processing._repository
+    assert workflow._clock is workflow._start_processing._clock
+    assert resource_factory.service_names == ["dynamodb"]
+    assert client_factory.service_names == ["s3"]
