@@ -26,6 +26,15 @@ data "aws_iam_policy_document" "github_identity_assume_role" {
 
     condition {
       test     = "StringEquals"
+      variable = "${local.github_oidc_host}:sub"
+
+      values = [
+        local.github_oidc_subject,
+      ]
+    }
+
+    condition {
+      test     = "StringEquals"
       variable = "${local.github_oidc_host}:repository"
 
       values = [

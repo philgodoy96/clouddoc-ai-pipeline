@@ -32,6 +32,7 @@ EXPECTED_RESOURCES = {
 }
 EXPECTED_TRUST_CLAIMS = {
     "aud",
+    "sub",
     "repository",
     "repository_id",
     "repository_owner_id",
@@ -144,13 +145,28 @@ def test_trust_policy_uses_only_exact_approved_claims() -> None:
     )
 
     assert actual_claims == EXPECTED_TRUST_CLAIMS
-    assert source.count('test     = "StringEquals"') == 7
+    assert source.count('test     = "StringEquals"') == 8
     assert source.count('"sts:AssumeRoleWithWebIdentity"') == 1
+    assert "${local.github_oidc_host}:sub" in source
+    assert "local.github_oidc_subject" in source
     assert "StringLike" not in source
     assert '"*"' not in source
     assert '"?"' not in source
-    assert ":sub" not in source
+    assert "job_workflow_sha" not in source
     assert "pull_request" not in source
+
+
+def test_oidc_subject_is_built_from_reviewed_identity_variables() -> None:
+    """The exact ID-qualified subject must come from Terraform variables."""
+    locals_source = re.sub(r"\s+", "", read_bootstrap_file("locals.tf"))
+    expected_subject = (
+        'github_oidc_subject="repo:${var.github_repository_owner}'
+        "@${var.github_repository_owner_id}/${var.github_repository_name}"
+        '@${var.github_repository_id}:environment:${var.github_environment}"'
+    )
+
+    assert expected_subject in locals_source
+    assert "job_workflow_sha" not in locals_source
 
 
 def test_identity_role_has_no_authorization_policy() -> None:
