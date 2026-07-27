@@ -46,8 +46,17 @@ Foundations already implemented in the repository include:
 * immutable GitHub Action references
 * Dependabot maintenance for GitHub Actions
 * static CI workflow contract tests
+* GitHub OIDC bootstrap root
+* strict GitHub workload trust policy
+* permissionless development identity role
+* manual OIDC identity-check workflow
+* reusable identity workflow
+* OIDC bootstrap tests
+* identity workflow contract tests
 
 Validation workflows are implemented in the repository. Deployment workflows are not. Branch protection is not claimed as configured.
+
+GitHub OIDC trust bootstrap, the permissionless identity role, and the manual identity-check workflows are implemented in repository source. They are not yet provisioned or verified in AWS. Real AWS identity federation, the GitHub `dev` Environment, and repository variables remain pending.
 
 Architecture and delivery foundations already defined include:
 
@@ -65,7 +74,7 @@ Architecture and delivery foundations already defined include:
 * Terraform ownership boundaries
 * professional contribution and pull request workflow
 
-Implemented-in-repository foundations are distinct from resources created, initialized, planned, or applied in AWS. Real AWS state-bucket bootstrap, remote backend initialization, and deployment validation remain pending. AWS deployment, real Bedrock invocation, and deployed end-to-end validation remain future work.
+Implemented-in-repository foundations are distinct from resources created, initialized, planned, or applied in AWS. Real AWS state-bucket bootstrap, remote backend initialization, OIDC bootstrap apply, end-to-end identity verification, and deployment validation remain pending. AWS deployment, real Bedrock invocation, and deployed end-to-end validation remain future work.
 
 ## Business Problem
 
@@ -140,9 +149,16 @@ Pull request
     → Infrastructure Quality
         → Lambda package
         → Terraform offline
+
+Identity verification boundary (not runtime request processing, not deployment):
+Manual identity check
+    → reusable identity workflow
+    → GitHub OIDC
+    → permissionless AWS role
+    → STS GetCallerIdentity
 ```
 
-The repository declares the control plane, queues, event-source mappings, Lambdas, runtime composition, Bedrock adapter, exact IAM boundary, structured operational logging, CloudWatch alarms, and the operations dashboard. The AWS environment has not yet been deployed and validated. The diagram describes the approved architecture as implemented in the repository, not an already active AWS deployment. DynamoDB remains authoritative for `DocumentJob` lifecycle state; CloudWatch provides operational evidence only. CI validates repository contracts; it does not deploy or prove deployed AWS behavior.
+The repository declares the control plane, queues, event-source mappings, Lambdas, runtime composition, Bedrock adapter, exact IAM boundary, structured operational logging, CloudWatch alarms, and the operations dashboard. The AWS environment has not yet been deployed and validated. The diagram describes the approved architecture as implemented in the repository, not an already active AWS deployment. DynamoDB remains authoritative for `DocumentJob` lifecycle state; CloudWatch provides operational evidence only. CI validates repository contracts; it does not deploy or prove deployed AWS behavior. The identity verification path is implemented in repository source and is intentionally separate from application runtime and deployment authorization; it is not yet verified against AWS.
 
 ## V1 Capabilities
 
@@ -222,7 +238,13 @@ The system is designed around the following principles:
 * never migrate state automatically
 * keep state and plan artifacts outside Git
 * validation is separate from deployment
-* GitHub Actions use read-only permissions
+* GitHub Actions validation workflows use read-only permissions
+* authentication before authorization
+* no long-lived AWS keys in GitHub
+* exact workload trust
+* OIDC isolated from validation workflows
+* permissionless first identity
+* no checkout during identity proof
 * external actions use full immutable SHAs
 * checkout credentials are not persisted
 * Terraform CI remains backend-free and credential-free
@@ -237,11 +259,13 @@ Detailed principles are documented in:
 * [Bedrock AI Provider Integration](docs/architecture/bedrock-ai-provider-integration.md)
 * [CloudWatch Observability](docs/architecture/cloudwatch-observability.md)
 * [Infrastructure CI Validation](docs/architecture/infrastructure-ci-validation.md)
+* [GitHub OIDC Trust Bootstrap](docs/architecture/github-oidc-trust-bootstrap.md)
 * [ADR-017: Package Python Lambdas as a Shared Deterministic ZIP](docs/adr/ADR-017-package-python-lambdas-as-a-shared-zip.md)
 * [ADR-023: Use Amazon Nova Micro through Bedrock Converse](docs/adr/ADR-023-use-amazon-nova-micro-through-bedrock-converse.md)
 * [ADR-024: Use Native AWS Metrics and Structured Application Logs](docs/adr/ADR-024-use-native-aws-metrics-and-structured-application-logs.md)
 * [Terraform State and Environment Workflow](docs/architecture/terraform-state-and-environment-workflow.md)
 * [ADR-025: Use S3 Native Locking and Explicit Environment State](docs/adr/ADR-025-use-s3-native-locking-and-explicit-environment-state.md)
+* [ADR-026: Separate OIDC Authentication from Deployment Authorization](docs/adr/ADR-026-separate-oidc-authentication-from-deployment-authorization.md)
 
 ## AWS Architecture
 
@@ -308,13 +332,16 @@ Current repository layout:
 ├── .github/
 │   ├── dependabot.yml
 │   └── workflows/
+│       ├── aws-identity-check.yml
 │       ├── infrastructure-quality.yml
-│       └── python-quality.yml
+│       ├── python-quality.yml
+│       └── reusable-aws-identity.yml
 ├── docs/
 │   ├── adr/
 │   └── architecture/
 ├── infra/
 │   ├── bootstrap/
+│   │   ├── github-oidc/
 │   │   └── terraform-state/
 │   └── terraform/
 │       └── environments/
@@ -345,6 +372,8 @@ Current repository layout:
 │   │   └── test_lambda_package_builder.py
 │   └── unit/
 │       ├── ci/
+│       ├── infrastructure/
+│       │   └── test_github_oidc_bootstrap.py
 │       └── scripts/
 ├── CONTRIBUTING.md
 ├── LICENSE
@@ -370,7 +399,7 @@ artifacts/lambda/
 * a Python virtual environment
 * Make, Git Bash, WSL, or equivalent direct commands
 
-AWS CLI is optional. AWS authentication is not needed for CI-equivalent offline validation, formatting, linting, packaging checks, or automated tests. AWS credentials will be required only for future real state-bucket bootstrap, remote backend initialization, plan, apply, and output against AWS.
+AWS CLI is optional. AWS authentication is not required for offline OIDC bootstrap validation, CI-equivalent offline validation, formatting, linting, packaging checks, or automated tests. Temporary human AWS authentication will be required for the first real bootstrap plan and apply, including the state-bucket and GitHub OIDC trust roots, and for later remote backend initialization, plan, apply, and output against AWS.
 
 ### Setup
 
@@ -436,6 +465,15 @@ python scripts/terraform_workflow.py offline-check
 python -m pytest tests/unit/ci/test_github_actions_workflows.py -q
 ```
 
+OIDC bootstrap offline validation:
+
+```powershell
+terraform -chdir=infra/bootstrap/github-oidc fmt -check -recursive
+terraform -chdir=infra/bootstrap/github-oidc validate
+terraform -chdir=infra/bootstrap/github-oidc test
+python -m pytest tests/unit/infrastructure/test_github_oidc_bootstrap.py -q
+```
+
 Intended GitHub check names (branch protection is not claimed as configured):
 
 ```text
@@ -443,6 +481,8 @@ Python Quality / Format, lint, and test
 Infrastructure Quality / Lambda package
 Infrastructure Quality / Terraform offline
 ```
+
+`AWS Identity Check` is a manual identity proof. It is not one of the three intended required pull-request validation checks.
 
 ### Lambda Packaging
 
@@ -568,10 +608,13 @@ Current coverage includes:
 * offline Terraform tests for Processor-only Bedrock configuration and IAM
 * bootstrap Terraform root tests (four runs)
 * bootstrap static contract tests (seven tests)
+* mocked Terraform OIDC tests (four runs)
+* static OIDC bootstrap security contracts (11 tests)
 * guarded workflow unit tests with subprocess mocking and plan-manifest integrity checks (55 tests)
 * Terraform validation with 29 expected test runs in the application root
-* 29 CI workflow contract tests
-* credential-free GitHub Actions execution
+* 49 CI workflow contract tests
+* identity-workflow source contracts within the CI workflow suite
+* credential-free GitHub Actions validation execution
 * independent infrastructure jobs
 * artifact-independent Terraform CI
 
@@ -614,11 +657,20 @@ The project is designed to:
 * reject automatic local-state migration
 * never bypass S3 lockfiles or locking
 * use Secrets Manager only when a real secret exists
-* use read-only workflow permissions (`contents: read`)
+* use read-only validation workflow permissions (`contents: read`)
 * pin external actions to full immutable SHAs with same-line release comments
 * disable checkout credential persistence (`persist-credentials: false`)
 * keep validation CI free of OIDC and AWS secrets
+* avoid static AWS credentials in GitHub
+* grant `id-token: write` only to identity workflows
+* keep validation workflows credential-free
+* trust exact repository, ID, branch, environment, and workflow claims
+* keep the first identity role permissionless
+* request a 15-minute identity session
+* validate and mask the AWS account during identity proof
 * validate generated artifacts without publishing them
+
+`id-token: write` only allows a workflow to request a GitHub OIDC token. AWS trust and role policies decide whether that token can assume an IAM role.
 
 Packaging security boundaries:
 
@@ -655,6 +707,12 @@ Implemented reliability controls include:
 * two-build Lambda digest comparison
 * exact Terraform version in CI (`1.15.8`)
 * same offline Terraform command locally and in CI
+* manual-only AWS identity caller
+* workflow-call-only reusable identity workflow
+* preflight context validation before role assumption
+* expected role ARN validation
+* GetCallerIdentity proof after federation
+* GitHub run ID session correlation
 
 Provider failure classification:
 
@@ -737,15 +795,20 @@ These decisions keep the first release focused on one complete, observable, reco
 Remaining deployment and operational follow-ups:
 
 * branch protection activation
-* GitHub OIDC
-* AWS CI identities
+* real OIDC bootstrap apply
+* GitHub `dev` Environment
+* repository variables
+* end-to-end identity verification
+* state authorization
+* plan identity
+* apply identity
+* artifact publication identity
 * artifact publication
 * remote plan
 * controlled apply
 * real AWS deployment validation
 * real state-bucket bootstrap in AWS
 * real remote backend initialization
-* state access IAM
 * real AWS invocation and end-to-end validation
 * real CloudWatch dashboard and alarm validation
 * operator notification routing
@@ -783,6 +846,7 @@ Planned and recorded ADR topics include:
 * Amazon Nova Micro through Bedrock Converse
 * native AWS metrics and structured application logs
 * S3-native locking and explicit environment Terraform state
+* separate OIDC authentication from deployment authorization
 
 ## Contributing
 

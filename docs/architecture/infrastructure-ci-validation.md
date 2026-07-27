@@ -16,9 +16,11 @@ state-bootstrap Terraform offline validation
 immutable action references
 Dependabot maintenance for GitHub Actions
 static workflow contract tests
+manual AWS identity-check workflow
+reusable AWS identity workflow
 ```
 
-The workflows validate repository behavior.
+The validation workflows validate repository behavior.
 
 They do not:
 
@@ -34,6 +36,15 @@ configure GitHub branch protection
 configure GitHub Environments
 assume an AWS IAM role
 ```
+
+A separate identity category exists in repository source:
+
+```text
+AWS Identity Check
+Reusable AWS Identity
+```
+
+Those identity workflows are manually initiated identity proofs. They are not required pull-request validation checks. They do not run on pull requests or pushes. They do not deploy. End-to-end OIDC verification against AWS is not yet claimed.
 
 ## Purpose
 
@@ -53,7 +64,7 @@ state-bootstrap Terraform validation
 
 Only Python quality ran automatically in GitHub Actions.
 
-This architecture adds a second CI boundary for packaging and infrastructure without mixing validation with deployment authorization.
+This architecture adds a second CI boundary for packaging and infrastructure without mixing validation with deployment authorization. Identity verification is a third, separate boundary documented in [GitHub OIDC Trust Bootstrap](github-oidc-trust-bootstrap.md) and [ADR-026](../adr/ADR-026-separate-oidc-authentication-from-deployment-authorization.md).
 
 ## CI Architecture
 
@@ -85,7 +96,16 @@ Format, lint, and test                  ▼                               ▼
                                                                             ├── fmt
                                                                             ├── validate
                                                                             └── Terraform tests
+
+Manual identity proof (not a required pull-request check):
+AWS Identity Check
+    → Reusable AWS Identity
+    → GitHub OIDC token request
+    → permissionless AWS role assumption
+    → STS GetCallerIdentity
 ```
+
+Validation remains credential-free. Identity proof is manually initiated and does not deploy.
 
 The infrastructure jobs run independently.
 
@@ -99,8 +119,10 @@ This preserves the contract that offline Terraform validation does not depend on
 .github/
 ├── dependabot.yml
 └── workflows/
+    ├── aws-identity-check.yml
     ├── infrastructure-quality.yml
-    └── python-quality.yml
+    ├── python-quality.yml
+    └── reusable-aws-identity.yml
 ```
 
 Static workflow contracts are tested in:
@@ -108,6 +130,24 @@ Static workflow contracts are tested in:
 ```text
 tests/unit/ci/test_github_actions_workflows.py
 ```
+
+## Workflow Taxonomy
+
+Validation workflows:
+
+```text
+Python Quality
+Infrastructure Quality
+```
+
+Identity workflows:
+
+```text
+AWS Identity Check
+Reusable AWS Identity
+```
+
+Validation workflows remain `contents: read` only. Identity workflows receive `id-token: write` in addition to `contents: read`. Identity workflows are not required pull-request validation checks and do not run on pull requests or pushes.
 
 ## Workflow Triggers
 
@@ -150,7 +190,7 @@ The project accepts the additional runner usage in exchange for stable merge gat
 
 ## Workflow Concurrency
 
-Both workflows use branch-scoped concurrency.
+Both validation workflows use branch-scoped concurrency.
 
 Conceptual configuration:
 
@@ -166,7 +206,7 @@ This reduces wasted runner execution while ensuring the latest branch state is v
 
 ## Permissions Boundary
 
-Both workflows declare:
+Both validation workflows declare:
 
 ```yaml
 permissions:
@@ -187,9 +227,19 @@ pull-requests: write
 security-events: write
 ```
 
-The workflows only need to read repository contents.
+The validation workflows only need to read repository contents.
 
 They do not comment on pull requests, publish artifacts, push commits, or request cloud identity.
+
+Identity workflows separately declare:
+
+```yaml
+permissions:
+  contents: read
+  id-token: write
+```
+
+`id-token: write` only allows requesting a GitHub OIDC token. It does not by itself grant AWS access. AWS trust and role policies decide whether federation succeeds. See [GitHub OIDC Trust Bootstrap](github-oidc-trust-bootstrap.md).
 
 ## Checkout Credential Boundary
 
@@ -508,7 +558,9 @@ Real `plan` and `apply` remain protected by the guarded workflow's Lambda artifa
 
 ## AWS Identity Boundary
 
-Neither workflow references:
+### Validation workflows
+
+Neither validation workflow references:
 
 ```text
 secrets.*
@@ -521,19 +573,34 @@ CLOUDDOC_EXPECTED_AWS_ACCOUNT_ID
 TF_VAR_expected_aws_account_id
 ```
 
-Neither workflow requests:
+Neither validation workflow requests:
 
 ```yaml
 id-token: write
 ```
 
-Neither workflow uses:
+Neither validation workflow uses:
 
 ```text
 aws-actions/configure-aws-credentials
 ```
 
-No AWS identity is created or assumed.
+Neither validation workflow selects a GitHub Environment.
+
+No AWS identity is created or assumed by validation workflows.
+
+### Identity workflows
+
+A separate manual identity boundary is implemented in repository source:
+
+```text
+AWS Identity Check
+Reusable AWS Identity
+```
+
+Those workflows request `id-token: write`, select the GitHub `dev` Environment from the reusable workflow, and use `aws-actions/configure-aws-credentials` only to assume the permissionless verification role. They do not deploy, plan, apply, or publish artifacts.
+
+Validation is credential-free. Identity proof is manually initiated. Identity proof does not deploy. End-to-end verification against AWS is not yet claimed. Full trust details live in [GitHub OIDC Trust Bootstrap](github-oidc-trust-bootstrap.md) and [ADR-026](../adr/ADR-026-separate-oidc-authentication-from-deployment-authorization.md).
 
 ## Terraform Mutation Boundary
 
@@ -570,6 +637,7 @@ Approved external actions:
 actions/checkout
 actions/setup-python
 hashicorp/setup-terraform
+aws-actions/configure-aws-credentials
 ```
 
 Every action is pinned to a full 40-character commit SHA.
@@ -588,7 +656,13 @@ actions/setup-python
 hashicorp/setup-terraform
     SHA: dfe3c3f87815947d99a8997f908cb6525fc44e9e
     release context: v4.0.1
+
+aws-actions/configure-aws-credentials
+    SHA: e6de054238d6b7531b4efff3b6587d9aade6a06c
+    release context: v6.2.3
 ```
+
+`aws-actions/configure-aws-credentials` is approved only for identity workflows. Validation workflows must not use it.
 
 Each workflow line keeps the release version as a same-line comment.
 
@@ -671,6 +745,8 @@ It does not add a YAML parser dependency.
 ```text
 Python Quality
 Infrastructure Quality
+AWS Identity Check
+Reusable AWS Identity
 ```
 
 ### Protected check names
@@ -681,7 +757,11 @@ Infrastructure Quality / Lambda package
 Infrastructure Quality / Terraform offline
 ```
 
+The three intended branch-protection status checks remain exactly the validation checks above. Identity workflows are not required pull-request checks.
+
 ### Protected triggers
+
+Validation workflows:
 
 ```text
 pull_request to main
@@ -689,7 +769,16 @@ push to main
 workflow_dispatch
 ```
 
+Identity workflows:
+
+```text
+AWS Identity Check → workflow_dispatch only
+Reusable AWS Identity → workflow_call only
+```
+
 ### Protected security controls
+
+Validation workflows:
 
 ```text
 contents: read only
@@ -700,6 +789,17 @@ checkout credentials not persisted
 full action SHAs
 approved action set
 same-line release comments
+```
+
+Identity workflows:
+
+```text
+contents: read
+id-token: write
+no checkout
+no project execution
+no deployment commands
+approved configure-aws-credentials SHA
 ```
 
 ### Protected Lambda contract
@@ -884,7 +984,7 @@ Behavior:
 static workflow contract test fails
 ```
 
-### OIDC or AWS input introduced
+### OIDC or AWS input introduced in a validation workflow
 
 Behavior:
 
@@ -985,6 +1085,8 @@ update is not merged
 
 ## Security Considerations
 
+Validation workflows:
+
 ```text
 read-only workflow permissions
 no persisted checkout credentials
@@ -998,6 +1100,8 @@ small approved action set
 Dependabot update proposals
 static supply-chain contract tests
 ```
+
+Identity workflows separately request `id-token: write` and use the approved AWS credentials action only for permissionless identity proof. That boundary does not grant deployment authorization.
 
 GitHub Actions remain third-party code executed by the repository.
 
@@ -1058,8 +1162,10 @@ bootstrap Terraform offline CI
 immutable action SHA pins
 Dependabot for GitHub Actions
 workflow static contract tests
-read-only permissions
+read-only validation permissions
 checkout credential hardening
+manual AWS identity-check workflow source
+reusable AWS identity workflow source
 ```
 
 ### Not yet configured or executed as project infrastructure
@@ -1068,8 +1174,12 @@ checkout credential hardening
 branch protection
 required status-check settings
 GitHub repository rulesets
-AWS OIDC
+real OIDC bootstrap apply
+GitHub dev Environment
+repository variables
+end-to-end identity verification against AWS
 AWS deployment roles
+state authorization
 remote Terraform plan in CI
 Terraform apply in CI
 GitHub Environment approvals
@@ -1084,19 +1194,17 @@ drift workflow
 ## Intentionally Deferred
 
 ```text
-AWS authentication
-id-token permission
-GitHub OIDC provider
-AWS IAM trust policy
 state access role
 deployment role
+plan identity
+apply identity
+artifact publication identity
 remote plan
 pull-request plan comments
 saved-plan upload
 deployment artifact upload
 artifact signing
 SLSA provenance
-GitHub Environments
 production approvals
 automatic apply
 automatic rollback
@@ -1110,7 +1218,7 @@ matrix Terraform version tests
 multi-platform Lambda package builds
 ```
 
-Each requires a distinct security or operational contract.
+Each requires a distinct security or operational contract. Authentication implemented in repository source remains distinct from deployment authorization.
 
 ## Future Deployment Workflow Boundary
 
@@ -1128,9 +1236,7 @@ S3-native state locking
 It must add separate decisions for:
 
 ```text
-GitHub OIDC
-AWS trust conditions
-least-privilege IAM
+least-privilege IAM beyond identity proof
 state object access
 lockfile access
 artifact publication
@@ -1141,7 +1247,7 @@ deployment evidence
 rollback and recovery
 ```
 
-The validation workflow must not silently evolve into a deployment workflow.
+The validation workflow must not silently evolve into a deployment workflow. The identity verification workflow must not silently evolve into a deployment workflow.
 
 ## Operational Checklist
 
@@ -1180,6 +1286,8 @@ Do not mark branch protection complete until the repository setting is active an
 
 ## Related Documentation
 
+- [GitHub OIDC Trust Bootstrap](github-oidc-trust-bootstrap.md)
+- [ADR-026: Separate OIDC Authentication from Deployment Authorization](../adr/ADR-026-separate-oidc-authentication-from-deployment-authorization.md)
 - [Terraform State and Environment Workflow](terraform-state-and-environment-workflow.md)
 - [Lambda Packaging](lambda-packaging.md)
 - [Lambda Runtime Infrastructure](lambda-runtime-infrastructure.md)
