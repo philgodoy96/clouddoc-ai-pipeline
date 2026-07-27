@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import math
-from typing import Any, Never, Protocol
+from collections.abc import Callable
+from time import perf_counter
+from typing import Any, Literal, Never, Protocol
 
 from botocore.exceptions import (
     BotoCoreError,
@@ -20,9 +22,11 @@ from botocore.exceptions import (
 )
 from pydantic import ValidationError
 
+from clouddoc.observability import NullOperationalLogger, OperationalLogger
 from clouddoc.providers.ai_provider import AIProviderRequest
 from clouddoc.providers.provider_errors import (
     AIProviderConfigurationError,
+    AIProviderError,
     AIProviderInvalidResponseError,
     AIProviderThrottledError,
     AIProviderTimeoutError,
@@ -94,6 +98,11 @@ The JSON object must contain exactly these top-level fields:
 Use "unknown", lower confidence, and requires_human_review=true when the document
 cannot be classified or extracted reliably."""
 
+Timer = Callable[[], float]
+_NULL_LOGGER = NullOperationalLogger()
+
+_EventSeverity = Literal["info", "warning", "error"]
+
 
 class BedrockRuntimeClient(Protocol):
     """Minimal client contract required by the Bedrock provider."""
@@ -115,15 +124,22 @@ class BedrockAIProvider:
         model_id: str,
         max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
         temperature: float = DEFAULT_TEMPERATURE,
+        logger: OperationalLogger = _NULL_LOGGER,
+        timer: Timer = perf_counter,
     ) -> None:
         """Initialize one Bedrock provider with bounded inference settings."""
         self._client = client
         self._model_id = _validate_model_id(model_id)
         self._max_output_tokens = _validate_max_output_tokens(max_output_tokens)
         self._temperature = _validate_temperature(temperature)
+        self._logger = logger
+        self._timer = timer
 
     def extract(self, request: AIProviderRequest) -> AIExtractionResult:
         """Classify and extract one document through Bedrock Converse."""
+        started_at = self._timer()
+        response: object | None = None
+
         try:
             response = self._client.converse(
                 modelId=self._model_id,
@@ -148,38 +164,200 @@ class BedrockAIProvider:
                 },
             )
         except (ConnectTimeoutError, ReadTimeoutError) as error:
-            raise AIProviderTimeoutError(
+            normalized = AIProviderTimeoutError(
                 "Amazon Bedrock request timed out",
                 provider_name=self.provider_name,
-            ) from error
+            )
+            self._emit_invocation_completed(
+                request=request,
+                started_at=started_at,
+                outcome="timed_out",
+                severity="error",
+                provider_error_code=normalized.error_code,
+                exception_type=type(normalized).__name__,
+                retryable=True,
+            )
+            raise normalized from error
         except (
             NoCredentialsError,
             PartialCredentialsError,
             CredentialRetrievalError,
             ParamValidationError,
         ) as error:
-            raise AIProviderConfigurationError(
+            normalized = AIProviderConfigurationError(
                 "Amazon Bedrock provider configuration prevents invocation",
                 provider_name=self.provider_name,
-            ) from error
+            )
+            self._emit_invocation_completed(
+                request=request,
+                started_at=started_at,
+                outcome="configuration_error",
+                severity="error",
+                provider_error_code=normalized.error_code,
+                exception_type=type(normalized).__name__,
+                retryable=True,
+            )
+            raise normalized from error
         except (
             EndpointConnectionError,
             ConnectionClosedError,
         ) as error:
-            raise AIProviderUnavailableError(
+            normalized = AIProviderUnavailableError(
                 "Amazon Bedrock is temporarily unavailable",
                 provider_name=self.provider_name,
-            ) from error
+            )
+            self._emit_invocation_completed(
+                request=request,
+                started_at=started_at,
+                outcome="unavailable",
+                severity="error",
+                provider_error_code=normalized.error_code,
+                exception_type=type(normalized).__name__,
+                retryable=True,
+            )
+            raise normalized from error
         except ClientError as error:
-            _raise_normalized_client_error(error)
+            normalized = _normalize_client_error(error)
+            self._emit_invocation_completed(
+                request=request,
+                started_at=started_at,
+                outcome=_outcome_for_normalized_error(normalized),
+                severity=_severity_for_normalized_error(normalized),
+                provider_request_id=_safe_client_error_request_id(error),
+                provider_error_code=normalized.error_code,
+                exception_type=type(normalized).__name__,
+                retryable=True,
+            )
+            raise normalized from error
         except BotoCoreError as error:
-            raise AIProviderUnavailableError(
+            normalized = AIProviderUnavailableError(
                 "Amazon Bedrock request failed before receiving a valid response",
                 provider_name=self.provider_name,
-            ) from error
+            )
+            self._emit_invocation_completed(
+                request=request,
+                started_at=started_at,
+                outcome="unavailable",
+                severity="error",
+                provider_error_code=normalized.error_code,
+                exception_type=type(normalized).__name__,
+                retryable=True,
+            )
+            raise normalized from error
+        except Exception as error:
+            self._emit_invocation_completed(
+                request=request,
+                started_at=started_at,
+                outcome="internal_error",
+                severity="error",
+                provider_error_code="unexpected_provider_error",
+                exception_type=type(error).__name__,
+            )
+            raise
 
-        response_text = _extract_response_text(response)
-        return _parse_extraction_result(response_text)
+        try:
+            response_text = _extract_response_text(response)
+            result = _parse_extraction_result(response_text)
+        except AIProviderInvalidResponseError as error:
+            self._emit_invocation_completed(
+                request=request,
+                started_at=started_at,
+                outcome="invalid_response",
+                severity="warning",
+                response=response,
+                provider_error_code=error.error_code,
+                exception_type=type(error).__name__,
+                retryable=False,
+            )
+            raise
+        except Exception as error:
+            self._emit_invocation_completed(
+                request=request,
+                started_at=started_at,
+                outcome="internal_error",
+                severity="error",
+                response=response,
+                provider_error_code="unexpected_provider_error",
+                exception_type=type(error).__name__,
+            )
+            raise
+
+        self._emit_invocation_completed(
+            request=request,
+            started_at=started_at,
+            outcome="succeeded",
+            severity="info",
+            response=response,
+            retryable=False,
+        )
+        return result
+
+    def _emit_invocation_completed(
+        self,
+        *,
+        request: AIProviderRequest,
+        started_at: float,
+        outcome: str,
+        severity: _EventSeverity,
+        response: object | None = None,
+        provider_request_id: str | None = None,
+        provider_error_code: str | None = None,
+        exception_type: str | None = None,
+        retryable: bool | None = None,
+    ) -> None:
+        """Emit one safe terminal invocation event without affecting outcomes."""
+        try:
+            fields: dict[str, object] = {
+                "operation": "extract_document",
+                "outcome": outcome,
+                "provider_name": self.provider_name,
+                "model_id": self._model_id,
+                "correlation_id": request.correlation_id,
+                "processing_attempt_id": request.processing_attempt_id,
+                "duration_ms": round(
+                    max(0.0, self._timer() - started_at) * 1_000,
+                    3,
+                ),
+            }
+
+            if response is not None:
+                response_request_id = _safe_provider_request_id(response)
+                if response_request_id is not None:
+                    fields["provider_request_id"] = response_request_id
+
+                stop_reason = _safe_stop_reason(response)
+                if stop_reason is not None:
+                    fields["stop_reason"] = stop_reason
+
+                input_tokens = _safe_usage_token(response, "inputTokens")
+                if input_tokens is not None:
+                    fields["input_tokens"] = input_tokens
+
+                output_tokens = _safe_usage_token(response, "outputTokens")
+                if output_tokens is not None:
+                    fields["output_tokens"] = output_tokens
+
+                total_tokens = _safe_usage_token(response, "totalTokens")
+                if total_tokens is not None:
+                    fields["total_tokens"] = total_tokens
+
+                provider_latency_ms = _safe_provider_latency_ms(response)
+                if provider_latency_ms is not None:
+                    fields["provider_latency_ms"] = provider_latency_ms
+
+            if provider_request_id is not None:
+                fields["provider_request_id"] = provider_request_id
+            if provider_error_code is not None:
+                fields["provider_error_code"] = provider_error_code
+            if exception_type is not None:
+                fields["exception_type"] = exception_type
+            if retryable is not None:
+                fields["retryable"] = retryable
+
+            emit = getattr(self._logger, severity)
+            emit("ai_provider.invocation_completed", **fields)
+        except Exception:
+            return
 
 
 def _build_user_prompt(document_text: str) -> str:
@@ -327,38 +505,56 @@ def _validate_temperature(temperature: float) -> float:
     return normalized_temperature
 
 
-def _raise_normalized_client_error(error: ClientError) -> Never:
+def _normalize_client_error(error: ClientError) -> AIProviderError:
     """Translate Bedrock service error codes into application-facing categories."""
     error_code = _extract_client_error_code(error)
 
     if error_code in _TIMEOUT_ERROR_CODES:
-        raise AIProviderTimeoutError(
+        return AIProviderTimeoutError(
             "Amazon Bedrock request timed out",
             provider_name=BedrockAIProvider.provider_name,
-        ) from error
+        )
 
     if error_code in _THROTTLING_ERROR_CODES:
-        raise AIProviderThrottledError(
+        return AIProviderThrottledError(
             "Amazon Bedrock request was throttled",
             provider_name=BedrockAIProvider.provider_name,
-        ) from error
+        )
 
     if error_code in _CONFIGURATION_ERROR_CODES:
-        raise AIProviderConfigurationError(
+        return AIProviderConfigurationError(
             "Amazon Bedrock provider configuration prevents invocation",
             provider_name=BedrockAIProvider.provider_name,
-        ) from error
+        )
 
     if error_code in _UNAVAILABLE_ERROR_CODES:
-        raise AIProviderUnavailableError(
+        return AIProviderUnavailableError(
             "Amazon Bedrock is temporarily unavailable",
             provider_name=BedrockAIProvider.provider_name,
-        ) from error
+        )
 
-    raise AIProviderUnavailableError(
+    return AIProviderUnavailableError(
         "Amazon Bedrock returned an unclassified service failure",
         provider_name=BedrockAIProvider.provider_name,
-    ) from error
+    )
+
+
+def _outcome_for_normalized_error(error: AIProviderError) -> str:
+    """Map a normalized provider error to its operational outcome."""
+    if isinstance(error, AIProviderTimeoutError):
+        return "timed_out"
+    if isinstance(error, AIProviderThrottledError):
+        return "throttled"
+    if isinstance(error, AIProviderConfigurationError):
+        return "configuration_error"
+    return "unavailable"
+
+
+def _severity_for_normalized_error(error: AIProviderError) -> _EventSeverity:
+    """Map a normalized provider error to operational event severity."""
+    if isinstance(error, AIProviderThrottledError):
+        return "warning"
+    return "error"
 
 
 def _extract_client_error_code(error: ClientError) -> str:
@@ -369,6 +565,82 @@ def _extract_client_error_code(error: ClientError) -> str:
 
     error_code = error_payload.get("Code")
     return error_code if isinstance(error_code, str) else ""
+
+
+def _safe_client_error_request_id(error: ClientError) -> str | None:
+    """Read a ClientError request ID without trusting nested metadata."""
+    try:
+        response = error.response
+    except Exception:
+        return None
+
+    return _safe_provider_request_id(response)
+
+
+def _safe_provider_request_id(response: object) -> str | None:
+    """Extract a non-empty Bedrock request ID from response metadata."""
+    if not isinstance(response, dict):
+        return None
+
+    response_metadata = response.get("ResponseMetadata")
+    if not isinstance(response_metadata, dict):
+        return None
+
+    request_id = response_metadata.get("RequestId")
+    if not isinstance(request_id, str):
+        return None
+
+    normalized_request_id = request_id.strip()
+    return normalized_request_id or None
+
+
+def _safe_stop_reason(response: object) -> str | None:
+    """Extract a non-empty stop reason without trusting response shape."""
+    if not isinstance(response, dict):
+        return None
+
+    stop_reason = response.get("stopReason")
+    if not isinstance(stop_reason, str):
+        return None
+
+    normalized_stop_reason = stop_reason.strip()
+    return normalized_stop_reason or None
+
+
+def _safe_usage_token(response: object, field_name: str) -> int | None:
+    """Extract one non-negative integer usage token field when safely available."""
+    if not isinstance(response, dict):
+        return None
+
+    usage = response.get("usage")
+    if not isinstance(usage, dict):
+        return None
+
+    value = usage.get(field_name)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+
+    return value
+
+
+def _safe_provider_latency_ms(response: object) -> int | float | None:
+    """Extract a finite non-negative provider latency without coercion."""
+    if not isinstance(response, dict):
+        return None
+
+    metrics = response.get("metrics")
+    if not isinstance(metrics, dict):
+        return None
+
+    latency = metrics.get("latencyMs")
+    if isinstance(latency, bool):
+        return None
+    if isinstance(latency, int):
+        return latency if latency >= 0 else None
+    if isinstance(latency, float) and math.isfinite(latency) and latency >= 0:
+        return latency
+
+    return None
 
 
 def _raise_invalid_response(message: str) -> Never:
