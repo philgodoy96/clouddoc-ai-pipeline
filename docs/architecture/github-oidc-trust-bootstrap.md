@@ -7,6 +7,7 @@ Initial OIDC bootstrap was provisioned.
 Initial identity verification reached AWS but was denied.
 CloudTrail identified the ID-qualified subject.
 The exact subject correction is implemented in source.
+The permanent OIDC claim preflight is implemented in the reusable workflow.
 The corrective role update is not yet applied.
 End-to-end federation has not yet been re-verified.
 ```
@@ -101,10 +102,12 @@ Reusable AWS Identity
         ├── id-token: write
         ├── no checkout
         ├── no project execution
-        └── no deployment command
+        ├── no deployment command
+        ├── workflow-context validation
+        └── OIDC claim preflight
                      │
                      ▼
-GitHub OIDC token
+GitHub OIDC token (process-memory-only token handling)
                      │
                      ▼
 AWS STS AssumeRoleWithWebIdentity
@@ -847,6 +850,123 @@ The AWS trust policy remains the authoritative security boundary.
 
 The preflight checks are defense in depth, not a replacement for IAM trust conditions.
 
+## Runtime OIDC claim preflight
+
+The reusable AWS identity workflow includes a permanent OIDC claim preflight
+between trusted-context validation and AWS credential configuration.
+
+Why it exists:
+
+```text
+generic AWS assume-role errors do not identify the mismatched claim
+fail-fast identity contract reduces unsafe trial-and-error trust changes
+exact claim comparison supports least privilege
+sanitized claim diagnostics improve operability without exposing the JWT
+```
+
+Where it runs:
+
+```text
+.github/workflows/reusable-aws-identity.yml
+step: Validate GitHub OIDC token claims
+before: Configure temporary AWS credentials
+```
+
+Exact runtime step order:
+
+```text
+Validate trusted workflow context
+Validate GitHub OIDC token claims
+Configure temporary AWS credentials
+Verify assumed AWS identity
+```
+
+Inputs:
+
+```text
+ACTIONS_ID_TOKEN_REQUEST_URL
+ACTIONS_ID_TOKEN_REQUEST_TOKEN
+audience sts.amazonaws.com
+GitHub repository, repository_id, repository_owner_id
+GitHub ref
+GitHub Environment: dev
+job.workflow_ref
+canonical reusable workflow ref on main
+```
+
+Validated claims:
+
+```text
+aud
+sub
+repository
+repository_id
+repository_owner_id
+ref
+environment
+job_workflow_ref
+```
+
+`job_workflow_ref` remains ref-based. `job_workflow_sha` is unused.
+
+Implementation constraints:
+
+```text
+Python standard library only
+no package installation
+no repository checkout
+no third-party OIDC debug action
+no AWS mutation
+process-memory-only token handling
+JWT never printed or persisted
+GitHub runtime request token never printed
+```
+
+The preflight decodes only the JWT payload and compares claims. It does not
+perform signature and issuer verification. AWS remains authoritative for
+cryptographic token validation and IAM trust-policy evaluation.
+
+### Control boundary
+
+```text
+Control:
+    Workflow-context validation
+
+Responsibility:
+    Verify repository, branch, event, account input, and canonical role input
+
+Control:
+    OIDC claim preflight
+
+Responsibility:
+    Compare the issued token payload with the expected workload identity contract
+
+Control:
+    AWS STS and IAM
+
+Responsibility:
+    Validate token signature, issuer, audience, provider trust, and IAM role trust
+
+Control:
+    GetCallerIdentity
+
+Responsibility:
+    Prove which AWS principal was actually assumed
+```
+
+### Observability
+
+Logs contain only sanitized claim diagnostics:
+
+```text
+OIDC claim <claim>: match
+OIDC claim <claim>: mismatch
+sanitized expected / actual values
+```
+
+Raw numeric IDs are masked. The JWT is never printed. The GitHub runtime
+request token is never printed.
+
 ## Identity Proof
 
 After role assumption, the workflow runs:
@@ -992,11 +1112,19 @@ workflow-call-only reusable workflow
 exact identity permissions
 no OIDC in validation workflows
 approved AWS action SHA
+unchanged credential-action pin
+unchanged 900-second session duration
 no checkout in identity workflows
+OIDC claim preflight step existence
+OIDC claim preflight step ordering
+eight-claim coverage
+runtime-token handling
+no JWT logging
+no job_workflow_sha
+job_workflow_ref remains ref-based
 no project execution
 no static AWS credentials
 approved repository variables
-900-second session
 account validation
 account masking
 session naming
@@ -1210,18 +1338,18 @@ It is not yet applied to the AWS role and has not yet been re-verified against A
 Next reviewed steps:
 
 ```text
-review hotfix PR
-merge hotfix
-generate saved plan
-verify one in-place role trust update
-apply reviewed plan
-verify eight exact conditions in AWS
+merge claim-preflight hotfix
+dispatch AWS Identity Check
+inspect claim matrix
+correct only proven trust mismatches
+generate saved Terraform plan
+apply reviewed role-trust update
 rerun AWS Identity Check
-record successful federation evidence
-verify role remains permissionless
+record successful identity evidence
 ```
 
-These steps are not yet complete.
+These steps are not yet complete. End-to-end identity proof remains pending.
+The role remains a permissionless identity role.
 
 ## End-to-End Verification
 
@@ -1282,6 +1410,38 @@ Result:
 
 ```text
 AssumeRoleWithWebIdentity fails
+```
+
+### OIDC claim preflight mismatch
+
+Result:
+
+```text
+workflow fails before AWS credential configuration
+```
+
+### OIDC token request unavailable
+
+Result:
+
+```text
+workflow fails before AWS credential configuration
+```
+
+### Malformed JWT payload
+
+Result:
+
+```text
+workflow fails before AWS credential configuration
+```
+
+### All preflight claims match but AWS denies assume-role
+
+Result:
+
+```text
+investigate provider trust, effective IAM trust, or AWS-side validation
 ```
 
 ### Wrong AWS account variable
@@ -1461,6 +1621,12 @@ The identity workflow performs no checkout.
 
 The identity workflow executes no project source.
 
+OIDC claim preflight runs before AWS credential configuration.
+
+Process-memory-only token handling keeps the JWT out of logs and storage.
+
+AWS remains authoritative for signature, issuer, and IAM trust.
+
 The target AWS account is validated.
 
 The account ID is masked.
@@ -1475,7 +1641,10 @@ Bootstrap state remains outside Git.
 ## Reliability Considerations
 
 ```text
-preflight validation before AWS exchange
+workflow-context validation before OIDC claim preflight
+OIDC claim preflight before AWS exchange
+sanitized claim diagnostics
+process-memory-only token handling
 exact account validation
 exact role ARN validation
 exact region validation
@@ -1539,6 +1708,7 @@ Terraform mocked tests
 static bootstrap tests
 manual caller workflow
 reusable identity workflow
+permanent OIDC claim preflight
 workflow contract tests
 documentation
 ```

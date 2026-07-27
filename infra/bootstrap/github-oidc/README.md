@@ -258,6 +258,102 @@ The corrected trust contract is implemented in repository source.
 It is not yet applied to the AWS role and has not yet been re-verified through
 the AWS Identity Check workflow.
 
+## OIDC claim preflight
+
+The reusable AWS identity workflow performs a permanent OIDC claim preflight
+before AWS credential configuration.
+
+Final runtime step order:
+
+```text
+Validate trusted workflow context
+Validate GitHub OIDC token claims
+Configure temporary AWS credentials
+Verify assumed AWS identity
+```
+
+The OIDC claim preflight is a fail-fast identity contract. It:
+
+```text
+requests a GitHub OIDC token with audience sts.amazonaws.com
+decodes only the JWT payload in process memory
+validates eight exact claims
+logs only sanitized claim diagnostics
+fails before AWS STS when a claim differs
+uses Python standard library only
+does not use a third-party OIDC debugger action
+never prints or stores the JWT
+never prints the GitHub runtime request token
+```
+
+Validated claims:
+
+```text
+aud
+sub
+repository
+repository_id
+repository_owner_id
+ref
+environment
+job_workflow_ref
+```
+
+Expected immutable subject shape:
+
+```text
+repo:<owner>@<owner_id>/<repository>@<repository_id>:environment:<environment>
+```
+
+CloudDoc subject shape with placeholders:
+
+```text
+repo:philgodoy96@<github_repository_owner_id>/clouddoc-ai-pipeline@<github_repository_id>:environment:dev
+```
+
+`job_workflow_ref` remains ref-based. `job_workflow_sha` is not part of this
+contract.
+
+### Preflight security boundary
+
+```text
+The preflight does not validate the JWT signature or issuer.
+
+AWS STS and IAM remain authoritative for cryptographic token validation,
+provider trust, and role-assumption authorization.
+```
+
+Process-memory-only token handling keeps the JWT in the Python process.
+AWS remains authoritative for signature and issuer verification and for IAM
+trust-policy evaluation. Authentication before authorization still applies:
+the role remains a permissionless identity role.
+
+### Preflight failure modes
+
+```text
+Preflight claim mismatch
+    → workflow fails before AWS credential configuration
+
+OIDC token request unavailable
+    → workflow fails before AWS credential configuration
+
+Malformed JWT payload
+    → workflow fails before AWS credential configuration
+
+All preflight claims match but AWS denies assume-role
+    → investigate provider trust, effective IAM trust, or AWS-side validation
+```
+
+### Current operational status
+
+```text
+source trust correction implemented
+OIDC claim preflight implemented in the reusable workflow
+AWS trust correction not yet applied
+end-to-end identity proof not yet re-verified
+role remains permissionless
+```
+
 ## Wildcard Boundary
 
 The trust policy contains no wildcard condition.
