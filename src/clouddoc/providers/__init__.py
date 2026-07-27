@@ -4,6 +4,7 @@ from clouddoc.providers.ai_provider import (
     AIProvider,
     AIProviderRequest,
 )
+from clouddoc.providers.bedrock_ai_provider import BedrockAIProvider
 from clouddoc.providers.mock_ai_provider import (
     MockAIProvider,
     MockAIProviderOutcome,
@@ -26,6 +27,7 @@ __all__ = [
     "AIProviderThrottledError",
     "AIProviderTimeoutError",
     "AIProviderUnavailableError",
+    "BedrockAIProvider",
     "MockAIProvider",
     "MockAIProviderOutcome",
 ]
