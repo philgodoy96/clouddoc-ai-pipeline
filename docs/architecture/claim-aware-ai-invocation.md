@@ -6,7 +6,16 @@ Implemented as an incremental processing slice.
 
 This document describes the workflow boundary that connects authoritative processing ownership, bounded S3 document retrieval, deterministic AI-provider invocation, and validated structured output.
 
-It does not describe durable job completion or failure persistence. Those state transitions remain separate follow-up work.
+## Current Evolution
+
+The original slice introduced the provider boundary with `MockAIProvider` and claim-aware orchestration before durable completion and failure persistence existed.
+
+Later slices implemented attempt-aware finalization and Amazon Bedrock. The current implementation is documented in:
+
+- [Attempt-Aware Processing Finalization](attempt-aware-processing-finalization.md)
+- [Bedrock AI Provider Integration](bedrock-ai-provider-integration.md)
+
+This document remains the historical architecture of the claim-aware invocation slice, updated only where earlier statements would otherwise present superseded behavior as current.
 
 ## Purpose
 
@@ -45,10 +54,9 @@ StartDocumentProcessing
             → build AIProviderRequest
             → invoke AIProvider
             → receive validated AIExtractionResult
-            → return explicit processed result
+            → persist attempt-aware completion or terminal failure
+            → return explicit workflow result
 ```
-
-The workflow currently stops after returning the validated extraction result. It does not yet persist job completion.
 
 ## Application Boundary
 
@@ -67,6 +75,7 @@ This application service coordinates:
 - AI-provider request construction
 - provider invocation
 - normalized application failure translation
+- attempt-aware completion and failure persistence
 - explicit workflow-result creation
 
 The service depends on abstractions and application-owned contracts rather than concrete AWS clients.
@@ -77,6 +86,8 @@ Its direct collaborators are:
 StartDocumentProcessing
 DocumentTextLoader
 AIProvider
+DocumentJobRepository
+Clock
 ```
 
 ## Explicit Workflow Results
@@ -87,10 +98,11 @@ The workflow returns:
 DocumentProcessingResult
 ```
 
-with one of two outcomes:
+with one of:
 
 ```text
 PROCESSED
+TERMINAL_FAILURE_RECORDED
 EFFECT_ALREADY_APPLIED
 ```
 
@@ -103,9 +115,18 @@ owned ProcessingAttempt
 validated AIExtractionResult
 ```
 
-This means the current worker acquired processing ownership and completed document retrieval and provider invocation.
+This means the current worker acquired processing ownership, completed document retrieval and provider invocation, and persisted successful completion.
 
-It does not mean the job has been durably completed in DynamoDB.
+### TERMINAL_FAILURE_RECORDED
+
+A terminal-failure result requires:
+
+```text
+owned ProcessingAttempt
+normalized failure reason
+```
+
+This means the worker recorded a durable terminal failure and should acknowledge the queue message.
 
 ### EFFECT_ALREADY_APPLIED
 
@@ -196,7 +217,7 @@ The request does not expose:
 - queue delivery metadata
 - Lambda context objects
 
-The processing-attempt ID will later be used to protect durable completion and failure writes from stale workers.
+The processing-attempt ID protects durable completion and failure writes from stale workers.
 
 ## Provider Abstraction
 
@@ -208,25 +229,11 @@ AIProvider
 
 and not on Amazon Bedrock directly.
 
-The current runtime composition injects:
+`MockAIProvider` remains the local and automated-test default. The deployed Processor selects Bedrock through runtime configuration. The application workflow still depends only on `AIProvider`.
 
-```text
-MockAIProvider
-```
+The mock was introduced first so the project could verify orchestration, request construction, duplicate suppression, result validation, and error propagation without introducing model identifiers, Bedrock IAM permissions, network variability, throttling configuration, provider-specific payload mapping, inference cost, or real document disclosure.
 
-This is an intentional sequencing decision.
-
-The deterministic provider allows the project to verify orchestration, request construction, duplicate suppression, result validation, and error propagation without introducing:
-
-- model identifiers
-- Bedrock IAM permissions
-- network variability
-- throttling configuration
-- provider-specific payload mapping
-- inference cost
-- real document disclosure
-
-A Bedrock adapter can replace the mock through the composition boundary without changing the application workflow.
+A Bedrock adapter replaces the mock through the composition boundary without changing the application workflow.
 
 ## Validated Output
 
@@ -240,7 +247,7 @@ The result schema is application-owned and validated before it reaches `Document
 
 A successful provider call alone is not sufficient to mark a document job as succeeded.
 
-The result must later be persisted through an attempt-aware conditional state transition.
+The result must be persisted through an attempt-aware conditional state transition.
 
 ## Infrastructure Adapter
 
@@ -312,17 +319,19 @@ S3DocumentTextLoader
     ↓
 ProcessUploadedDocument
     ← MockAIProvider
+       or
+      BedrockAIProvider
 
 ProcessUploadedDocument
     ↓
 ApplicationUploadedDocumentProcessor
 ```
 
+An explicit AI provider factory takes precedence when supplied. Otherwise composition selects the configured provider from runtime settings.
+
 The Lambda handler caches the composed processor at module scope for warm invocations.
 
 The composition builder itself does not introduce global caching.
-
-A custom AI-provider factory can be injected for tests and future provider implementations.
 
 ## Failure Translation
 
@@ -336,56 +345,39 @@ Current translations are:
 
 ```text
 DocumentNotFoundError
-    → ApplicationNotFoundError
+    → terminal failure persistence
 
 DocumentValidationError
-    → ApplicationConflictError
+    → terminal failure persistence
 
 DocumentDependencyError
-    → ApplicationDependencyError
+    → claim release + ApplicationDependencyError
 ```
 
 ### Provider failures
 
-Normalized `AIProviderError` values currently become:
+Current provider failure behavior:
 
 ```text
-ApplicationDependencyError
+AIProviderInvalidResponseError
+    → terminal failure persistence
+
+retryable provider errors
+    → claim release + ApplicationDependencyError + SQS retry
+
+configuration errors
+    → operational dependency path, not terminal document failure
 ```
 
-with operational context that excludes document content.
+`AIProviderConfigurationError`, timeout, throttling, and temporary unavailability follow the retryable operational dependency path: the owned claim is released and the failure surfaces as `ApplicationDependencyError` for SQS retry.
 
 Unexpected loader or provider exceptions are not broadly caught by the workflow.
 
-## Transitional Retry Semantics
+## Historical Transitional Retry Semantics
 
-This slice does not yet implement attempt-aware claim release or terminal failure persistence.
+The original claim-aware slice deferred attempt-aware claim release and terminal failure persistence. That transitional behavior has been replaced.
 
-The current behavior is therefore transitional:
-
-```text
-worker acquires claim
-    ↓
-document retrieval or AI invocation fails
-    ↓
-current SQS message is reported as failed
-    ↓
-redelivery may occur while the claim lease is still active
-    ↓
-StartDocumentProcessing may return EFFECT_ALREADY_APPLIED
-    ↓
-redelivery may be acknowledged without repeating retrieval or inference
-```
-
-Consequently, this slice does not guarantee that a transient retrieval or provider failure reaches the DLQ.
-
-A job may remain in `processing` until:
-
-- the lease expires and another processing trigger occurs
-- a future reconciler detects the stale job
-- attempt-aware failure handling is implemented
-
-This behavior must be addressed before the processing path is considered operationally complete.
+Current retry and finalization semantics are documented in [Attempt-Aware Processing Finalization](attempt-aware-processing-finalization.md).
 
 ## Security Considerations
 
@@ -402,7 +394,7 @@ provider_name
 
 Full document text and full provider payloads must not be logged.
 
-The mock provider is used for local and automated testing so tests do not disclose documents to an external inference service.
+The mock provider remains the local and automated-test default so tests do not disclose documents to an external inference service. The deployed Processor uses Bedrock while automated tests inject fake clients and never call AWS.
 
 ## Testing Strategy
 
@@ -430,42 +422,23 @@ Automated tests do not require AWS or real AI-provider calls.
 
 ## Intentionally Deferred
 
-The following capabilities are intentionally deferred from this slice:
+The following capabilities remain intentionally deferred:
 
-- Amazon Bedrock adapter
-- model selection and model-ID configuration
 - prompt templates and prompt versioning
-- token-usage accounting
-- provider-specific retry policy
-- attempt-aware successful completion
-- retryable claim release
-- terminal failure persistence
+- token and cost accounting
 - lease heartbeat or extension
 - stale-processing reconciliation
-- structured processing logs
+- structured provider telemetry
 - CloudWatch metrics and alarms
-- IAM and Terraform changes
-- end-to-end deployed validation
+- quality evaluation
+- real deployed validation
 
 ## Required Follow-Up
 
-Before adding more processing effects, the next reliability slice should introduce attempt-aware failure handling.
+Implemented follow-up work is documented in:
 
-The workflow must distinguish:
+- [Attempt-Aware Processing Finalization](attempt-aware-processing-finalization.md)
+- [Bedrock AI Provider Integration](bedrock-ai-provider-integration.md)
+- [ADR-023: Use Amazon Nova Micro through Bedrock Converse](../adr/ADR-023-use-amazon-nova-micro-through-bedrock-converse.md)
 
-```text
-retryable dependency failure
-    → conditionally release the owned claim
-    → return the message as failed
-    → allow redelivery to acquire a new attempt
-
-deterministic terminal failure
-    → conditionally persist job failure
-    → acknowledge the queue message
-
-stale worker
-    → conditional write rejected
-    → must not overwrite the current owner
-```
-
-After failure handling is safe, the pipeline can add attempt-aware result persistence and then replace the deterministic provider with Amazon Bedrock.
+The next operational work is observability: structured provider telemetry, CloudWatch alarms, and deployed validation evidence.

@@ -14,9 +14,21 @@ boto3 DynamoDB resource
 DynamoDBDocumentJobRepository
 SystemClock
 UUIDJobIdGenerator
+UUIDProcessingAttemptIdGenerator
+S3PresignedDocumentUploadProvider
+S3DocumentTextLoader
 CreateDocumentJob
 GetDocumentJob
+StartDocumentProcessing
+ProcessUploadedDocument
+ReconcileDeadLetteredDocument
+MockAIProvider
+BedrockAIProvider
+ApplicationUploadedDocumentProcessor
+ApplicationDeadLetteredDocumentProcessor
 ```
+
+Control-plane composition builds job creation and query services. Processing-plane composition builds the uploaded-document processor and dead-letter reconciler.
 
 ## Package Structure
 
@@ -25,7 +37,8 @@ src/clouddoc/
 ├── infrastructure/
 │   ├── __init__.py
 │   ├── clock.py
-│   └── identifiers.py
+│   ├── identifiers.py
+│   └── ...
 └── runtime/
     ├── __init__.py
     ├── settings.py
@@ -38,8 +51,9 @@ The runtime layer is responsible for:
 
 ```text
 loading validated configuration
-constructing AWS resources
+constructing AWS clients and resources
 selecting concrete adapter implementations
+selecting the configured AI provider
 assembling application services
 failing fast on invalid startup configuration
 keeping handlers free from dependency wiring
@@ -55,25 +69,60 @@ business-rule decisions
 domain transitions
 repository implementation details
 structured logging policy
+IAM policy enforcement
 ```
 
 ## Runtime Settings
 
 `RuntimeSettings` loads and validates the configuration required by the running application.
 
-Current setting:
+Shared application settings:
 
 ```text
 CLOUDDOC_JOBS_TABLE_NAME
+CLOUDDOC_DOCUMENTS_BUCKET_NAME
+CLOUDDOC_UPLOAD_URL_EXPIRATION_SECONDS
+CLOUDDOC_PROCESSING_LEASE_DURATION_SECONDS
+CLOUDDOC_MAX_DOCUMENT_SIZE_BYTES
 ```
+
+AI provider selector:
+
+```text
+CLOUDDOC_AI_PROVIDER
+```
+
+Supported values are `mock` and `bedrock`. The local and automated-test default is `mock`.
+
+Conditional Bedrock model setting:
+
+```text
+CLOUDDOC_BEDROCK_MODEL_ID
+```
+
+Required when `CLOUDDOC_AI_PROVIDER=bedrock`. Absent for the mock provider.
+
+Bounded Bedrock inference settings:
+
+```text
+CLOUDDOC_BEDROCK_MAX_OUTPUT_TOKENS
+CLOUDDOC_BEDROCK_TEMPERATURE
+```
+
+Defaults are `1200` output tokens and temperature `0.00001`.
 
 The loader rejects:
 
 ```text
-missing values
+missing required values
 empty values
 whitespace-only values
+unsupported provider names
+missing Bedrock model ID when bedrock is selected
+out-of-range inference settings
 ```
+
+When an explicit environment mapping is supplied, settings are read only from that mapping and do not fall back to `os.environ`.
 
 The settings object is immutable after creation.
 
@@ -152,12 +201,53 @@ optional DynamoDB resource factory
 
 The optional factory allows unit tests to inspect composition without network access.
 
+### build_document_upload_provider
+
+Constructs:
+
+```text
+boto3 S3 client
+S3PresignedDocumentUploadProvider
+```
+
+### build_document_text_loader
+
+Constructs:
+
+```text
+boto3 S3 client
+S3DocumentTextLoader
+```
+
+### build_ai_provider
+
+Selects and constructs the configured AI provider.
+
+`mock` selection returns:
+
+```text
+MockAIProvider
+```
+
+`bedrock` selection constructs:
+
+```text
+bedrock-runtime client
+bounded botocore Config
+BedrockAIProvider
+```
+
+Unsupported provider values fail with `RuntimeConfigurationError`.
+
+Missing or empty Bedrock model ID fails defensively with `RuntimeConfigurationError` even if settings construction was bypassed.
+
 ### build_create_document_job_service
 
 Constructs:
 
 ```text
 DynamoDBDocumentJobRepository
+S3PresignedDocumentUploadProvider
 SystemClock
 UUIDJobIdGenerator
 CreateDocumentJob
@@ -171,6 +261,48 @@ Constructs:
 DynamoDBDocumentJobRepository
 GetDocumentJob
 ```
+
+### build_uploaded_document_processor
+
+Constructs:
+
+```text
+DynamoDBDocumentJobRepository
+StartDocumentProcessing
+S3DocumentTextLoader
+configured AI provider
+ProcessUploadedDocument
+ApplicationUploadedDocumentProcessor
+```
+
+Provider selection uses an explicit AI provider factory when supplied. Otherwise the builder calls `build_ai_provider` with the configured settings and optional Bedrock client factory.
+
+S3 and Bedrock client factories remain injectable for offline tests.
+
+### build_dead_lettered_document_processor
+
+Constructs:
+
+```text
+DynamoDBDocumentJobRepository
+ReconcileDeadLetteredDocument
+ApplicationDeadLetteredDocumentProcessor
+```
+
+## Bedrock SDK Configuration
+
+When Bedrock is selected, composition applies:
+
+```text
+connect timeout = 3 seconds
+read timeout = 40 seconds
+retry mode = standard
+total max attempts = 2
+```
+
+These values are initial application execution-budget defaults pending deployed measurements.
+
+Deep Bedrock request and response behavior is documented in [Bedrock AI Provider Integration](bedrock-ai-provider-integration.md).
 
 ## Dependency Direction
 
@@ -188,7 +320,7 @@ domain and repository contracts
 concrete infrastructure adapters
 ```
 
-Handlers will call composition functions or receive services created by a bootstrap module.
+Handlers call composition functions through module-scoped warm caches.
 
 Application services never import the runtime layer.
 
@@ -210,20 +342,32 @@ This keeps the dependency graph visible during code review and straightforward t
 
 ## Testability
 
-The DynamoDB resource factory is injectable:
+Injectable boundaries include:
+
+```text
+DynamoDB resource factory
+S3 client factory
+Bedrock runtime client factory
+AI provider factory
+```
+
+Example:
 
 ```python
-build_document_job_repository(
+build_uploaded_document_processor(
     settings=settings,
-    dynamodb_resource_factory=fake_factory,
+    dynamodb_resource_factory=fake_dynamodb_factory,
+    s3_client_factory=fake_s3_factory,
+    ai_provider_factory=lambda: fake_provider,
 )
 ```
 
 This allows unit tests to verify:
 
 ```text
-requested AWS service name
-configured table name
+requested AWS service names
+configured table and bucket names
+provider selection
 repository type
 application service type
 concrete clock adapter
@@ -237,19 +381,19 @@ AWS credentials
 network access
 Moto
 real DynamoDB
+real S3
+real Bedrock
 ```
 
-Repository behavior remains covered separately by Moto-backed integration tests.
+Composition tests remain offline. Repository behavior remains covered separately by Moto-backed integration tests.
 
 ## Object Lifetime
 
-Composition functions currently return new instances for each call.
+Composition functions return new instances for each builder call.
 
-No singleton, cache, or service container is introduced yet.
+Lambda handlers cache composed services at module scope for warm invocations.
 
-A future Lambda bootstrap module may create services during cold start and reuse them across invocations.
-
-That decision belongs to the delivery/runtime lifecycle boundary because the consumer determines the desired object lifetime.
+The composition builders themselves do not introduce global caching. Object lifetime remains a delivery/runtime lifecycle concern owned by the handlers.
 
 ## Startup Failure Behavior
 
@@ -260,6 +404,14 @@ RuntimeConfigurationError
 ```
 
 during runtime construction.
+
+Startup failures include:
+
+```text
+unsupported AI provider
+missing Bedrock model ID when bedrock is selected
+invalid shared application settings
+```
 
 AWS resource construction failures are allowed to surface during startup composition.
 
@@ -275,7 +427,7 @@ valid configuration with application execution failure
 
 ## Handler Expectations
 
-Future handlers should not construct:
+Handlers should not construct:
 
 ```text
 boto3 resources
@@ -283,20 +435,21 @@ DynamoDB table references
 repositories
 clocks
 identifier generators
+AI providers
 application services
 ```
 
-Instead, handlers should obtain already composed use cases.
+Instead, handlers obtain already composed use cases through the composition root.
 
 This avoids duplicated wiring and inconsistent runtime configuration.
 
 ## Security Considerations
 
-The composition root does not accept caller-controlled table names.
+The composition root does not accept caller-controlled table names, bucket names, or model identifiers from request payloads.
 
-The table name is loaded from trusted runtime configuration.
+Those values are loaded from trusted runtime configuration.
 
-AWS access is governed by the execution role and should be restricted to the required DynamoDB table operations.
+AWS access is governed by execution roles. Declared IAM boundaries restrict DynamoDB, S3, and Processor-only Bedrock invocation. Runtime composition itself does not enforce IAM.
 
 Secrets are not stored in application objects.
 
@@ -305,32 +458,32 @@ Secrets are not stored in application objects.
 Centralized composition provides one location for future runtime concerns such as:
 
 ```text
-client configuration
-timeouts
-retry settings
 structured logger creation
 metrics adapters
 tracing adapters
-cold-start caching
+runtime health checks
+provider client telemetry
 ```
 
 These concerns are intentionally deferred until their dedicated slices.
 
 ## Intentionally Deferred
 
-The following are intentionally deferred:
+The following remain intentionally deferred:
 
 ```text
-Lambda bootstrap caching
-API Gateway handlers
-S3 clients
-Bedrock clients
-CloudWatch logging
+CloudWatch logging construction
 metrics
 distributed tracing
-custom boto3 retry configuration
 dependency-injection framework
 runtime health checks
+provider client telemetry
 ```
 
-The current composition root is intentionally small and aligned with the dependencies required by the implemented use cases.
+The current composition root aligns with the dependencies required by the implemented control-plane and processing-plane use cases.
+
+## Related Documentation
+
+- [Bedrock AI Provider Integration](bedrock-ai-provider-integration.md)
+- [Claim-Aware AI Invocation](claim-aware-ai-invocation.md)
+- [Lambda Runtime Infrastructure](lambda-runtime-infrastructure.md)

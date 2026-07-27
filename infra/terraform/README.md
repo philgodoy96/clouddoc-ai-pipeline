@@ -25,10 +25,14 @@ structured API access logging
 route-specific throttling
 route-scoped Lambda invocation permissions
 stable API outputs
+Processor-specific Bedrock runtime environment
+dedicated Processor Bedrock invocation policy
+exact Nova Micro foundation-model permission
+offline Bedrock isolation tests
 ```
 
-Bedrock permissions, CloudWatch alarms, automatic replay, operator recovery
-tooling, and real AWS deployment remain separate follow-up work.
+CloudWatch alarms, automatic replay, operator recovery tooling, remote state,
+CI/CD, and real AWS deployment remain separate follow-up work.
 
 ## Current resources
 
@@ -243,7 +247,7 @@ outputs. Do not commit them.
 
 #### Runtime environment
 
-Every function receives the same non-secret environment map:
+Shared across all four functions:
 
 ```text
 CLOUDDOC_JOBS_TABLE_NAME
@@ -253,7 +257,19 @@ CLOUDDOC_PROCESSING_LEASE_DURATION_SECONDS
 CLOUDDOC_MAX_DOCUMENT_SIZE_BYTES
 ```
 
-Configured values:
+Processor-only Bedrock settings:
+
+```text
+CLOUDDOC_AI_PROVIDER=bedrock
+CLOUDDOC_BEDROCK_MODEL_ID=amazon.nova-micro-v1:0
+CLOUDDOC_BEDROCK_MAX_OUTPUT_TOKENS=1200
+CLOUDDOC_BEDROCK_TEMPERATURE=0.00001
+```
+
+Create Job, Get Job, and Dead-Letter Reconciler do not receive AI or Bedrock
+settings.
+
+Configured shared values:
 
 ```text
 upload URL expiration = 900 seconds
@@ -271,7 +287,7 @@ stored in Lambda environment variables.
 | --- | --- |
 | Create Job | `dynamodb:PutItem`; `s3:PutObject` under `documents/*` |
 | Get Job | `dynamodb:GetItem` |
-| Processor | `dynamodb:GetItem`; `dynamodb:PutItem`; `s3:GetObject`; `s3:GetObjectVersion` under `documents/*`; dedicated processing-queue consumer inline policy |
+| Processor | `dynamodb:GetItem`; `dynamodb:PutItem`; `s3:GetObject`; `s3:GetObjectVersion` under `documents/*`; dedicated processing-queue consumer inline policy; dedicated exact-model `bedrock:InvokeModel` policy |
 | Dead-Letter Reconciler | `dynamodb:GetItem`; `dynamodb:PutItem`; dedicated processing-DLQ consumer inline policy |
 
 Each function has its own role. Each role trusts only `lambda.amazonaws.com`.
@@ -279,8 +295,22 @@ Logging permissions target only that function's log group streams.
 `logs:CreateLogGroup` is not granted. No AWS-managed basic execution policy is
 attached.
 
-Bedrock permissions remain intentionally absent. Provider integration remains a
-separate follow-up slice.
+Only the Processor role may invoke Bedrock. The dedicated policy grants one
+action, `bedrock:InvokeModel`, against one exact partition-aware regional
+accountless foundation-model ARN for Nova Micro. Streaming actions and Bedrock
+wildcards are not granted.
+
+#### Bedrock invocation boundary
+
+```text
+data.aws_partition.current
+data.aws_iam_policy_document.processor_bedrock_invoke
+aws_iam_role_policy.processor_bedrock_invoke
+```
+
+Terraform configures Processor runtime selection and grants model invocation
+permission. Nova Micro itself is not provisioned by Terraform; model access
+readiness remains an AWS account and region concern outside this root.
 
 #### Logging
 
@@ -883,14 +913,32 @@ Lambda runtime and IAM topology
 processing event-source topology
 dead-letter reconciliation topology
 API Gateway control-plane topology
+Processor-only Bedrock runtime and IAM isolation
 ```
 
 The current validated total is:
 
 ```text
-22 passed, 0 failed
+25 passed, 0 failed
 ```
 
+Bedrock isolation coverage lives in:
+
+```text
+infra/terraform/tests/bedrock_runtime.tftest.hcl
+```
+
+Its three runs are:
+
+```text
+bedrock_processor_runtime_configuration
+bedrock_processor_model_permissions
+bedrock_runtime_isolation
+```
+
+Those runs assert Processor-only Bedrock environment variables, the exact Nova
+Micro foundation-model ARN permission, and the absence of Bedrock settings or
+actions on the other three functions.
 The dead-letter reconciliation tests validate:
 
 ```text
@@ -1176,13 +1224,13 @@ event filtering
 queue-age alarms
 DLQ-depth alarms
 Lambda throttling alarms
-Bedrock integration
-Bedrock permissions
 Secrets Manager
 versions and aliases
 artifact publication to S3
 code signing
 real AWS deployment
+model-access readiness validation
+real inference validation
 failure injection
 recovery testing
 ```
@@ -1228,3 +1276,5 @@ real AWS deployment and restore validation
 - [ADR-021: Connect processing DLQ to Reconciler Lambda](../../docs/adr/ADR-021-connect-processing-dlq-to-reconciler-lambda.md)
 - [API Gateway control-plane infrastructure](../../docs/architecture/api-gateway-control-plane-infrastructure.md)
 - [ADR-022: Use API Gateway HTTP API for the control plane](../../docs/adr/ADR-022-use-http-api-for-control-plane.md)
+- [Bedrock AI provider integration](../../docs/architecture/bedrock-ai-provider-integration.md)
+- [ADR-023: Use Amazon Nova Micro through Bedrock Converse](../../docs/adr/ADR-023-use-amazon-nova-micro-through-bedrock-converse.md)

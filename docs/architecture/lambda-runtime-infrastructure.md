@@ -193,7 +193,7 @@ processor timeout = 120 seconds
 visibility margin = 6x
 ```
 
-The SQS event-source mapping remains a separate infrastructure slice.
+Processing and DLQ event-source mappings are declared in Terraform. See [Processing queue consumer infrastructure](processing-queue-consumer-infrastructure.md) and [Dead-letter reconciliation infrastructure](dead-letter-reconciliation-infrastructure.md).
 
 ### Dead-Letter Reconciler
 
@@ -220,7 +220,7 @@ replay the message
 
 ## Runtime Configuration
 
-The functions receive one validated non-secret environment map:
+Shared across all four functions:
 
 ```text
 CLOUDDOC_JOBS_TABLE_NAME
@@ -230,9 +230,20 @@ CLOUDDOC_PROCESSING_LEASE_DURATION_SECONDS
 CLOUDDOC_MAX_DOCUMENT_SIZE_BYTES
 ```
 
-The map is normalized as `map(string)` through `tomap`.
+Processor-only Bedrock settings:
 
-Configured values are:
+```text
+CLOUDDOC_AI_PROVIDER=bedrock
+CLOUDDOC_BEDROCK_MODEL_ID=amazon.nova-micro-v1:0
+CLOUDDOC_BEDROCK_MAX_OUTPUT_TOKENS=1200
+CLOUDDOC_BEDROCK_TEMPERATURE=0.00001
+```
+
+Create Job, Get Job, and Dead-Letter Reconciler do not receive AI or Bedrock settings.
+
+Environment maps are normalized as `map(string)` through `tomap`.
+
+Configured shared values are:
 
 ```text
 upload URL expiration = 900 seconds
@@ -246,7 +257,7 @@ Knowing a resource identifier does not grant access to the resource.
 
 Access remains controlled by each function execution role.
 
-Secrets, credentials, and provider API keys must not be added to this map.
+Secrets, credentials, and provider API keys must not be added to these maps.
 
 ## Execution Identity Model
 
@@ -366,6 +377,19 @@ s3:GetObjectVersion
 resource = documents bucket under documents/*
 ```
 
+SQS:
+
+```text
+dedicated processing-queue consumer policy
+```
+
+Bedrock:
+
+```text
+bedrock:InvokeModel
+resource = exact Nova Micro foundation-model ARN
+```
+
 The processor can load either the current source object or a specific version referenced by the event contract.
 
 The role does not receive:
@@ -375,11 +399,9 @@ S3 write access
 S3 delete access
 DynamoDB Query
 DynamoDB Scan
-SQS consumer actions
-Bedrock actions
+Bedrock streaming actions
+Bedrock wildcard actions or resources
 ```
-
-SQS and Bedrock permissions remain tied to their respective future integration slices.
 
 ### Dead-Letter Reconciler
 
@@ -391,16 +413,21 @@ dynamodb:PutItem
 resource = authoritative document-jobs table
 ```
 
+SQS:
+
+```text
+dedicated processing-DLQ consumer policy
+```
+
 The role does not receive:
 
 ```text
 S3 access
 Bedrock access
-SQS consumer actions
 automatic replay permissions
 ```
 
-DLQ consumer permissions remain part of the future dead-letter event-source mapping slice.
+Other roles remain explicitly free of Bedrock access.
 
 ## Terraform Outputs
 
@@ -417,7 +444,7 @@ dead_letter_reconciler_function_name
 dead_letter_reconciler_function_arn
 ```
 
-These outputs create stable boundaries for future:
+These outputs create stable boundaries for:
 
 ```text
 API Gateway integrations
@@ -444,9 +471,10 @@ The runtime infrastructure is covered by:
 
 ```text
 infra/terraform/tests/lambda_runtime_functions.tftest.hcl
+infra/terraform/tests/bedrock_runtime.tftest.hcl
 ```
 
-The test uses:
+The tests use:
 
 ```text
 mock_provider "aws"
@@ -455,7 +483,7 @@ command = plan
 
 Computed values are overridden where required to keep plan-time assertions deterministic.
 
-The test validates:
+The Lambda runtime test validates:
 
 ```text
 function names
@@ -467,21 +495,29 @@ artifact path
 source-code hash contract
 memory budgets
 timeout budgets
-runtime environment
+shared runtime environment
 JSON logging
 dedicated execution roles
 Lambda trust principal
 function-scoped log permissions
 control-plane least privilege
 processing-plane least privilege
-absence of SQS actions
-absence of Bedrock actions
 development log retention
 production log retention
 function outputs
 ```
 
-The test does not create AWS resources or require AWS credentials.
+The Bedrock runtime test validates:
+
+```text
+Processor-only Bedrock environment settings
+exact Nova Micro foundation-model ARN
+bedrock:InvokeModel only
+absence of streaming and wildcard Bedrock actions
+absence of Bedrock settings and permissions on other functions
+```
+
+The tests do not create AWS resources, require AWS credentials, or perform real Bedrock calls.
 
 ## Security Boundary
 
@@ -565,26 +601,46 @@ Runtime logs may be unavailable or written outside the intended ownership bounda
 
 ### Function Timeout Exceeds Queue Visibility
 
-The future SQS event-source mapping becomes invalid or causes duplicate overlap risk.
+The SQS event-source mapping becomes invalid or causes duplicate overlap risk.
 
 ### Artifact Hash Not Updated
 
 Terraform may not detect changed application code.
 
+### Missing Bedrock Model ID
+
+Processor startup fails configuration validation when Bedrock is selected without a model ID.
+
+### Model Access Unavailable
+
+Invocation fails as an operational dependency failure until account and region model access is ready.
+
+### Processor Role Missing InvokeModel
+
+Bedrock Converse calls fail with access denied.
+
+### Bedrock Configuration Added to Another Lambda
+
+Non-Processor functions receive AI settings they must not own, breaking isolation guarantees.
+
+### Wildcard Model Permission Introduced
+
+The exact-model IAM boundary collapses and unused models become reachable.
+
 ## Cost Posture
 
 This slice introduces potential costs for:
 
-```text
+`	ext
 Lambda invocation duration
 Lambda memory allocation
 CloudWatch Logs ingestion
 CloudWatch Logs retention
-```
+`
 
 Cost-aware decisions include:
 
-```text
+`	ext
 small control-plane memory budgets
 short control-plane timeouts
 explicit log retention
@@ -594,7 +650,12 @@ no VPC attachment
 no layers
 no tracing
 no duplicate artifacts
-```
+Amazon Nova Micro
+1,200 output tokens
+maximum event-source concurrency five
+two total SDK attempts
+mock inference for automated tests
+`
 
 The processor receives a larger memory budget because it owns document loading, validation, and AI orchestration.
 
@@ -604,19 +665,8 @@ Its final budget should be revisited after deployed measurements.
 
 The following remain separate implementation slices:
 
-```text
-API Gateway resources
-Lambda invoke permissions for API Gateway
-processing queue event-source mapping
-processing queue consumer permissions
-DLQ event-source mapping
-DLQ consumer permissions
-partial batch response configuration
-batch sizes and batching windows
-event-source maximum concurrency
+`	ext
 reserved concurrency
-Bedrock provider integration
-Bedrock permissions
 CloudWatch alarms
 CloudWatch dashboards
 X-Ray tracing
@@ -625,42 +675,43 @@ Lambda aliases and versions
 artifact publication to S3
 code signing
 VPC integration
+remote Terraform state
+CI/CD deployment gates
 real AWS deployment
-```
+real AWS validation
+operator recovery tooling
+`
 
-These concerns are intentionally sequenced around concrete invocation and operational boundaries.
+These concerns are intentionally sequenced around concrete operational and deployment boundaries.
 
 ## Validation Commands
 
-```bash
+`ash
 terraform -chdir=infra/terraform fmt -check -recursive
 terraform -chdir=infra/terraform validate
 terraform -chdir=infra/terraform test
-```
+`
 
 Repository validation remains:
 
-```bash
+`ash
 make check
 make lambda-package-check
 git diff --check
-```
+`
 
-No `terraform apply` or AWS credentials are required for the automated validation path.
+No 	erraform apply or AWS credentials are required for the automated validation path.
 
 ## Follow-Up Work
 
-The next slice should connect the processing queue to the Document Processor Lambda.
+The next operational slice is observability: CloudWatch alarms, dashboards, and structured operational telemetry for the declared control plane and processing path.
 
-That work must define:
+Controlled deployment, remote state, CI/CD gates, real AWS validation, and operator recovery remain subsequent work.
 
-```text
-SQS consumer IAM actions
-event-source mapping
-batch size
-batching window
-partial batch failure support
-maximum event-source concurrency
-timeout compatibility
-failure and retry behavior
-```
+## Related Documentation
+
+- [Bedrock AI Provider Integration](bedrock-ai-provider-integration.md)
+- [Processing queue consumer infrastructure](processing-queue-consumer-infrastructure.md)
+- [Dead-letter reconciliation infrastructure](dead-letter-reconciliation-infrastructure.md)
+- [Runtime Composition](runtime-composition.md)
+- [ADR-023: Use Amazon Nova Micro through Bedrock Converse](../adr/ADR-023-use-amazon-nova-micro-through-bedrock-converse.md)
