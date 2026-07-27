@@ -12,6 +12,7 @@ runtime provider selection
 bounded Bedrock Runtime client configuration
 Processor-only Bedrock environment configuration
 Processor-only model invocation permission
+Bedrock invocation telemetry
 deterministic offline provider tests
 offline Terraform tests
 ```
@@ -863,20 +864,49 @@ Model availability and account access in the selected Region remain deployment p
 
 ## Logging Boundary
 
-The integration may emit safe operational metadata in the observability slice:
+The provider emits one terminal structured event per `extract` call:
+
+```text
+ai_provider.invocation_completed
+```
+
+Success is emitted only after `AIExtractionResult` validation succeeds.
+
+Safe metadata may include:
 
 ```text
 provider_name
 model_id
 correlation_id
 processing_attempt_id
-provider request ID
-stop reason
-input token count
-output token count
-latency
-normalized provider error category
+provider_request_id
+stop_reason
+input_tokens
+output_tokens
+total_tokens
+duration_ms
+provider_latency_ms
+normalized provider outcomes
+provider_error_code
+exception_type
+retryable
 ```
+
+`duration_ms` is wall-clock time around the extract attempt. `provider_latency_ms` is taken from provider response metadata when present and finite. Malformed metadata is tolerated by omission rather than failure.
+
+Normalized outcomes include success and provider failure categories such as:
+
+```text
+succeeded
+timed_out
+throttled
+unavailable
+configuration_error
+invalid_response
+internal_error
+```
+
+Logger failure is isolated and cannot change the provider outcome.
 
 It must not log:
 
@@ -892,7 +922,9 @@ AWS credentials
 authorization values
 ```
 
-The provider API does not require content logging for diagnostics.
+Bedrock model invocation logging remains disabled because content capture is outside the current privacy boundary.
+
+Detailed contracts are documented in [CloudWatch Observability](cloudwatch-observability.md) and [ADR-024](../adr/ADR-024-use-native-aws-metrics-and-structured-application-logs.md).
 
 ## Reliability Invariants
 
@@ -1001,6 +1033,8 @@ unsupported-provider rejection
 missing-model rejection before client construction
 explicit provider-factory precedence
 offline composition
+ai_provider.invocation_completed telemetry
+logger failure isolation
 ```
 
 Terraform tests verify:
@@ -1089,7 +1123,8 @@ The system does not claim exactly-once inference.
 ```text
 real AWS inference validation
 deployed end-to-end validation
-CloudWatch provider metrics and dashboards
+real AWS metric validation
+real dashboard inspection
 token-to-currency cost attribution
 prompt version registry
 Bedrock prompt management
@@ -1106,7 +1141,7 @@ application inference profiles
 provisioned throughput
 streaming inference
 batch inference
-Bedrock invocation logging
+Bedrock model invocation logging
 quality evaluation datasets
 RAG
 embeddings
@@ -1147,4 +1182,6 @@ No AWS credentials or real model invocation are required for this automated vali
 - [Attempt-Aware Processing Finalization](attempt-aware-processing-finalization.md)
 - [Lambda Runtime Infrastructure](lambda-runtime-infrastructure.md)
 - [Processing Queue Consumer Infrastructure](processing-queue-consumer-infrastructure.md)
+- [CloudWatch Observability](cloudwatch-observability.md)
 - [ADR-023: Use Amazon Nova Micro Through Bedrock Converse](../adr/ADR-023-use-amazon-nova-micro-through-bedrock-converse.md)
+- [ADR-024: Use Native AWS Metrics and Structured Application Logs](../adr/ADR-024-use-native-aws-metrics-and-structured-application-logs.md)

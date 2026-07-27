@@ -26,6 +26,7 @@ MockAIProvider
 BedrockAIProvider
 ApplicationUploadedDocumentProcessor
 ApplicationDeadLetteredDocumentProcessor
+operational logger injection
 ```
 
 Control-plane composition builds job creation and query services. Processing-plane composition builds the uploaded-document processor and dead-letter reconciler.
@@ -39,6 +40,9 @@ src/clouddoc/
 │   ├── clock.py
 │   ├── identifiers.py
 │   └── ...
+├── observability/
+│   ├── __init__.py
+│   └── operational_logging.py
 └── runtime/
     ├── __init__.py
     ├── settings.py
@@ -68,10 +72,12 @@ HTTP status mapping
 business-rule decisions
 domain transitions
 repository implementation details
-structured logging policy
+operational event policy
+logging or metrics emission
 IAM policy enforcement
 ```
 
+Runtime composition injects an operational logger into processing adapters and the configured Bedrock provider. It does not define which events are emitted, and it performs no logging or metrics call itself.
 ## Runtime Settings
 
 `RuntimeSettings` loads and validates the configuration required by the running application.
@@ -237,6 +243,8 @@ bounded botocore Config
 BedrockAIProvider
 ```
 
+`build_ai_provider` accepts an optional `operational_logger`. When Bedrock is selected, that logger is passed to `BedrockAIProvider`. Omitted loggers default to `NullOperationalLogger`.
+
 Unsupported provider values fail with `RuntimeConfigurationError`.
 
 Missing or empty Bedrock model ID fails defensively with `RuntimeConfigurationError` even if settings construction was bypassed.
@@ -275,7 +283,9 @@ ProcessUploadedDocument
 ApplicationUploadedDocumentProcessor
 ```
 
-Provider selection uses an explicit AI provider factory when supplied. Otherwise the builder calls `build_ai_provider` with the configured settings and optional Bedrock client factory.
+Provider selection uses an explicit AI provider factory when supplied. An explicit `ai_provider_factory` still wins over configured composition. Otherwise the builder calls `build_ai_provider` with the configured settings, optional Bedrock client factory, and the same `operational_logger` passed to the processing adapter.
+
+When Bedrock is composed through the default path, adapter and provider share that logger. Omitted loggers use `NullOperationalLogger`.
 
 S3 and Bedrock client factories remain injectable for offline tests.
 
@@ -289,6 +299,27 @@ ReconcileDeadLetteredDocument
 ApplicationDeadLetteredDocumentProcessor
 ```
 
+The builder injects the supplied reconciler `operational_logger` into `ApplicationDeadLetteredDocumentProcessor`. Omitted loggers use `NullOperationalLogger`.
+
+## Operational Logger Injection
+
+Processing-plane builders accept:
+
+```text
+operational_logger
+```
+
+Injection rules:
+
+```text
+build_ai_provider accepts operational_logger
+build_uploaded_document_processor passes the same logger to the adapter and configured Bedrock provider
+build_dead_lettered_document_processor injects the reconciler logger
+explicit ai_provider_factory still wins
+omitted loggers use NullOperationalLogger
+```
+
+Composition injects the logger dependency. Event names, severity mapping, and field allowlisting remain owned by handlers, adapters, and providers.
 ## Bedrock SDK Configuration
 
 When Bedrock is selected, composition applies:
@@ -349,6 +380,7 @@ DynamoDB resource factory
 S3 client factory
 Bedrock runtime client factory
 AI provider factory
+operational logger
 ```
 
 Example:
@@ -391,7 +423,14 @@ Composition tests remain offline. Repository behavior remains covered separately
 
 Composition functions return new instances for each builder call.
 
-Lambda handlers cache composed services at module scope for warm invocations.
+Lambda handlers cache composed services and processors at module scope for warm invocations:
+
+```text
+Create Job caches CreateDocumentJob
+Get Job caches GetDocumentJob
+Document Processor caches UploadedDocumentProcessor
+Dead-Letter Reconciler caches DeadLetteredDocumentProcessor
+```
 
 The composition builders themselves do not introduce global caching. Object lifetime remains a delivery/runtime lifecycle concern owned by the handlers.
 
@@ -458,32 +497,33 @@ Secrets are not stored in application objects.
 Centralized composition provides one location for future runtime concerns such as:
 
 ```text
-structured logger creation
 metrics adapters
 tracing adapters
 runtime health checks
-provider client telemetry
+provider health preflight
 ```
 
-These concerns are intentionally deferred until their dedicated slices.
+Operational logger injection is already implemented for processing adapters and Bedrock. Event policy remains outside the composition root.
 
 ## Intentionally Deferred
 
 The following remain intentionally deferred:
 
 ```text
-CloudWatch logging construction
-metrics
-distributed tracing
+metrics adapter
+distributed tracing adapter
 dependency-injection framework
 runtime health checks
-provider client telemetry
+provider health preflight
 ```
 
 The current composition root aligns with the dependencies required by the implemented control-plane and processing-plane use cases.
 
 ## Related Documentation
 
+- [CloudWatch Observability](cloudwatch-observability.md)
 - [Bedrock AI Provider Integration](bedrock-ai-provider-integration.md)
 - [Claim-Aware AI Invocation](claim-aware-ai-invocation.md)
 - [Lambda Runtime Infrastructure](lambda-runtime-infrastructure.md)
+- [ADR-023: Use Amazon Nova Micro through Bedrock Converse](../adr/ADR-023-use-amazon-nova-micro-through-bedrock-converse.md)
+- [ADR-024: Use Native AWS Metrics and Structured Application Logs](../adr/ADR-024-use-native-aws-metrics-and-structured-application-logs.md)

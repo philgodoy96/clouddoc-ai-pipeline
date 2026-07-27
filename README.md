@@ -22,6 +22,14 @@ Foundations already implemented in the repository include:
 * strict JSON and AIExtractionResult validation
 * Processor-only Nova Micro configuration
 * Processor-only least-privilege model invocation permission
+* structured operational logging
+* control-plane request telemetry
+* processing and reconciliation record/batch telemetry
+* Bedrock invocation telemetry
+* Lambda JSON / INFO / WARN logging configuration
+* nine CloudWatch alarms
+* one environment-scoped operations dashboard
+* offline observability tests
 * offline provider and Terraform tests
 * offline automated tests
 
@@ -100,9 +108,12 @@ DLQ Reconciler Lambda
         │
         ▼
 DynamoDB job status = dead
+
+Operational side boundary (not business state):
+CloudWatch Logs, native AWS metrics, alarms, and operations dashboard
 ```
 
-The repository now declares the control plane, queues, event-source mappings, Lambdas, runtime composition, Bedrock adapter, and exact IAM boundary. Real AWS deployment and validation remain pending. The diagram describes the approved architecture as implemented in the repository, not an already active AWS deployment.
+The repository declares the control plane, queues, event-source mappings, Lambdas, runtime composition, Bedrock adapter, exact IAM boundary, structured operational logging, CloudWatch alarms, and the operations dashboard. The AWS environment has not yet been deployed and validated. The diagram describes the approved architecture as implemented in the repository, not an already active AWS deployment. DynamoDB remains authoritative for `DocumentJob` lifecycle state; CloudWatch provides operational evidence only.
 
 ## V1 Capabilities
 
@@ -123,15 +134,17 @@ The repository now declares the control plane, queues, event-source mappings, La
 * dead-letter state reconciliation
 * least-privilege IAM declarations
 * Terraform-managed infrastructure
-* offline automated tests without real Bedrock calls
+* structured CloudWatch operational logs
+* nine CloudWatch alarms
+* one environment-scoped CloudWatch operations dashboard
+* offline automated tests without real Bedrock or CloudWatch calls
 
 ### Remaining before validated v1
 
-* observability completion
-* structured CloudWatch operational alarms and dashboards
 * controlled deployment
-* real AWS invocation and deployed end-to-end validation
-* request and correlation identifier propagation in operational telemetry
+* real end-to-end AWS validation
+* real alarm validation
+* operator notification routing
 
 ## Structured Result Contract
 
@@ -181,8 +194,10 @@ Detailed principles are documented in:
 * [Engineering Principles](docs/architecture/engineering-principles.md)
 * [Lambda Packaging Architecture](docs/architecture/lambda-packaging.md)
 * [Bedrock AI Provider Integration](docs/architecture/bedrock-ai-provider-integration.md)
+* [CloudWatch Observability](docs/architecture/cloudwatch-observability.md)
 * [ADR-017: Package Python Lambdas as a Shared Deterministic ZIP](docs/adr/ADR-017-package-python-lambdas-as-a-shared-zip.md)
 * [ADR-023: Use Amazon Nova Micro through Bedrock Converse](docs/adr/ADR-023-use-amazon-nova-micro-through-bedrock-converse.md)
+* [ADR-024: Use Native AWS Metrics and Structured Application Logs](docs/adr/ADR-024-use-native-aws-metrics-and-structured-application-logs.md)
 
 ## AWS Architecture
 
@@ -264,6 +279,7 @@ Current repository layout:
 │       ├── domain/
 │       ├── handlers/
 │       ├── infrastructure/
+│       ├── observability/
 │       ├── providers/
 │       ├── repositories/
 │       ├── runtime/
@@ -422,7 +438,7 @@ Equivalent inputs produce a stable archive hash because ordering, timestamps, pe
 
 ## Testing Strategy
 
-Automated tests do not perform real Bedrock calls.
+Automated tests do not require AWS credentials or real CloudWatch or Bedrock calls.
 
 Current coverage includes:
 
@@ -439,8 +455,13 @@ Current coverage includes:
 * repository integration tests
 * event contract tests
 * Lambda package builder tooling tests
+* operational logger tests
+* control-plane telemetry tests
+* processing and reconciliation telemetry tests
+* Bedrock invocation telemetry tests
+* offline CloudWatch alarm and dashboard tests
 * offline Terraform tests for Processor-only Bedrock configuration and IAM
-* Terraform validation
+* Terraform validation with 29 expected test runs
 
 Builder-tooling tests use temporary directories and local dependency fixtures. They do not install real packages, do not access AWS, and do not require network access.
 
@@ -468,6 +489,12 @@ The project is designed to:
 * avoid static AWS credentials
 * avoid broad administrator policies
 * avoid logging full documents, raw model responses, or model payloads
+* allowlist operational log fields as flat scalars only
+* avoid raw request, event, or provider payload logging
+* avoid document or model-content logging
+* avoid high-cardinality metric dimensions
+* avoid `cloudwatch:PutMetricData` permission
+* keep Bedrock model invocation logging disabled
 * keep Terraform state and environment files out of Git
 * use Secrets Manager only when a real secret exists
 
@@ -500,8 +527,12 @@ Provider failure classification:
 * timeout, throttling, and temporary unavailability are retryable
 * configuration failure is an operational dependency failure
 * retryable provider failure releases the owned processing claim
+* logging failure does not change business outcomes
+* native AWS metrics remain aggregate operational signals
+* DynamoDB remains authoritative business state
+* structured logs are best-effort operational evidence
 
-Structured operational logging and CloudWatch alarms remain follow-up work. The project does not claim exactly-once Lambda execution or exactly-once Bedrock inference.
+The project does not claim exactly-once Lambda execution, exactly-once Bedrock inference, exactly-once log delivery, or lossless logging.
 
 ## Cost-Aware Design
 
@@ -522,6 +553,14 @@ Implemented cost controls include:
 * bounded queue retries
 * restricted content types
 * explicit CloudWatch retention
+* native AWS metrics instead of custom application metrics
+* one CloudWatch dashboard per environment
+* nine focused CloudWatch alarms
+* one terminal operational event instead of start/completion pairs
+* bounded log retention
+* no route-level detailed metrics
+* no event-source mapping detailed metrics
+* no X-Ray
 * S3 lifecycle rules
 * no provisioned concurrency
 * no NAT Gateway requirement
@@ -553,12 +592,15 @@ These decisions keep the first release focused on one complete, observable, reco
 
 Remaining deployment and operational follow-ups:
 
-* CloudWatch alarms and dashboard
 * remote Terraform state
 * CI packaging and infrastructure gates
 * controlled deployment
-* real AWS invocation
-* deployed end-to-end validation
+* real AWS invocation and end-to-end validation
+* real CloudWatch dashboard and alarm validation
+* operator notification routing
+* operator recovery tooling
+* SLOs
+* distributed tracing
 * operator runbooks
 * artifact publication
 * code signing
@@ -587,6 +629,7 @@ Planned and recorded ADR topics include:
 * dead-letter reconciliation
 * shared deterministic Lambda ZIP packaging
 * Amazon Nova Micro through Bedrock Converse
+* native AWS metrics and structured application logs
 
 ## Contributing
 
