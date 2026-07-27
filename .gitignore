@@ -41,6 +41,7 @@ artifacts/
 
 # Terraform
 **/.terraform/
+**/.terraform-data/
 *.tfstate
 *.tfstate.*
 *.tfplan
