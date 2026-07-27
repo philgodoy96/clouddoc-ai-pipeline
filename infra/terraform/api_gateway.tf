@@ -60,3 +60,47 @@ resource "aws_apigatewayv2_route" "get_job" {
 
   target = "integrations/${aws_apigatewayv2_integration.get_job.id}"
 }
+
+resource "aws_apigatewayv2_stage" "control_plane" {
+  api_id = aws_apigatewayv2_api.control_plane.id
+  name   = var.environment
+
+  auto_deploy = true
+
+  access_log_settings {
+    destination_arn = aws_cloudwatch_log_group.control_plane_api_access.arn
+
+    format = jsonencode({
+      requestId               = "$context.requestId"
+      requestTimeEpoch        = "$context.requestTimeEpoch"
+      routeKey                = "$context.routeKey"
+      stage                   = "$context.stage"
+      status                  = "$context.status"
+      responseLength          = "$context.responseLength"
+      integrationStatus       = "$context.integration.status"
+      integrationLatency      = "$context.integrationLatency"
+      integrationErrorMessage = "$context.integrationErrorMessage"
+      sourceIp                = "$context.identity.sourceIp"
+      userAgent               = "$context.identity.userAgent"
+    })
+  }
+
+  route_settings {
+    route_key = aws_apigatewayv2_route.create_job.route_key
+
+    throttling_rate_limit  = 2
+    throttling_burst_limit = 5
+  }
+
+  route_settings {
+    route_key = aws_apigatewayv2_route.get_job.route_key
+
+    throttling_rate_limit  = 10
+    throttling_burst_limit = 20
+  }
+
+  tags = {
+    Name      = "${local.control_plane_api_name}-${var.environment}"
+    StageRole = "document-job-control-plane"
+  }
+}
