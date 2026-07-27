@@ -39,3 +39,9 @@ class AIProviderInvalidResponseError(AIProviderError):
     """Raised when a provider returns an unusable response."""
 
     error_code = "ai_provider_invalid_response"
+
+
+class AIProviderConfigurationError(AIProviderError):
+    """Raised when static provider configuration prevents invocation."""
+
+    error_code = "ai_provider_configuration_error"

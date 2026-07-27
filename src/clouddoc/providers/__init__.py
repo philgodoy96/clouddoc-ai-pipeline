@@ -9,6 +9,7 @@ from clouddoc.providers.mock_ai_provider import (
     MockAIProviderOutcome,
 )
 from clouddoc.providers.provider_errors import (
+    AIProviderConfigurationError,
     AIProviderError,
     AIProviderInvalidResponseError,
     AIProviderThrottledError,
@@ -18,6 +19,7 @@ from clouddoc.providers.provider_errors import (
 
 __all__ = [
     "AIProvider",
+    "AIProviderConfigurationError",
     "AIProviderError",
     "AIProviderInvalidResponseError",
     "AIProviderRequest",
