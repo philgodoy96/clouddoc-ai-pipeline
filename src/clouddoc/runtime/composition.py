@@ -29,6 +29,10 @@ from clouddoc.infrastructure import (
     UUIDJobIdGenerator,
     UUIDProcessingAttemptIdGenerator,
 )
+from clouddoc.observability import (
+    NullOperationalLogger,
+    OperationalLogger,
+)
 from clouddoc.providers import (
     AIProvider,
     BedrockAIProvider,
@@ -44,6 +48,8 @@ from clouddoc.runtime.settings import (
     RuntimeConfigurationError,
     RuntimeSettings,
 )
+
+_NULL_OPERATIONAL_LOGGER = NullOperationalLogger()
 
 DynamoDBResourceFactory = Callable[..., Any]
 S3ClientFactory = Callable[..., Any]
@@ -189,6 +195,7 @@ def build_uploaded_document_processor(
     s3_client_factory: S3ClientFactory = boto3.client,
     ai_provider_factory: AIProviderFactory | None = None,
     bedrock_client_factory: BedrockRuntimeClientFactory = boto3.client,
+    operational_logger: OperationalLogger = _NULL_OPERATIONAL_LOGGER,
 ) -> UploadedDocumentProcessor:
     """Build the uploaded-document processor."""
     repository = build_document_job_repository(
@@ -225,6 +232,7 @@ def build_uploaded_document_processor(
 
     return ApplicationUploadedDocumentProcessor(
         workflow=workflow,
+        logger=operational_logger,
     )
 
 
@@ -232,6 +240,7 @@ def build_dead_lettered_document_processor(
     *,
     settings: RuntimeSettings,
     dynamodb_resource_factory: DynamoDBResourceFactory = boto3.resource,
+    operational_logger: OperationalLogger = _NULL_OPERATIONAL_LOGGER,
 ) -> DeadLetteredDocumentProcessor:
     """Build the dead-lettered document reconciliation processor."""
     repository = build_document_job_repository(
@@ -246,4 +255,5 @@ def build_dead_lettered_document_processor(
 
     return ApplicationDeadLetteredDocumentProcessor(
         workflow=workflow,
+        logger=operational_logger,
     )
