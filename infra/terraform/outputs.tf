@@ -127,3 +127,8 @@ output "control_plane_api_access_log_group_name" {
   description = "Name of the CloudDoc HTTP control-plane API access-log group."
   value       = aws_cloudwatch_log_group.control_plane_api_access.name
 }
+
+output "operations_dashboard_name" {
+  description = "Name of the CloudDoc operational CloudWatch dashboard."
+  value       = aws_cloudwatch_dashboard.operations.dashboard_name
+}
