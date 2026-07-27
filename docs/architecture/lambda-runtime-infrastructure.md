@@ -732,7 +732,7 @@ Its final budget should be revisited after deployed measurements.
 
 The following remain separate implementation slices:
 
-text
+```text
 reserved concurrency
 alarm notification actions
 X-Ray tracing
@@ -741,42 +741,48 @@ Lambda aliases and versions
 artifact publication to S3
 code signing
 VPC integration
-remote Terraform state
+real state-bucket bootstrap in AWS
+real remote backend initialization
 CI/CD deployment gates
 real AWS deployment
 real AWS dashboard and alarm validation
 operator recovery tooling
 SLOs
-
+```
 
 These concerns are intentionally sequenced around concrete operational and deployment boundaries.
 
 ## Validation Commands
 
-bash
+```bash
+python scripts/terraform_workflow.py offline-check
 terraform -chdir=infra/terraform fmt -check -recursive
 terraform -chdir=infra/terraform validate
 terraform -chdir=infra/terraform test
-
+```
 
 Repository validation remains:
 
-bash
+```bash
 make check
 make lambda-package-check
 git diff --check
-
+```
 
 No Terraform apply or AWS credentials are required for the automated validation path.
 
 ## Follow-Up Work
 
-The next slice is Terraform remote state and environment workflow.
+Terraform state, partial S3 backend declaration, environment files, S3-native locking, and the guarded workflow are implemented in the repository. Real state-bucket bootstrap, remote backend initialization, and environment plan/apply against AWS remain pending.
+
+Real Lambda deployment still requires a verified `artifacts/lambda/clouddoc-app.zip` artifact and authenticated guarded plan/apply when AWS access is available.
 
 Real AWS dashboard and alarm validation, controlled deployment, CI/CD gates, notification routing, and operator recovery remain subsequent work.
 
 ## Related Documentation
 
+- [Terraform State and Environment Workflow](terraform-state-and-environment-workflow.md)
+- [ADR-025: Use S3 Native Locking and Explicit Environment State](../adr/ADR-025-use-s3-native-locking-and-explicit-environment-state.md)
 - [CloudWatch Observability](cloudwatch-observability.md)
 - [Bedrock AI Provider Integration](bedrock-ai-provider-integration.md)
 - [Processing queue consumer infrastructure](processing-queue-consumer-infrastructure.md)
