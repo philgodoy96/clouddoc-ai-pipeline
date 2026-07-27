@@ -134,7 +134,7 @@ run "github_identity_trust_contract" {
         one(
           data.aws_iam_policy_document.github_identity_assume_role.statement
         ).condition
-      ) == 7 &&
+      ) == 8 &&
       alltrue([
         for condition in one(
           data.aws_iam_policy_document.github_identity_assume_role.statement
@@ -142,7 +142,7 @@ run "github_identity_trust_contract" {
         condition.test == "StringEquals"
       ])
     )
-    error_message = "The trust policy must use exactly seven StringEquals conditions."
+    error_message = "The trust policy must use exactly eight StringEquals conditions."
   }
 
   assert {
@@ -151,6 +151,12 @@ run "github_identity_trust_contract" {
         {
           variable = "token.actions.githubusercontent.com:aud"
           values   = toset(["sts.amazonaws.com"])
+        },
+        {
+          variable = "token.actions.githubusercontent.com:sub"
+          values = toset([
+            "repo:philgodoy96@12345678/clouddoc-ai-pipeline@987654321:environment:dev",
+          ])
         },
         {
           variable = "token.actions.githubusercontent.com:repository"
