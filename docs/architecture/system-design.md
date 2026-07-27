@@ -865,6 +865,21 @@ The application enforces a serialized result-size guardrail.
 
 Large future extraction results may move to S3 while DynamoDB stores the result location and summary metadata.
 
+## Infrastructure management boundary
+
+Terraform state and the guarded operator workflow manage AWS infrastructure metadata. They are not part of runtime document-job request processing.
+
+```text
+DynamoDB owns document-job business state
+S3 backend owns Terraform infrastructure state for this application root
+```
+
+Dev, staging, and prod use independent state object keys and S3-native lockfiles. Environment identity comes from explicit committed files, not Terraform workspaces. Bootstrap for the account-scoped state bucket is a separate root under `infra/bootstrap/terraform-state/` with intentional local bootstrap state.
+
+Operator workflow, locking, saved-plan apply, and migration guards are documented in [Terraform State and Environment Workflow](terraform-state-and-environment-workflow.md) and [ADR-025: Use S3 Native Locking and Explicit Environment State](../adr/ADR-025-use-s3-native-locking-and-explicit-environment-state.md).
+
+Real AWS state-bucket creation and remote backend initialization remain pending.
+
 ## Terraform Resource Boundaries
 
 Terraform will manage:

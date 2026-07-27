@@ -31,6 +31,14 @@ Foundations already implemented in the repository include:
 * one environment-scoped operations dashboard
 * offline observability tests
 * offline provider and Terraform tests
+* account-scoped Terraform state bootstrap
+* partial S3 backend
+* S3-native locking configuration
+* explicit dev/staging/prod state files
+* AWS account guard
+* guarded Terraform environment workflow
+* saved-plan integrity manifests
+* offline state and workflow tests
 * offline automated tests
 
 Architecture and delivery foundations already defined include:
@@ -49,7 +57,7 @@ Architecture and delivery foundations already defined include:
 * Terraform ownership boundaries
 * professional contribution and pull request workflow
 
-Implemented-in-repository foundations are distinct from deployed-and-validated-in-AWS behavior. AWS deployment, real Bedrock invocation, and deployed end-to-end validation remain future work.
+Implemented-in-repository foundations are distinct from resources created, initialized, planned, or applied in AWS. Real AWS state-bucket bootstrap, remote backend initialization, and deployment validation remain pending. AWS deployment, real Bedrock invocation, and deployed end-to-end validation remain future work.
 
 ## Business Problem
 
@@ -111,6 +119,12 @@ DynamoDB job status = dead
 
 Operational side boundary (not business state):
 CloudWatch Logs, native AWS metrics, alarms, and operations dashboard
+
+Infrastructure management side path (not runtime request processing):
+Infrastructure Operator
+    → guarded Terraform workflow
+    → account-scoped S3 state bucket
+    → independent dev/staging/prod state objects
 ```
 
 The repository declares the control plane, queues, event-source mappings, Lambdas, runtime composition, Bedrock adapter, exact IAM boundary, structured operational logging, CloudWatch alarms, and the operations dashboard. The AWS environment has not yet been deployed and validated. The diagram describes the approved architecture as implemented in the repository, not an already active AWS deployment. DynamoDB remains authoritative for `DocumentJob` lifecycle state; CloudWatch provides operational evidence only.
@@ -186,6 +200,12 @@ The system is designed around the following principles:
 * apply least-privilege IAM
 * control retries, concurrency, logging, and retention costs
 * manage infrastructure through Terraform
+* use explicit environment state identity
+* use S3-native locking
+* enforce a wrong-account guard for authenticated Terraform operations
+* apply only from a reviewed saved plan
+* never migrate state automatically
+* keep state and plan artifacts outside Git
 
 Detailed principles are documented in:
 
@@ -198,6 +218,8 @@ Detailed principles are documented in:
 * [ADR-017: Package Python Lambdas as a Shared Deterministic ZIP](docs/adr/ADR-017-package-python-lambdas-as-a-shared-zip.md)
 * [ADR-023: Use Amazon Nova Micro through Bedrock Converse](docs/adr/ADR-023-use-amazon-nova-micro-through-bedrock-converse.md)
 * [ADR-024: Use Native AWS Metrics and Structured Application Logs](docs/adr/ADR-024-use-native-aws-metrics-and-structured-application-logs.md)
+* [Terraform State and Environment Workflow](docs/architecture/terraform-state-and-environment-workflow.md)
+* [ADR-025: Use S3 Native Locking and Explicit Environment State](docs/adr/ADR-025-use-s3-native-locking-and-explicit-environment-state.md)
 
 ## AWS Architecture
 
@@ -265,13 +287,17 @@ Current repository layout:
 │   ├── adr/
 │   └── architecture/
 ├── infra/
+│   ├── bootstrap/
+│   │   └── terraform-state/
 │   └── terraform/
+│       └── environments/
 ├── lambdas/
 ├── requirements/
 │   ├── lambda.in
 │   └── lambda.lock.txt
 ├── scripts/
-│   └── build_lambda_package.py
+│   ├── build_lambda_package.py
+│   └── terraform_workflow.py
 ├── src/
 │   └── clouddoc/
 │       ├── application/
@@ -291,6 +317,7 @@ Current repository layout:
 │   ├── tooling/
 │   │   └── test_lambda_package_builder.py
 │   └── unit/
+│       └── scripts/
 ├── .github/
 ├── CONTRIBUTING.md
 ├── LICENSE
@@ -312,8 +339,11 @@ artifacts/lambda/
 
 * Python 3.12
 * Git
+* Terraform `>= 1.10.0, < 2.0.0` for Terraform and infrastructure workflow work
 * a Python virtual environment
 * Make, Git Bash, WSL, or equivalent direct commands
+
+AWS CLI is optional. AWS authentication is not required for offline checks, formatting, validation, or automated tests. AWS credentials will be required only for future real state-bucket bootstrap, remote backend initialization, plan, apply, and output against AWS.
 
 ### Setup
 
@@ -412,6 +442,35 @@ python scripts/build_lambda_package.py
 
 Generated ZIP and checksum files under `artifacts/lambda/` are local build outputs. Do not commit them.
 
+### Terraform Workflow
+
+Offline validation and guarded environment operations use `scripts/terraform_workflow.py`. The script does not expose `destroy`, `force-unlock`, `-lock=false`, or `-auto-approve`.
+
+Run offline checks (no AWS credentials):
+
+```powershell
+python scripts/terraform_workflow.py offline-check
+```
+
+When AWS authentication is configured for future real operations, set runtime inputs (use your account values; do not commit them):
+
+```text
+CLOUDDOC_TERRAFORM_STATE_BUCKET
+CLOUDDOC_EXPECTED_AWS_ACCOUNT_ID
+```
+
+Guarded commands (require future AWS authentication except `show-plan`):
+
+```powershell
+python scripts/terraform_workflow.py init --environment dev
+python scripts/terraform_workflow.py plan --environment dev
+python scripts/terraform_workflow.py show-plan --environment dev
+python scripts/terraform_workflow.py apply --environment dev --confirm-environment dev
+python scripts/terraform_workflow.py output --environment dev
+```
+
+`show-plan` validates a local saved plan and manifest under `artifacts/terraform/<environment>/`. Real remote backend initialization and AWS plan/apply remain pending.
+
 ## Packaging Contract
 
 The shared deployment artifact is:
@@ -461,9 +520,12 @@ Current coverage includes:
 * Bedrock invocation telemetry tests
 * offline CloudWatch alarm and dashboard tests
 * offline Terraform tests for Processor-only Bedrock configuration and IAM
-* Terraform validation with 29 expected test runs
+* bootstrap Terraform root tests (four runs)
+* bootstrap static contract tests (seven tests)
+* guarded workflow unit tests with subprocess mocking and plan-manifest integrity checks (55 tests)
+* Terraform validation with 29 expected test runs in the application root
 
-Builder-tooling tests use temporary directories and local dependency fixtures. They do not install real packages, do not access AWS, and do not require network access.
+Builder-tooling tests use temporary directories and local dependency fixtures. They do not install real packages, do not access AWS, and do not require network access. Bootstrap and workflow tests likewise require no AWS.
 
 Manual deployed-environment checks and end-to-end AWS validation remain future work.
 
@@ -495,7 +557,12 @@ The project is designed to:
 * avoid high-cardinality metric dimensions
 * avoid `cloudwatch:PutMetricData` permission
 * keep Bedrock model invocation logging disabled
-* keep Terraform state and environment files out of Git
+* keep Terraform state, local `terraform.tfvars`, backend metadata, saved plans, manifests, and credentials outside Git
+* version committed environment `.tfvars` and `.s3.tfbackend` files only when they contain approved non-secret declarative values
+* enforce a wrong-account guard and bucket/account binding for authenticated Terraform operations
+* keep credentials out of committed backend files
+* reject automatic local-state migration
+* never bypass S3 lockfiles or locking
 * use Secrets Manager only when a real secret exists
 
 Packaging security boundaries:
@@ -520,6 +587,11 @@ Implemented reliability controls include:
 * dead-letter job reconciliation
 * correlation identifiers
 * explicit state transitions
+* versioned Terraform state objects with environment-specific state keys
+* S3 lockfiles for Terraform coordination
+* isolated per-environment Terraform metadata under `infra/terraform/.terraform-data/<environment>`
+* saved-plan integrity manifests with SHA-256 verification before apply
+* explicit apply environment confirmation
 
 Provider failure classification:
 
@@ -565,6 +637,10 @@ Implemented cost controls include:
 * no provisioned concurrency
 * no NAT Gateway requirement
 * Terraform teardown documentation
+* one account-scoped Terraform state bucket per AWS account (declared in bootstrap)
+* S3-native locking without DynamoDB
+* SSE-S3 for Terraform state (no KMS key or replication yet)
+* bounded noncurrent state version retention in the bootstrap bucket contract
 
 ## Intentionally Deferred from V1
 
@@ -592,9 +668,13 @@ These decisions keep the first release focused on one complete, observable, reco
 
 Remaining deployment and operational follow-ups:
 
-* remote Terraform state
+* real state-bucket bootstrap in AWS
+* real remote backend initialization
+* state access IAM
+* GitHub OIDC for CI
+* controlled AWS deployment
+* real environment plan/apply validation
 * CI packaging and infrastructure gates
-* controlled deployment
 * real AWS invocation and end-to-end validation
 * real CloudWatch dashboard and alarm validation
 * operator notification routing
@@ -630,6 +710,7 @@ Planned and recorded ADR topics include:
 * shared deterministic Lambda ZIP packaging
 * Amazon Nova Micro through Bedrock Converse
 * native AWS metrics and structured application logs
+* S3-native locking and explicit environment Terraform state
 
 ## Contributing
 

@@ -31,12 +31,77 @@ explicit Lambda JSON / INFO / WARN logging
 nine CloudWatch metric alarms
 one CloudWatch operations dashboard
 operations_dashboard_name output
+partial S3 backend declaration
+optional expected AWS account guard
+explicit dev/staging/prod environment files
+S3-native lockfiles (`use_lockfile = true`)
+guarded environment workflow (`scripts/terraform_workflow.py`)
 offline Bedrock isolation tests
 offline observability tests
+offline bootstrap and workflow tests
 ```
 
-Automatic replay, operator recovery tooling, remote state, CI/CD, real AWS
-deployment, and real CloudWatch validation remain separate follow-up work.
+Backend declaration, bootstrap root, environment files, and the guarded workflow are implemented in the repository. Real AWS state-bucket creation, remote backend initialization, and environment plan/apply against AWS remain pending.
+
+Automatic replay, operator recovery tooling, CI/CD, real AWS deployment, and real CloudWatch validation remain separate follow-up work.
+
+## Backend and state
+
+Terraform infrastructure state is operational metadata for this root. It is distinct from DynamoDB `DocumentJob` business state.
+
+| Concern | Location |
+| --- | --- |
+| Bootstrap (creates account-scoped state bucket) | `infra/bootstrap/terraform-state/` |
+| Application backend declaration | `backend.tf` partial `backend "s3" {}` |
+| State bucket naming | `${project_name}-${account_id}-terraform-state` (bootstrap) |
+| State object keys | `clouddoc/<environment>/terraform.tfstate` per environment |
+| Lockfiles | S3-native lock objects alongside state (`use_lockfile = true`; no DynamoDB table) |
+| Committed environment inputs | `infra/terraform/environments/*.tfvars` and `*.s3.tfbackend` |
+| Runtime bucket and account inputs | `CLOUDDOC_TERRAFORM_STATE_BUCKET`, `CLOUDDOC_EXPECTED_AWS_ACCOUNT_ID` |
+| Provider wrong-account guard | optional `expected_aws_account_id` → `allowed_account_ids` |
+| Isolated Terraform metadata | `infra/terraform/.terraform-data/<environment>/` via `TF_DATA_DIR` |
+| Saved plans and manifests | `artifacts/terraform/<environment>/` (strict JSON manifest, plan SHA-256 binding) |
+| Local-state migration | rejected when local state exists before remote init |
+
+Full operator workflow, IAM expectations, and integrity rules are documented in [Terraform State and Environment Workflow](../../docs/architecture/terraform-state-and-environment-workflow.md). Bootstrap local state for the state bucket itself is an intentional narrow exception and is not remote or collaborative.
+
+Real bucket creation and remote backend initialization in AWS remain future work.
+
+## Environment configuration
+
+Six committed files define explicit non-secret environment identity (no Terraform workspaces):
+
+| File | Allowed content |
+| --- | --- |
+| `environments/dev.tfvars` | `aws_region`, `project_name`, `environment` (`dev`) |
+| `environments/staging.tfvars` | same fields with `environment = "staging"` |
+| `environments/prod.tfvars` | same fields with `environment = "prod"` |
+| `environments/dev.s3.tfbackend` | `key`, `region`, `encrypt = true`, `use_lockfile = true` |
+| `environments/staging.s3.tfbackend` | environment-specific `key` under `clouddoc/staging/...` |
+| `environments/prod.s3.tfbackend` | environment-specific `key` under `clouddoc/prod/...` |
+
+The bucket name is supplied at runtime through `CLOUDDOC_TERRAFORM_STATE_BUCKET`, not committed in backend files. Do not add `profile`, `dynamodb_table`, or static credentials to committed files.
+
+Local `terraform.tfvars`, state, plans, manifests, and credentials remain outside Git.
+
+## Operator commands
+
+Use the guarded workflow script from the repository root:
+
+```powershell
+python scripts/terraform_workflow.py offline-check
+python scripts/terraform_workflow.py init --environment dev
+python scripts/terraform_workflow.py plan --environment dev
+python scripts/terraform_workflow.py show-plan --environment dev
+python scripts/terraform_workflow.py apply --environment dev --confirm-environment dev
+python scripts/terraform_workflow.py output --environment dev
+```
+
+* `offline-check` runs bootstrap and application offline validation; no AWS credentials required.
+* `init`, `plan`, `apply`, and `output` require future AWS authentication and the runtime bucket/account variables.
+* `show-plan` validates a local saved plan and manifest without calling AWS.
+
+The script verifies `artifacts/lambda/clouddoc-app.zip` and its SHA-256 checksum before `plan` and `apply`. It does not expose `destroy`, `force-unlock`, `-lock=false`, or `-auto-approve`.
 
 ## Current resources
 
@@ -980,8 +1045,7 @@ Component
 
 ## Initialization and validation
 
-Local offline validation uses local state and does not require remote backend
-configuration:
+Local offline validation uses `-backend=false` and does not require remote backend configuration:
 
 ```bash
 terraform init -backend=false
@@ -989,6 +1053,14 @@ terraform fmt -check -recursive
 terraform validate
 terraform test
 ```
+
+From the repository root, the guarded offline entry point is:
+
+```powershell
+python scripts/terraform_workflow.py offline-check
+```
+
+### Application root native tests
 
 Terraform native tests now cover:
 
@@ -1086,6 +1158,38 @@ Tests use a mocked AWS provider and create no resources. Plan-time computed
 values use deterministic overrides. The tests validate the dedicated inline
 policy identity rather than comparing rendered policy JSON that remains unknown
 during plan.
+
+### Bootstrap root tests
+
+Bootstrap coverage lives in:
+
+```text
+infra/bootstrap/terraform-state/tests/terraform_state.tftest.hcl
+```
+
+Four native test runs validate the account-scoped state bucket contract, security controls, recovery controls, and destroy protection.
+
+Seven static Python tests in `tests/unit/infrastructure/test_terraform_state_bootstrap.py` enforce bootstrap file contracts without AWS.
+
+### Workflow unit tests
+
+Fifty-five tests in `tests/unit/scripts/test_terraform_workflow.py` cover environment file parsing, remote input validation, local-state migration guards, Lambda artifact verification, subprocess invocation, plan manifests, and approved CLI commands (subprocess mocking; no AWS).
+
+Run bootstrap and workflow tests:
+
+```powershell
+python -m pytest tests/unit/infrastructure/test_terraform_state_bootstrap.py tests/unit/scripts/test_terraform_workflow.py
+```
+
+## State access boundary (future IAM)
+
+When state access IAM is introduced, operators or CI roles will need conceptually:
+
+* `s3:ListBucket` on the state bucket prefix
+* `s3:GetObject` and `s3:PutObject` on state objects
+* `s3:GetObject`, `s3:PutObject`, and `s3:DeleteObject` on lockfile objects
+
+These roles and policies are not declared yet.
 
 ## Outputs
 
@@ -1290,22 +1394,13 @@ The Processor memory budget is intentionally larger because it owns document
 loading, validation, and AI orchestration. That budget requires deployed
 measurement later.
 
-## State management and deployment safety
+## Deployment safety
 
-The root intentionally uses local state for offline validation.
+Do not treat unguarded `terraform apply` as part of the documented validation path. Offline `offline-check`, `fmt`, `validate`, and `test` are the approved checks for pull requests.
 
-Remote state, shared backends, and controlled deployment workflows remain
-deferred until shared or automated deployment is introduced.
+Artifact absence is accepted for offline validation but not for real deployment. A controlled workflow must build and verify `artifacts/lambda/clouddoc-app.zip` before any future real plan or apply.
 
-Do not treat `terraform apply` as part of the documented validation path for
-this repository slice. Offline `init`, `fmt`, `validate`, and `test` are the
-approved checks.
-
-Artifact absence is accepted for offline validation but not for real
-deployment. A controlled deployment workflow must build and verify
-`artifacts/lambda/clouddoc-app.zip` before any real plan or apply.
-
-Terraform state files remain excluded from Git.
+Terraform state, saved plans, manifests, and local `terraform.tfvars` remain excluded from Git.
 
 ## Intentionally deferred
 
@@ -1367,8 +1462,14 @@ S3 access logging
 customer-managed KMS
 malware scanning
 quarantine workflow
-remote Terraform state
-CI plan and controlled deployment workflows
+real state-bucket creation in AWS
+real remote backend initialization
+CI invocation of the implemented workflow
+GitHub OIDC identities
+Terraform state access IAM
+real environment plan/apply against AWS
+state audit logging
+cross-region replication
 operator replay tooling
 DynamoDB Streams
 TTL and retention automation
@@ -1383,6 +1484,9 @@ real AWS deployment and restore validation
 
 ## Related documentation
 
+- [Terraform State and Environment Workflow](../../docs/architecture/terraform-state-and-environment-workflow.md)
+- [Terraform state bootstrap README](../bootstrap/terraform-state/README.md)
+- [ADR-025: Use S3 Native Locking and Explicit Environment State](../../docs/adr/ADR-025-use-s3-native-locking-and-explicit-environment-state.md)
 - [Processing queue infrastructure](../../docs/architecture/processing-queue-infrastructure.md)
 - [ADR-015: Provision standard processing queues with Terraform](../../docs/adr/ADR-015-provision-standard-processing-queues-with-terraform.md)
 - [Document ingestion infrastructure](../../docs/architecture/document-ingestion-infrastructure.md)

@@ -535,7 +535,13 @@ A module per individual resource is not automatically desirable.
 
 ### Validate before applying
 
-Infrastructure changes must pass:
+Infrastructure changes must pass offline validation before review:
+
+```text
+python scripts/terraform_workflow.py offline-check
+```
+
+Focused HCL checks may also use:
 
 ```text
 terraform fmt -check
@@ -543,17 +549,27 @@ terraform init -backend=false
 terraform validate
 ```
 
-before review.
-
 ### Keep state out of Git
 
-Terraform state, plan files, local variable files, and working directories must not be committed.
+Terraform state, saved plan files, strict JSON plan manifests, local `terraform.tfvars`, isolated `.terraform-data/` trees, and credentials must not be committed.
 
-### Document backend evolution
+Committed files under `infra/terraform/environments/` are allowed only when they contain approved non-secret declarative values (`aws_region`, `project_name`, `environment`, backend `key`, `region`, `encrypt`, `use_lockfile`).
 
-Local state may be acceptable during initial individual development if it is excluded from Git.
+### Manage application state through the declared S3 backend
 
-Collaborative or production-style environments require an encrypted remote state backend with locking.
+The application root declares a partial S3 remote backend. Environments use explicit `.tfvars` and `.s3.tfbackend` files, not Terraform workspaces.
+
+Locking must remain enabled (`use_lockfile = true`). State keys must remain environment-specific. DynamoDB must not be used for Terraform locking in this design.
+
+Authenticated operations must set `CLOUDDOC_TERRAFORM_STATE_BUCKET` and `CLOUDDOC_EXPECTED_AWS_ACCOUNT_ID` and pass the optional `expected_aws_account_id` provider guard.
+
+Real apply uses a reviewed saved plan and manifest binding; direct configuration apply without that contract is out of scope.
+
+Local application state is never migrated automatically when local state files exist.
+
+Bootstrap local state for the narrow state-bucket root is an intentional exception and is not remote or collaborative.
+
+See [Terraform State and Environment Workflow](terraform-state-and-environment-workflow.md) and [ADR-025: Use S3 Native Locking and Explicit Environment State](../adr/ADR-025-use-s3-native-locking-and-explicit-environment-state.md).
 
 ## Testing Principles
 

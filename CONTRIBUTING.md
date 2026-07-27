@@ -37,10 +37,11 @@ The project currently requires:
 
 * Python 3.12
 * Git
+* Terraform `>= 1.10.0, < 2.0.0` for Terraform and infrastructure workflow changes
 * a Python virtual environment
 * Make, Git Bash, WSL, or equivalent direct Python commands
 
-Terraform and AWS tooling will be documented when infrastructure implementation becomes active.
+AWS CLI is optional. AWS authentication is not required for offline Terraform checks, formatting, validation, or automated tests. AWS credentials will be required only for future real bootstrap, remote backend initialization, plan, apply, and output against AWS.
 
 ## Local Setup
 
@@ -129,6 +130,29 @@ python -m ruff format . --check
 python -m ruff check .
 python -m pytest
 ```
+
+## Terraform Workflow
+
+Infrastructure changes must preserve the guarded Terraform workflow documented in [Terraform State and Environment Workflow](docs/architecture/terraform-state-and-environment-workflow.md) and [ADR-025](docs/adr/ADR-025-use-s3-native-locking-and-explicit-environment-state.md).
+
+Before opening or updating a pull request that touches Terraform, bootstrap, or `scripts/terraform_workflow.py`, run:
+
+```powershell
+python scripts/terraform_workflow.py offline-check
+```
+
+For authenticated operations against AWS (when credentials are configured in the future), use the guarded workflow commands rather than direct `terraform init`, `plan`, or `apply` against the application root.
+
+Never:
+
+* commit Terraform state
+* commit local `terraform.tfvars`
+* commit saved plans or plan manifests under `artifacts/terraform/`
+* commit credentials or secrets
+* bypass locking (`-lock=false`, `force-unlock`, or equivalent)
+* use Terraform workspaces for environment selection
+* migrate state automatically
+* apply configuration directly without the saved-plan contract
 
 ## Branch Naming
 
@@ -376,6 +400,8 @@ Documentation should be updated when a change affects:
 * cost behavior
 * intentionally deferred scope
 
+When environment files under `infra/terraform/environments/` change, update [Terraform State and Environment Workflow](docs/architecture/terraform-state-and-environment-workflow.md) or related architecture docs if the contract changes.
+
 Architecture documents describe the current design.
 
 ADRs preserve the reasoning behind significant decisions.
@@ -420,6 +446,12 @@ python -m pytest
 ```
 
 When Terraform files are affected, also run:
+
+```powershell
+python scripts/terraform_workflow.py offline-check
+```
+
+Focused root-level checks remain useful when editing HCL directly:
 
 ```bash
 terraform fmt -check -recursive
