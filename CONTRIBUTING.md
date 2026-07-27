@@ -26,8 +26,10 @@ docs/architecture/
 Relevant references include:
 
 * [Infrastructure CI Validation](docs/architecture/infrastructure-ci-validation.md)
+* [GitHub OIDC Trust Bootstrap](docs/architecture/github-oidc-trust-bootstrap.md)
 * [Terraform State and Environment Workflow](docs/architecture/terraform-state-and-environment-workflow.md)
 * [Lambda Runtime Infrastructure](docs/architecture/lambda-runtime-infrastructure.md)
+* [ADR-026: Separate OIDC Authentication from Deployment Authorization](docs/adr/ADR-026-separate-oidc-authentication-from-deployment-authorization.md)
 
 Significant decisions are recorded under:
 
@@ -47,7 +49,7 @@ The project currently requires:
 * a Python virtual environment
 * Make, Git Bash, WSL, or equivalent direct Python commands
 
-AWS CLI is optional. AWS authentication is not needed for CI-equivalent offline validation, formatting, linting, packaging checks, or automated tests. AWS credentials will be required only for future real bootstrap, remote backend initialization, plan, apply, and output against AWS.
+AWS CLI is optional. AWS authentication is not required for offline OIDC bootstrap validation, CI-equivalent offline validation, formatting, linting, packaging checks, or automated tests. Temporary human AWS authentication will be required for the first real bootstrap plan and apply, and for later remote backend initialization, plan, apply, and output against AWS.
 
 ## Local Setup
 
@@ -160,6 +162,64 @@ Never:
 * migrate state automatically
 * apply configuration directly without the saved-plan contract
 
+## GitHub OIDC and Identity Trust
+
+Changes to GitHub OIDC trust or identity verification require focused security review.
+
+Paths that trigger this review:
+
+```text
+infra/bootstrap/github-oidc
+.github/workflows/aws-identity-check.yml
+.github/workflows/reusable-aws-identity.yml
+```
+
+Reviewers must inspect:
+
+```text
+trusted repository
+repository ID
+owner ID
+branch
+environment
+workflow ref
+OIDC audience
+role permissions
+session duration
+action SHA
+workflow permissions
+checkout behavior
+AWS account validation
+```
+
+Before opening or updating a pull request that touches those paths, run:
+
+```powershell
+terraform -chdir=infra/bootstrap/github-oidc fmt -check -recursive
+terraform -chdir=infra/bootstrap/github-oidc validate
+terraform -chdir=infra/bootstrap/github-oidc test
+python -m pytest tests/unit/infrastructure/test_github_oidc_bootstrap.py -q
+python -m pytest tests/unit/ci/test_github_actions_workflows.py -q
+```
+
+Identity contribution rules:
+
+```text
+Do not add AWS access keys to GitHub Secrets.
+Do not add OIDC permission to validation workflows.
+Do not add wildcard trust without an approved architecture decision.
+Do not attach application permissions to the verification role.
+Do not add checkout to the identity proof without a reviewed need.
+Do not execute the real bootstrap from an unreviewed branch.
+```
+
+The identity workflows are implemented in repository source. They cannot succeed end-to-end until the OIDC bootstrap root is applied, the GitHub `dev` Environment exists, the repository variables exist, and the workflows are available on `main`. Do not claim AWS identity federation is active before that verification succeeds.
+
+Architecture references:
+
+* [GitHub OIDC Trust Bootstrap](docs/architecture/github-oidc-trust-bootstrap.md)
+* [ADR-026: Separate OIDC Authentication from Deployment Authorization](docs/adr/ADR-026-separate-oidc-authentication-from-deployment-authorization.md)
+
 ## Continuous Integration
 
 Credential-free validation workflows run on pull requests to `main`, pushes to `main`, and manual `workflow_dispatch`.
@@ -172,7 +232,7 @@ Infrastructure Quality / Lambda package
 Infrastructure Quality / Terraform offline
 ```
 
-These are the intended required checks once branch protection is configured after the workflows run successfully on `main`. Branch protection is not claimed as currently enforced.
+These are the intended required checks once branch protection is configured after the workflows run successfully on `main`. Branch protection is not claimed as currently enforced. `AWS Identity Check` is a manual identity proof and is not one of the three intended required pull-request validation checks.
 
 Before opening a pull request, contributors should run:
 
@@ -194,16 +254,22 @@ no remote Terraform operation in quality workflows
 no artifact publication in validation workflows
 ```
 
+Identity workflows are separate from validation workflows. Only the identity workflows receive `id-token: write`, and that permission only allows requesting a GitHub OIDC token. AWS trust and role policies decide AWS access.
+
 Dependabot opens weekly GitHub Actions update pull requests. When reviewing those changes:
 
 ```text
-review release notes
 review publisher
-review runtime changes
+review release notes
+review action source
+review Node runtime changes
+review inputs
 review permissions
 run workflow contract tests
 do not auto-merge blindly
 ```
+
+When the update touches `aws-actions/configure-aws-credentials`, apply the same review bar with particular attention to publisher, release notes, action source, Node runtime changes, inputs, and permissions.
 
 Workflow contract tests:
 
@@ -211,7 +277,7 @@ Workflow contract tests:
 python -m pytest tests/unit/ci/test_github_actions_workflows.py -q
 ```
 
-Full CI architecture is documented in [Infrastructure CI Validation](docs/architecture/infrastructure-ci-validation.md).
+Full CI architecture is documented in [Infrastructure CI Validation](docs/architecture/infrastructure-ci-validation.md). Identity federation is documented in [GitHub OIDC Trust Bootstrap](docs/architecture/github-oidc-trust-bootstrap.md).
 
 ## Branch Naming
 
@@ -516,6 +582,15 @@ When editing workflow files or Dependabot configuration, also run:
 
 ```powershell
 python -m pytest tests/unit/ci/test_github_actions_workflows.py -q
+```
+
+When editing the GitHub OIDC bootstrap root, also run:
+
+```powershell
+terraform -chdir=infra/bootstrap/github-oidc fmt -check -recursive
+terraform -chdir=infra/bootstrap/github-oidc validate
+terraform -chdir=infra/bootstrap/github-oidc test
+python -m pytest tests/unit/infrastructure/test_github_oidc_bootstrap.py -q
 ```
 
 Focused root-level checks remain useful when editing HCL directly:

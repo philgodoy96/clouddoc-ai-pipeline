@@ -23,7 +23,7 @@ offline Python workflow tests
 credential-free Terraform offline CI
 ```
 
-Credential-free Terraform offline CI is implemented. CI invokes the same `python scripts/terraform_workflow.py offline-check` command used by local operators. CI pins Terraform to `1.15.8`, disables the wrapper (`terraform_wrapper: false`), and validates the application and bootstrap roots independently from AWS.
+Credential-free Terraform offline CI is implemented. CI invokes the same `python scripts/terraform_workflow.py offline-check` command used by local operators. CI pins Terraform to `1.15.8`, disables the wrapper (`terraform_wrapper: false`), and validates the application and state-bootstrap roots independently from AWS.
 
 CI does not:
 
@@ -32,11 +32,14 @@ initialize the remote backend
 supply state bucket or account values
 run plan
 run apply
+validate the GitHub OIDC bootstrap root
 ```
 
 The state bucket has not yet been created in AWS.
 
 The application backend has not yet been initialized against AWS.
+
+The GitHub OIDC bootstrap root is implemented in repository source and is not yet provisioned in AWS.
 
 No CloudDoc environment has been planned or applied against a real AWS account.
 
@@ -60,6 +63,18 @@ direct unreviewed apply from configuration
 ```
 
 The implemented workflow introduces explicit ownership and execution boundaries before remote plan, apply, and real AWS deployment.
+
+Operational ordering for foundation work:
+
+```text
+state substrate
+OIDC trust
+identity proof
+future authorization
+remote plan/apply
+```
+
+State substrate and OIDC trust are separate bootstrap roots. Identity proof verifies authentication only. Future authorization and remote plan or apply remain intentionally deferred.
 
 ## Architecture Overview
 
@@ -104,6 +119,7 @@ scripts/terraform_workflow.py
 ```text
 infra/
 ├── bootstrap/
+│   ├── github-oidc/
 │   └── terraform-state/
 │       ├── .terraform.lock.hcl
 │       ├── README.md
@@ -137,6 +153,7 @@ scripts/
 tests/
 └── unit/
     ├── infrastructure/
+    │   ├── test_github_oidc_bootstrap.py
     │   └── test_terraform_state_bootstrap.py
     └── scripts/
         └── test_terraform_workflow.py
@@ -144,7 +161,13 @@ tests/
 
 ## Terraform Root Boundaries
 
-CloudDoc has two Terraform roots.
+CloudDoc has three Terraform roots with distinct ownership.
+
+```text
+infra/bootstrap/github-oidc owns trust
+infra/bootstrap/terraform-state owns state substrate
+infra/terraform owns application resources
+```
 
 ### State bootstrap root
 
@@ -179,6 +202,44 @@ grant state access to future CI roles
 perform application plans or applies
 ```
 
+### GitHub OIDC bootstrap root
+
+Path:
+
+```text
+infra/bootstrap/github-oidc
+```
+
+Responsibilities:
+
+```text
+declare the GitHub Actions IAM OIDC provider
+declare the permissionless development identity role
+declare the exact AssumeRoleWithWebIdentity trust policy
+expose identity-bootstrap outputs
+```
+
+Non-responsibilities:
+
+```text
+manage the Terraform state bucket
+grant state object or lockfile access
+declare application infrastructure
+attach deployment authorization
+run remote plan or apply
+```
+
+The OIDC verification role currently has no state access. Future remote-plan or deployment identities must receive explicit least-privilege permissions for:
+
+```text
+state bucket objects
+S3 lockfile
+environment-specific state key
+required application APIs
+```
+
+Those policies do not exist yet. Authentication remains distinct from authorization. See [GitHub OIDC Trust Bootstrap](github-oidc-trust-bootstrap.md) and [ADR-026](../adr/ADR-026-separate-oidc-authentication-from-deployment-authorization.md).
+
 ### Application root
 
 Path:
@@ -210,14 +271,19 @@ perform automatic state migration
 
 ## Bootstrap State Boundary
 
-The bootstrap root intentionally retains local state.
+Both bootstrap roots intentionally retain local state.
 
 This is a narrow bootstrap exception.
 
 ```text
-bootstrap root
+state bootstrap root
     → creates the shared state substrate
     → cannot depend on that substrate before it exists
+    → is operated rarely
+
+OIDC bootstrap root
+    → creates the GitHub-to-AWS trust substrate
+    → remains independent from application remote state
     → is operated rarely
 
 application root
@@ -547,9 +613,11 @@ Future supported mechanisms may include:
 ```text
 AWS IAM Identity Center
 temporary local credentials
-GitHub Actions OIDC
+GitHub Actions OIDC with future authorized roles
 assumed deployment roles
 ```
+
+Repository source already implements a permissionless OIDC identity proof path. That path does not grant state access, remote plan, or apply authorization.
 
 The repository does not commit credential values.
 
@@ -1199,7 +1267,7 @@ s3:DeleteObject
     → exact terraform.tfstate.tflock object
 ```
 
-These policies are intentionally deferred to the GitHub OIDC and deployment-identity slice.
+These policies are intentionally deferred. Authentication for identity proof is separate from state authorization for remote plan or apply.
 
 ## Cost Position
 
@@ -1425,14 +1493,20 @@ The user does not need to configure AWS until this real bootstrap step is intent
 ## Intentionally Deferred
 
 ```text
-real AWS bootstrap apply
+real AWS state bootstrap apply
+real OIDC bootstrap apply
+GitHub dev Environment
+repository variables
+end-to-end identity verification
 remote backend initialization
 real dev plan
 real dev apply
 state migration
-GitHub OIDC
+state authorization
+plan identity
+apply identity
+artifact publication identity
 remote plan
-state IAM
 deployment identity
 apply workflow
 environment approvals
@@ -1454,7 +1528,7 @@ multi-account platform foundation
 centralized state-account model
 ```
 
-These require explicit identity, approval, recovery, cost, and deployment contracts.
+These require explicit identity, approval, recovery, cost, and deployment contracts. OIDC trust bootstrap source implementation does not complete any of the deferred authorization or deployment steps.
 
 ## Reliability Invariants
 
@@ -1504,6 +1578,8 @@ Repository implementation remains distinct from real AWS deployment.
 
 ## Related Documentation
 
+- [GitHub OIDC Trust Bootstrap](github-oidc-trust-bootstrap.md)
+- [ADR-026: Separate OIDC Authentication from Deployment Authorization](../adr/ADR-026-separate-oidc-authentication-from-deployment-authorization.md)
 - [Infrastructure CI Validation](infrastructure-ci-validation.md)
 - [Terraform Infrastructure](../../infra/terraform/README.md)
 - [Terraform State Bootstrap](../../infra/bootstrap/terraform-state/README.md)

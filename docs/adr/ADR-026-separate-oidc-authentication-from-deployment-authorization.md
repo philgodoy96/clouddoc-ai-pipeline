@@ -1,0 +1,493 @@
+# ADR-026: Separate OIDC Authentication from Deployment Authorization
+
+## Status
+
+Accepted
+
+## Date
+
+2026-07-27
+
+## Context
+
+CloudDoc needs GitHub Actions to interact with AWS without storing long-lived AWS access keys in GitHub.
+
+The project already has:
+
+```text
+credential-free Python validation
+credential-free Lambda package validation
+credential-free Terraform offline validation
+S3 remote-state architecture
+guarded local Terraform plan and apply workflow
+```
+
+The next platform capability is GitHub-to-AWS workload identity.
+
+A common implementation path is to create one GitHub OIDC role that immediately receives broad permissions for:
+
+```text
+Terraform state
+Terraform plan
+Terraform apply
+IAM
+Lambda
+S3
+DynamoDB
+SQS
+API Gateway
+CloudWatch
+```
+
+That approach combines multiple security decisions:
+
+```text
+who may authenticate
+which workflow is trusted
+which repository is trusted
+which branch is trusted
+which environment is trusted
+what the role may access
+what the role may mutate
+how deployments are approved
+```
+
+It would be difficult to prove whether an OIDC failure came from:
+
+```text
+token issuance
+claim mismatch
+OIDC provider configuration
+role trust
+account selection
+authorization policy
+resource policy
+Terraform behavior
+deployment workflow behavior
+```
+
+CloudDoc needs a smaller trust boundary that can be reviewed, tested, provisioned, and verified before deployment authorization exists.
+
+## Decision
+
+CloudDoc will separate GitHub OIDC authentication from AWS deployment authorization.
+
+The first OIDC role is:
+
+```text
+clouddoc-dev-github-identity
+```
+
+It is a permissionless identity-verification role.
+
+The role:
+
+```text
+has an exact AssumeRoleWithWebIdentity trust policy
+has no inline policies
+has no managed policies
+has no Terraform state permissions
+has no application permissions
+has no IAM PassRole permission
+```
+
+The role trust requires exact values for:
+
+```text
+aud
+repository
+repository_id
+repository_owner_id
+ref
+environment
+job_workflow_ref
+```
+
+The trusted workload is:
+
+```text
+repository:
+    philgodoy96/clouddoc-ai-pipeline
+
+ref:
+    refs/heads/main
+
+environment:
+    dev
+
+reusable workflow:
+    .github/workflows/reusable-aws-identity.yml@refs/heads/main
+```
+
+The numeric GitHub repository and owner IDs are required runtime inputs.
+
+The identity workflow:
+
+```text
+is manually triggered
+uses a reviewed reusable workflow
+performs no repository checkout
+executes no project source
+requests a 900-second session
+validates the expected AWS account
+masks the AWS account ID
+uses the GitHub run ID in the STS session name
+proves identity with GetCallerIdentity
+```
+
+A later slice will introduce authorization through separate, least-privilege role and policy decisions.
+
+## Decision Drivers
+
+```text
+avoid long-lived AWS credentials
+minimize initial blast radius
+separate authentication failures from authorization failures
+make IAM trust independently reviewable
+prove the OIDC path before state or deployment access
+restrict trust to one repository workload
+avoid broad repository or branch wildcards
+support clear audit correlation
+preserve small focused pull requests
+keep each implementation commit testable
+```
+
+## Trust Strategy
+
+CloudDoc will not rely only on a broad `sub` pattern.
+
+The trust policy uses exact `StringEquals` conditions for:
+
+```text
+STS audience
+repository name
+immutable repository ID
+immutable repository-owner ID
+main ref
+dev environment
+reviewed reusable workflow ref
+```
+
+This creates defense in depth across mutable and immutable identity attributes.
+
+The role cannot be assumed by:
+
+```text
+another repository
+another repository owned by the same user
+a feature branch
+a pull request
+a tag
+another environment
+another workflow file
+a fork
+```
+
+## Workflow Strategy
+
+OIDC permission is isolated.
+
+Validation workflows retain:
+
+```yaml
+permissions:
+  contents: read
+```
+
+Identity workflows receive:
+
+```yaml
+permissions:
+  contents: read
+  id-token: write
+```
+
+The reusable identity workflow performs no checkout.
+
+The temporary AWS session therefore cannot execute repository-controlled application or infrastructure code during the identity proof.
+
+## State Strategy
+
+The OIDC bootstrap root uses local Terraform state.
+
+GitHub OIDC cannot create the initial trust relationship that GitHub OIDC itself requires.
+
+The first apply must use a pre-existing temporary human AWS session.
+
+The local bootstrap state is:
+
+```text
+ignored by Git
+backed up securely after apply
+used rarely
+recovered through reviewed import when necessary
+```
+
+## Consequences
+
+### Positive
+
+```text
+No AWS access keys are stored in GitHub.
+
+The initial AWS role has no application blast radius.
+
+Trust-policy debugging is independent from deployment permissions.
+
+The role can be verified through STS GetCallerIdentity.
+
+The trust names one repository, branch, environment, and reusable workflow.
+
+Immutable GitHub IDs remain stable across repository renames.
+
+The identity workflow has a small auditable execution surface.
+
+The STS session is correlated to a GitHub run ID.
+
+Future authorization can be added incrementally.
+
+Compromising the identity workflow does not immediately provide deployment access.
+```
+
+### Negative
+
+```text
+The project temporarily has an assumable role that cannot perform deployment work.
+
+An additional Terraform bootstrap root must be maintained.
+
+The first apply still requires a human AWS identity.
+
+Local bootstrap state requires secure backup and recovery discipline.
+
+GitHub Environment and repository variables require manual configuration.
+
+Future authorization needs another design and implementation slice.
+
+Exact workflow and branch conditions make intentional renames require trust-policy updates.
+```
+
+### Neutral
+
+```text
+AWS account IDs and role ARNs are stored as non-secret GitHub variables.
+
+The role maximum session duration is 3600 seconds, while the verification workflow requests 900 seconds.
+
+The identity workflow can call STS GetCallerIdentity without an attached identity policy.
+
+Branch protection remains separate repository configuration.
+```
+
+## Alternatives Considered
+
+### Store AWS access keys in GitHub Secrets
+
+Rejected.
+
+Reasons:
+
+```text
+long-lived credentials
+rotation burden
+secret-distribution risk
+larger incident-response surface
+weaker workload identity
+```
+
+### Create one broad deployment role immediately
+
+Rejected for this slice.
+
+Reasons:
+
+```text
+combines authentication and authorization
+larger blast radius
+harder failure diagnosis
+harder IAM review
+premature state and deployment permissions
+```
+
+### Trust every workflow in the repository
+
+Rejected.
+
+Example:
+
+```text
+repo:philgodoy96/clouddoc-ai-pipeline:*
+```
+
+Reasons:
+
+```text
+any workflow change could reach AWS
+pull-request and branch boundaries become harder to reason about
+reusable workflow identity would not be enforced
+```
+
+### Trust every repository owned by the user
+
+Rejected.
+
+Example:
+
+```text
+repo:philgodoy96/*
+```
+
+Reasons:
+
+```text
+cross-repository blast radius
+unrelated repository compromise could reach CloudDoc AWS identity
+weak portfolio-grade security posture
+```
+
+### Trust only the repository name
+
+Rejected as the sole control.
+
+Repository and owner names are human-readable but mutable.
+
+CloudDoc also requires immutable numeric repository and owner IDs.
+
+### Trust only immutable repository IDs
+
+Rejected as the sole control.
+
+Numeric IDs are strong identity anchors but are less readable during review.
+
+CloudDoc keeps the repository claim as defense in depth and review context.
+
+### Use feature-branch or pull-request OIDC
+
+Rejected.
+
+The identity role is intended for a reviewed workflow on `main`, not arbitrary branch execution.
+
+### Combine OIDC bootstrap with Terraform state bootstrap
+
+Rejected.
+
+The roots have distinct:
+
+```text
+ownership
+recovery
+security
+change cadence
+operational purpose
+```
+
+### Use remote state for the OIDC bootstrap immediately
+
+Rejected.
+
+The initial OIDC trust is a bootstrap dependency and must not depend on the identity path it creates.
+
+### Add a TLS provider for GitHub thumbprint calculation
+
+Rejected for the current AWS integration.
+
+The root avoids unnecessary certificate-scraping infrastructure and keeps the provider resource focused on issuer and audience.
+
+### Permit checkout in the identity workflow
+
+Rejected.
+
+The identity proof requires no repository source.
+
+No checkout reduces execution surface during the temporary AWS session.
+
+## Security Invariants
+
+```text
+No static AWS credential in GitHub.
+
+No static AWS credential in Terraform.
+
+No OIDC permission in validation workflows.
+
+Manual identity trigger only.
+
+Workflow-call-only reusable identity workflow.
+
+Exact repository identity.
+
+Exact main ref.
+
+Exact dev environment.
+
+Exact reusable workflow ref.
+
+No wildcard trust value.
+
+AssumeRoleWithWebIdentity only.
+
+Permissionless verification role.
+
+No project checkout during AWS session.
+
+Expected AWS account validation.
+
+15-minute requested session.
+
+GitHub run ID in the STS session name.
+
+Local bootstrap state outside Git.
+```
+
+## Verification
+
+Offline verification:
+
+```text
+Terraform formatting
+Terraform validation
+mocked Terraform tests
+static bootstrap tests
+GitHub Actions source contracts
+full repository quality gates
+```
+
+Real verification:
+
+```text
+apply OIDC bootstrap root
+create dev GitHub Environment
+configure account ID and role ARN variables
+dispatch AWS Identity Check from main
+observe successful AssumeRoleWithWebIdentity
+observe expected GetCallerIdentity ARN
+confirm an application API remains unauthorized
+```
+
+## Follow-Up Decisions
+
+Future ADRs or implementation slices must decide:
+
+```text
+state-read and state-lock permissions
+plan role versus apply role
+environment-specific identities
+GitHub Environment approval rules
+artifact publication identity
+IAM PassRole boundary
+application resource permissions
+deployment approval
+saved-plan promotion
+rollback authorization
+CloudTrail alerting
+cross-account architecture
+permissions boundaries
+session policies
+```
+
+## Related Documentation
+
+- [GitHub OIDC Trust Bootstrap](../architecture/github-oidc-trust-bootstrap.md)
+- [GitHub OIDC Bootstrap Root](../../infra/bootstrap/github-oidc/README.md)
+- [Infrastructure CI Validation](../architecture/infrastructure-ci-validation.md)
+- [Terraform State and Environment Workflow](../architecture/terraform-state-and-environment-workflow.md)
