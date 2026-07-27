@@ -56,13 +56,19 @@ def test_bootstrap_root_contains_the_approved_source_files() -> None:
 
 
 def test_bootstrap_and_application_roots_share_provider_lock_file() -> None:
-    """Both Terraform roots should use the same reviewed provider selection."""
+    """Both roots should share reviewed Windows and Linux provider hashes."""
     bootstrap_lock = read_bootstrap_file(".terraform.lock.hcl")
     application_lock = (APPLICATION_TERRAFORM_ROOT / ".terraform.lock.hcl").read_text(
         encoding="utf-8"
     )
 
     assert bootstrap_lock == application_lock
+
+    platform_hashes = re.findall(
+        r'"h1:[^"]+"',
+        application_lock,
+    )
+    assert len(platform_hashes) == 2
 
 
 def test_state_bucket_has_explicit_destroy_protection() -> None:
