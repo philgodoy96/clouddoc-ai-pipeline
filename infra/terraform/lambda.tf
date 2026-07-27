@@ -93,7 +93,7 @@ resource "aws_lambda_function" "processor" {
   timeout     = 120
 
   environment {
-    variables = local.lambda_runtime_environment
+    variables = local.processor_runtime_environment
   }
 
   logging_config {
@@ -109,6 +109,7 @@ resource "aws_lambda_function" "processor" {
     aws_cloudwatch_log_group.processor,
     aws_iam_role_policy.processor_logging,
     aws_iam_role_policy.processor_permissions,
+    aws_iam_role_policy.processor_bedrock_invoke,
   ]
 }
 

@@ -260,6 +260,29 @@ resource "aws_iam_role_policy" "processor_permissions" {
   policy = data.aws_iam_policy_document.processor_permissions.json
 }
 
+data "aws_iam_policy_document" "processor_bedrock_invoke" {
+  version = "2012-10-17"
+
+  statement {
+    sid    = "InvokeConfiguredFoundationModel"
+    effect = "Allow"
+
+    actions = [
+      "bedrock:InvokeModel",
+    ]
+
+    resources = [
+      local.bedrock_foundation_model_arn,
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "processor_bedrock_invoke" {
+  name   = "${local.processor_function_name}-bedrock-invoke"
+  role   = aws_iam_role.processor.id
+  policy = data.aws_iam_policy_document.processor_bedrock_invoke.json
+}
+
 data "aws_iam_policy_document" "processor_queue_consumer" {
   version = "2012-10-17"
 
