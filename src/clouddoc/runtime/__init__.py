@@ -1,6 +1,7 @@
 """Runtime configuration and dependency composition."""
 
 from clouddoc.runtime.composition import (
+    build_ai_provider,
     build_create_document_job_service,
     build_dead_lettered_document_processor,
     build_document_job_repository,
@@ -33,6 +34,7 @@ __all__ = [
     "UPLOAD_URL_EXPIRATION_SECONDS_ENV_VAR",
     "RuntimeConfigurationError",
     "RuntimeSettings",
+    "build_ai_provider",
     "build_create_document_job_service",
     "build_dead_lettered_document_processor",
     "build_document_job_repository",

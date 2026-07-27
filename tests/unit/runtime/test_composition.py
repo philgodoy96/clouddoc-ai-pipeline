@@ -3,6 +3,9 @@
 from datetime import timedelta
 from typing import Any
 
+import pytest
+from botocore.config import Config
+
 from clouddoc.application import (
     CreateDocumentJob,
     DocumentTextLoader,
@@ -27,12 +30,14 @@ from clouddoc.infrastructure import (
 from clouddoc.providers import (
     AIProvider,
     AIProviderRequest,
+    BedrockAIProvider,
     MockAIProvider,
 )
 from clouddoc.repositories import (
     DynamoDBDocumentJobRepository,
 )
 from clouddoc.runtime.composition import (
+    build_ai_provider,
     build_create_document_job_service,
     build_dead_lettered_document_processor,
     build_document_job_repository,
@@ -41,7 +46,7 @@ from clouddoc.runtime.composition import (
     build_get_document_job_service,
     build_uploaded_document_processor,
 )
-from clouddoc.runtime.settings import RuntimeSettings
+from clouddoc.runtime.settings import RuntimeConfigurationError, RuntimeSettings
 from clouddoc.schemas import AIExtractionResult
 
 
@@ -117,6 +122,32 @@ class RecordingClientFactory:
         return self.client
 
 
+class FakeBedrockRuntimeClient:
+    """Minimal Bedrock Runtime client used to inspect composition."""
+
+
+class RecordingBedrockClientFactory:
+    """Record boto3-style Bedrock Runtime client construction requests."""
+
+    def __init__(self) -> None:
+        """Initialize the fake Bedrock Runtime client."""
+        self.client = FakeBedrockRuntimeClient()
+        self.service_names: list[str] = []
+        self.call_kwargs: list[dict[str, Any]] = []
+
+    def __call__(
+        self,
+        service_name: str,
+        *args: object,
+        **kwargs: object,
+    ) -> FakeBedrockRuntimeClient:
+        """Return the fake client for Bedrock Runtime."""
+        self.service_names.append(service_name)
+        self.call_kwargs.append(dict(kwargs))
+
+        return self.client
+
+
 class RecordingAIProvider:
     """Minimal AI provider used to inspect runtime composition."""
 
@@ -157,6 +188,26 @@ def make_settings() -> RuntimeSettings:
         upload_url_expiration_seconds=900,
         processing_lease_duration_seconds=300,
         max_document_size_bytes=65_536,
+    )
+
+
+def make_bedrock_settings(
+    *,
+    model_id: str | None = "amazon.nova-micro-v1:0",
+    max_output_tokens: int = 1_200,
+    temperature: float = 0.00001,
+) -> RuntimeSettings:
+    """Create valid runtime settings for Bedrock provider composition."""
+    return RuntimeSettings(
+        jobs_table_name="clouddoc-document-jobs",
+        documents_bucket_name="clouddoc-documents",
+        upload_url_expiration_seconds=900,
+        processing_lease_duration_seconds=300,
+        max_document_size_bytes=65_536,
+        ai_provider="bedrock",
+        bedrock_model_id=model_id,
+        bedrock_max_output_tokens=max_output_tokens,
+        bedrock_temperature=temperature,
     )
 
 
@@ -369,6 +420,7 @@ def test_composition_does_not_require_real_aws_access() -> None:
     """Dependency wiring should be testable without network access."""
     resource_factory = RecordingResourceFactory()
     client_factory = RecordingClientFactory()
+    bedrock_client_factory = RecordingBedrockClientFactory()
 
     services: tuple[Any, ...] = (
         build_create_document_job_service(
@@ -392,6 +444,7 @@ def test_composition_does_not_require_real_aws_access() -> None:
             settings=make_settings(),
             dynamodb_resource_factory=resource_factory,
             s3_client_factory=client_factory,
+            bedrock_client_factory=bedrock_client_factory,
         ),
         build_dead_lettered_document_processor(
             settings=make_settings(),
@@ -400,6 +453,7 @@ def test_composition_does_not_require_real_aws_access() -> None:
     )
 
     assert all(services)
+    assert bedrock_client_factory.service_names == []
     assert resource_factory.service_names == [
         "dynamodb",
         "dynamodb",
@@ -566,11 +620,13 @@ def test_uploaded_document_processor_does_not_require_aws_access() -> None:
     """Processor wiring should succeed without AWS credentials or clients."""
     resource_factory = RecordingResourceFactory()
     client_factory = RecordingClientFactory()
+    bedrock_client_factory = RecordingBedrockClientFactory()
 
     processor = build_uploaded_document_processor(
         settings=make_settings(),
         dynamodb_resource_factory=resource_factory,
         s3_client_factory=client_factory,
+        bedrock_client_factory=bedrock_client_factory,
     )
 
     assert isinstance(processor, ApplicationUploadedDocumentProcessor)
@@ -599,12 +655,170 @@ def test_uploaded_document_processor_does_not_require_aws_access() -> None:
     assert document_loader._s3_client is client_factory.client
     assert isinstance(ai_provider, MockAIProvider)
     assert isinstance(ai_provider, AIProvider)
+    assert bedrock_client_factory.service_names == []
     assert resource_factory.service_names == [
         "dynamodb",
     ]
     assert client_factory.service_names == [
         "s3",
     ]
+
+
+def test_build_ai_provider_returns_mock_for_default_settings() -> None:
+    """Mock settings should compose a fresh MockAIProvider without AWS."""
+    bedrock_client_factory = RecordingBedrockClientFactory()
+
+    first = build_ai_provider(
+        settings=make_settings(),
+        bedrock_client_factory=bedrock_client_factory,
+    )
+    second = build_ai_provider(
+        settings=make_settings(),
+        bedrock_client_factory=bedrock_client_factory,
+    )
+
+    assert isinstance(first, MockAIProvider)
+    assert isinstance(second, MockAIProvider)
+    assert first is not second
+    assert bedrock_client_factory.service_names == []
+
+
+def test_build_ai_provider_returns_bedrock_provider() -> None:
+    """Bedrock settings should compose BedrockAIProvider with injected client."""
+    bedrock_client_factory = RecordingBedrockClientFactory()
+    settings = make_bedrock_settings(
+        model_id="amazon.nova-micro-v1:0",
+        max_output_tokens=2_000,
+        temperature=0.5,
+    )
+
+    provider = build_ai_provider(
+        settings=settings,
+        bedrock_client_factory=bedrock_client_factory,
+    )
+
+    assert isinstance(provider, BedrockAIProvider)
+    assert provider._client is bedrock_client_factory.client
+    assert provider._model_id == "amazon.nova-micro-v1:0"
+    assert provider._max_output_tokens == 2_000
+    assert provider._temperature == 0.5
+    assert bedrock_client_factory.service_names == ["bedrock-runtime"]
+    assert len(bedrock_client_factory.call_kwargs) == 1
+    assert "region_name" not in bedrock_client_factory.call_kwargs[0]
+    assert "aws_access_key_id" not in bedrock_client_factory.call_kwargs[0]
+    assert "aws_secret_access_key" not in bedrock_client_factory.call_kwargs[0]
+    assert "endpoint_url" not in bedrock_client_factory.call_kwargs[0]
+
+    config = bedrock_client_factory.call_kwargs[0]["config"]
+    assert isinstance(config, Config)
+    assert config.connect_timeout == 3
+    assert config.read_timeout == 40
+    assert config.retries["mode"] == "standard"
+    assert config.retries["total_max_attempts"] == 2
+
+
+@pytest.mark.parametrize(
+    "model_id",
+    [
+        None,
+        "",
+        " ",
+        "\t",
+        "\n",
+    ],
+)
+def test_build_ai_provider_rejects_missing_bedrock_model_id(
+    model_id: str | None,
+) -> None:
+    """Bedrock composition should fail before client construction without model ID."""
+    bedrock_client_factory = RecordingBedrockClientFactory()
+    settings = make_bedrock_settings(model_id=model_id)
+
+    with pytest.raises(RuntimeConfigurationError) as exc_info:
+        build_ai_provider(
+            settings=settings,
+            bedrock_client_factory=bedrock_client_factory,
+        )
+
+    assert str(exc_info.value) == (
+        "missing required environment variable: CLOUDDOC_BEDROCK_MODEL_ID"
+    )
+    assert bedrock_client_factory.service_names == []
+
+
+def test_build_ai_provider_rejects_unsupported_provider() -> None:
+    """Unknown providers should fail instead of falling back to mock."""
+    bedrock_client_factory = RecordingBedrockClientFactory()
+    settings = RuntimeSettings(
+        jobs_table_name="clouddoc-document-jobs",
+        documents_bucket_name="clouddoc-documents",
+        upload_url_expiration_seconds=900,
+        processing_lease_duration_seconds=300,
+        max_document_size_bytes=65_536,
+        ai_provider="unknown",
+    )
+
+    with pytest.raises(RuntimeConfigurationError) as exc_info:
+        build_ai_provider(
+            settings=settings,
+            bedrock_client_factory=bedrock_client_factory,
+        )
+
+    assert str(exc_info.value) == "CLOUDDOC_AI_PROVIDER must be one of: bedrock, mock"
+    assert bedrock_client_factory.service_names == []
+
+
+def test_uploaded_document_processor_composes_bedrock_provider() -> None:
+    """Bedrock settings should wire BedrockAIProvider without invoking inference."""
+    resource_factory = RecordingResourceFactory()
+    client_factory = RecordingClientFactory()
+    bedrock_client_factory = RecordingBedrockClientFactory()
+    settings = make_bedrock_settings()
+
+    processor = build_uploaded_document_processor(
+        settings=settings,
+        dynamodb_resource_factory=resource_factory,
+        s3_client_factory=client_factory,
+        bedrock_client_factory=bedrock_client_factory,
+    )
+
+    workflow = processor._workflow
+    ai_provider = workflow._ai_provider
+
+    assert isinstance(ai_provider, BedrockAIProvider)
+    assert ai_provider._client is bedrock_client_factory.client
+    assert bedrock_client_factory.service_names == ["bedrock-runtime"]
+    assert isinstance(workflow, ProcessUploadedDocument)
+    assert isinstance(workflow._start_processing, StartDocumentProcessing)
+    assert isinstance(workflow._repository, DynamoDBDocumentJobRepository)
+    assert isinstance(workflow._clock, SystemClock)
+    assert isinstance(workflow._document_loader, S3DocumentTextLoader)
+    assert workflow._repository is workflow._start_processing._repository
+    assert workflow._clock is workflow._start_processing._clock
+    assert workflow._document_loader._s3_client is client_factory.client
+
+
+def test_uploaded_document_processor_explicit_factory_precedes_bedrock() -> None:
+    """Injected AI provider factory must win over Bedrock runtime composition."""
+    resource_factory = RecordingResourceFactory()
+    client_factory = RecordingClientFactory()
+    recording_provider_factory = RecordingAIProviderFactory()
+    bedrock_client_factory = RecordingBedrockClientFactory()
+
+    processor = build_uploaded_document_processor(
+        settings=make_bedrock_settings(),
+        dynamodb_resource_factory=resource_factory,
+        s3_client_factory=client_factory,
+        ai_provider_factory=recording_provider_factory,
+        bedrock_client_factory=bedrock_client_factory,
+    )
+
+    workflow = processor._workflow
+
+    assert recording_provider_factory.calls == 1
+    assert workflow._ai_provider is recording_provider_factory.provider
+    assert not isinstance(workflow._ai_provider, BedrockAIProvider)
+    assert bedrock_client_factory.service_names == []
 
 
 def test_builds_dead_lettered_document_processor() -> None:
