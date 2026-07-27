@@ -43,3 +43,18 @@ variable "environment" {
     error_message = "environment must be one of: dev, staging, prod."
   }
 }
+
+variable "expected_aws_account_id" {
+  description = "Optional AWS account ID allowlist guard used by authenticated plan and apply operations."
+  type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    condition = (
+      var.expected_aws_account_id == null ||
+      can(regex("^[0-9]{12}$", var.expected_aws_account_id))
+    )
+    error_message = "expected_aws_account_id must be null or a 12-digit AWS account ID."
+  }
+}
