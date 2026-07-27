@@ -1,0 +1,13 @@
+aws_region   = "us-east-1"
+project_name = "clouddoc"
+
+github_repository_owner    = "philgodoy96"
+github_repository_name     = "clouddoc-ai-pipeline"
+github_repository_id       = "REPLACE_WITH_GITHUB_REPOSITORY_ID"
+github_repository_owner_id = "REPLACE_WITH_GITHUB_REPOSITORY_OWNER_ID"
+
+github_environment           = "dev"
+github_ref                   = "refs/heads/main"
+github_identity_workflow_ref = "philgodoy96/clouddoc-ai-pipeline/.github/workflows/reusable-aws-identity.yml@refs/heads/main"
+
+role_max_session_duration = 3600
