@@ -23,6 +23,12 @@ The project architecture is documented under:
 docs/architecture/
 ```
 
+Relevant references include:
+
+* [Infrastructure CI Validation](docs/architecture/infrastructure-ci-validation.md)
+* [Terraform State and Environment Workflow](docs/architecture/terraform-state-and-environment-workflow.md)
+* [Lambda Runtime Infrastructure](docs/architecture/lambda-runtime-infrastructure.md)
+
 Significant decisions are recorded under:
 
 ```text
@@ -41,7 +47,7 @@ The project currently requires:
 * a Python virtual environment
 * Make, Git Bash, WSL, or equivalent direct Python commands
 
-AWS CLI is optional. AWS authentication is not required for offline Terraform checks, formatting, validation, or automated tests. AWS credentials will be required only for future real bootstrap, remote backend initialization, plan, apply, and output against AWS.
+AWS CLI is optional. AWS authentication is not needed for CI-equivalent offline validation, formatting, linting, packaging checks, or automated tests. AWS credentials will be required only for future real bootstrap, remote backend initialization, plan, apply, and output against AWS.
 
 ## Local Setup
 
@@ -153,6 +159,59 @@ Never:
 * use Terraform workspaces for environment selection
 * migrate state automatically
 * apply configuration directly without the saved-plan contract
+
+## Continuous Integration
+
+Credential-free validation workflows run on pull requests to `main`, pushes to `main`, and manual `workflow_dispatch`.
+
+Intended GitHub check names:
+
+```text
+Python Quality / Format, lint, and test
+Infrastructure Quality / Lambda package
+Infrastructure Quality / Terraform offline
+```
+
+These are the intended required checks once branch protection is configured after the workflows run successfully on `main`. Branch protection is not claimed as currently enforced.
+
+Before opening a pull request, contributors should run:
+
+```powershell
+make check
+make lambda-package-check
+python scripts/terraform_workflow.py offline-check
+```
+
+CI security rules for validation workflows:
+
+```text
+external actions require full immutable SHAs
+same-line release comments are required
+checkout credentials remain disabled (persist-credentials: false)
+permissions remain minimal (contents: read)
+no AWS identity in validation workflows
+no remote Terraform operation in quality workflows
+no artifact publication in validation workflows
+```
+
+Dependabot opens weekly GitHub Actions update pull requests. When reviewing those changes:
+
+```text
+review release notes
+review publisher
+review runtime changes
+review permissions
+run workflow contract tests
+do not auto-merge blindly
+```
+
+Workflow contract tests:
+
+```powershell
+python -m pytest tests/unit/ci/test_github_actions_workflows.py -q
+```
+
+Full CI architecture is documented in [Infrastructure CI Validation](docs/architecture/infrastructure-ci-validation.md).
 
 ## Branch Naming
 
@@ -439,16 +498,24 @@ A pull request is not ready for review when:
 
 Before opening or updating a pull request, run:
 
+```powershell
+make check
+make lambda-package-check
+python scripts/terraform_workflow.py offline-check
+```
+
+Equivalent direct Python quality commands:
+
 ```bash
 python -m ruff format . --check
 python -m ruff check .
 python -m pytest
 ```
 
-When Terraform files are affected, also run:
+When editing workflow files or Dependabot configuration, also run:
 
 ```powershell
-python scripts/terraform_workflow.py offline-check
+python -m pytest tests/unit/ci/test_github_actions_workflows.py -q
 ```
 
 Focused root-level checks remain useful when editing HCL directly:
@@ -459,7 +526,15 @@ terraform init -backend=false
 terraform validate
 ```
 
-Additional checks may be introduced as the repository evolves.
+Pull requests should expect all three intended checks to pass once the workflows are available:
+
+```text
+Python Quality / Format, lint, and test
+Infrastructure Quality / Lambda package
+Infrastructure Quality / Terraform offline
+```
+
+Do not assume GitHub currently enforces these through branch protection.
 
 ## Pull Request Review Checklist
 
@@ -475,6 +550,7 @@ Before requesting review, verify:
 * documentation reflects the actual implementation
 * trade-offs and follow-up work are explicit
 * all relevant validation commands pass
+* Python Quality, Lambda package, and Terraform offline checks pass when available
 
 ## Security
 
@@ -489,6 +565,8 @@ Never commit:
 * real confidential documents
 * production model payloads
 * sensitive logs
+
+Explicit non-secret environment tfvars and backend files under `infra/terraform/environments/` are committed. State, local `terraform.tfvars`, backend metadata, plans, generated artifacts, and credentials remain outside Git.
 
 Security-sensitive changes should explain:
 

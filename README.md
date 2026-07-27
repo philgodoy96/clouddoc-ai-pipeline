@@ -40,6 +40,14 @@ Foundations already implemented in the repository include:
 * saved-plan integrity manifests
 * offline state and workflow tests
 * offline automated tests
+* credential-free infrastructure CI
+* deterministic Lambda package reproducibility gate
+* application and bootstrap Terraform offline CI
+* immutable GitHub Action references
+* Dependabot maintenance for GitHub Actions
+* static CI workflow contract tests
+
+Validation workflows are implemented in the repository. Deployment workflows are not. Branch protection is not claimed as configured.
 
 Architecture and delivery foundations already defined include:
 
@@ -125,9 +133,16 @@ Infrastructure Operator
     → guarded Terraform workflow
     → account-scoped S3 state bucket
     → independent dev/staging/prod state objects
+
+Delivery validation boundary (not runtime request processing):
+Pull request
+    → Python Quality
+    → Infrastructure Quality
+        → Lambda package
+        → Terraform offline
 ```
 
-The repository declares the control plane, queues, event-source mappings, Lambdas, runtime composition, Bedrock adapter, exact IAM boundary, structured operational logging, CloudWatch alarms, and the operations dashboard. The AWS environment has not yet been deployed and validated. The diagram describes the approved architecture as implemented in the repository, not an already active AWS deployment. DynamoDB remains authoritative for `DocumentJob` lifecycle state; CloudWatch provides operational evidence only.
+The repository declares the control plane, queues, event-source mappings, Lambdas, runtime composition, Bedrock adapter, exact IAM boundary, structured operational logging, CloudWatch alarms, and the operations dashboard. The AWS environment has not yet been deployed and validated. The diagram describes the approved architecture as implemented in the repository, not an already active AWS deployment. DynamoDB remains authoritative for `DocumentJob` lifecycle state; CloudWatch provides operational evidence only. CI validates repository contracts; it does not deploy or prove deployed AWS behavior.
 
 ## V1 Capabilities
 
@@ -206,6 +221,12 @@ The system is designed around the following principles:
 * apply only from a reviewed saved plan
 * never migrate state automatically
 * keep state and plan artifacts outside Git
+* validation is separate from deployment
+* GitHub Actions use read-only permissions
+* external actions use full immutable SHAs
+* checkout credentials are not persisted
+* Terraform CI remains backend-free and credential-free
+* generated artifacts are validated but not published
 
 Detailed principles are documented in:
 
@@ -215,6 +236,7 @@ Detailed principles are documented in:
 * [Lambda Packaging Architecture](docs/architecture/lambda-packaging.md)
 * [Bedrock AI Provider Integration](docs/architecture/bedrock-ai-provider-integration.md)
 * [CloudWatch Observability](docs/architecture/cloudwatch-observability.md)
+* [Infrastructure CI Validation](docs/architecture/infrastructure-ci-validation.md)
 * [ADR-017: Package Python Lambdas as a Shared Deterministic ZIP](docs/adr/ADR-017-package-python-lambdas-as-a-shared-zip.md)
 * [ADR-023: Use Amazon Nova Micro through Bedrock Converse](docs/adr/ADR-023-use-amazon-nova-micro-through-bedrock-converse.md)
 * [ADR-024: Use Native AWS Metrics and Structured Application Logs](docs/adr/ADR-024-use-native-aws-metrics-and-structured-application-logs.md)
@@ -283,6 +305,11 @@ Current repository layout:
 
 ```text
 .
+├── .github/
+│   ├── dependabot.yml
+│   └── workflows/
+│       ├── infrastructure-quality.yml
+│       └── python-quality.yml
 ├── docs/
 │   ├── adr/
 │   └── architecture/
@@ -317,8 +344,8 @@ Current repository layout:
 │   ├── tooling/
 │   │   └── test_lambda_package_builder.py
 │   └── unit/
+│       ├── ci/
 │       └── scripts/
-├── .github/
 ├── CONTRIBUTING.md
 ├── LICENSE
 ├── Makefile
@@ -343,7 +370,7 @@ artifacts/lambda/
 * a Python virtual environment
 * Make, Git Bash, WSL, or equivalent direct commands
 
-AWS CLI is optional. AWS authentication is not required for offline checks, formatting, validation, or automated tests. AWS credentials will be required only for future real state-bucket bootstrap, remote backend initialization, plan, apply, and output against AWS.
+AWS CLI is optional. AWS authentication is not needed for CI-equivalent offline validation, formatting, linting, packaging checks, or automated tests. AWS credentials will be required only for future real state-bucket bootstrap, remote backend initialization, plan, apply, and output against AWS.
 
 ### Setup
 
@@ -400,6 +427,23 @@ Run all current checks with Make:
 make check
 ```
 
+CI-equivalent local commands:
+
+```powershell
+make check
+make lambda-package-check
+python scripts/terraform_workflow.py offline-check
+python -m pytest tests/unit/ci/test_github_actions_workflows.py -q
+```
+
+Intended GitHub check names (branch protection is not claimed as configured):
+
+```text
+Python Quality / Format, lint, and test
+Infrastructure Quality / Lambda package
+Infrastructure Quality / Terraform offline
+```
+
 ### Lambda Packaging
 
 Regenerate the committed Lambda runtime lock:
@@ -425,6 +469,8 @@ make lambda-package-check
 ```
 
 `lambda-package-check` builds and verifies SHA-256.
+
+CI builds the package twice from clean outputs, compares both SHA-256 digests, and does not publish the generated ZIP.
 
 Remove generated package outputs only:
 
@@ -524,6 +570,10 @@ Current coverage includes:
 * bootstrap static contract tests (seven tests)
 * guarded workflow unit tests with subprocess mocking and plan-manifest integrity checks (55 tests)
 * Terraform validation with 29 expected test runs in the application root
+* 29 CI workflow contract tests
+* credential-free GitHub Actions execution
+* independent infrastructure jobs
+* artifact-independent Terraform CI
 
 Builder-tooling tests use temporary directories and local dependency fixtures. They do not install real packages, do not access AWS, and do not require network access. Bootstrap and workflow tests likewise require no AWS.
 
@@ -557,21 +607,28 @@ The project is designed to:
 * avoid high-cardinality metric dimensions
 * avoid `cloudwatch:PutMetricData` permission
 * keep Bedrock model invocation logging disabled
-* keep Terraform state, local `terraform.tfvars`, backend metadata, saved plans, manifests, and credentials outside Git
-* version committed environment `.tfvars` and `.s3.tfbackend` files only when they contain approved non-secret declarative values
+* keep explicit non-secret environment tfvars and backend files committed
+* keep Terraform state, local `terraform.tfvars`, backend metadata, saved plans, manifests, generated artifacts, and credentials outside Git
 * enforce a wrong-account guard and bucket/account binding for authenticated Terraform operations
 * keep credentials out of committed backend files
 * reject automatic local-state migration
 * never bypass S3 lockfiles or locking
 * use Secrets Manager only when a real secret exists
+* use read-only workflow permissions (`contents: read`)
+* pin external actions to full immutable SHAs with same-line release comments
+* disable checkout credential persistence (`persist-credentials: false`)
+* keep validation CI free of OIDC and AWS secrets
+* validate generated artifacts without publishing them
 
 Packaging security boundaries:
 
 * runtime dependency hashes are verified
 * generated artifacts are ignored by Git
 * AWS credentials are not required for packaging
-* secrets and environment files are not copied
+* secrets and environment files are not copied into the package
 * host-native dependencies are not used for the Linux package
+
+Immutable action SHAs reduce mutable-tag drift; they do not by themselves make an action trusted.
 
 ## Reliability Principles
 
@@ -592,6 +649,12 @@ Implemented reliability controls include:
 * isolated per-environment Terraform metadata under `infra/terraform/.terraform-data/<environment>`
 * saved-plan integrity manifests with SHA-256 verification before apply
 * explicit apply environment confirmation
+* stable required-check names for intended branch protection
+* no path-filter skipping of quality workflows
+* branch-scoped cancellation of obsolete workflow runs
+* two-build Lambda digest comparison
+* exact Terraform version in CI (`1.15.8`)
+* same offline Terraform command locally and in CI
 
 Provider failure classification:
 
@@ -641,6 +704,11 @@ Implemented cost controls include:
 * S3-native locking without DynamoDB
 * SSE-S3 for Terraform state (no KMS key or replication yet)
 * bounded noncurrent state version retention in the bootstrap bucket contract
+* parallel CI jobs
+* bounded CI job timeouts
+* cancellation of obsolete workflow runs
+* no CI artifact retention for validation workflows
+* no AWS resource cost from credential-free validation CI
 
 ## Intentionally Deferred from V1
 
@@ -668,13 +736,16 @@ These decisions keep the first release focused on one complete, observable, reco
 
 Remaining deployment and operational follow-ups:
 
+* branch protection activation
+* GitHub OIDC
+* AWS CI identities
+* artifact publication
+* remote plan
+* controlled apply
+* real AWS deployment validation
 * real state-bucket bootstrap in AWS
 * real remote backend initialization
 * state access IAM
-* GitHub OIDC for CI
-* controlled AWS deployment
-* real environment plan/apply validation
-* CI packaging and infrastructure gates
 * real AWS invocation and end-to-end validation
 * real CloudWatch dashboard and alarm validation
 * operator notification routing
@@ -682,11 +753,12 @@ Remaining deployment and operational follow-ups:
 * SLOs
 * distributed tracing
 * operator runbooks
-* artifact publication
 * code signing
 * Lambda layers
 * container-image packaging
 * arm64
+
+Branch protection should be configured after the validation workflows run successfully on `main`. It is not claimed as active.
 
 ## Architecture Decision Records
 
