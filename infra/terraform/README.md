@@ -25,14 +25,18 @@ structured API access logging
 route-specific throttling
 route-scoped Lambda invocation permissions
 stable API outputs
-Processor-specific Bedrock runtime environment
-dedicated Processor Bedrock invocation policy
+Processor-only Bedrock environment and IAM
 exact Nova Micro foundation-model permission
+explicit Lambda JSON / INFO / WARN logging
+nine CloudWatch metric alarms
+one CloudWatch operations dashboard
+operations_dashboard_name output
 offline Bedrock isolation tests
+offline observability tests
 ```
 
-CloudWatch alarms, automatic replay, operator recovery tooling, remote state,
-CI/CD, and real AWS deployment remain separate follow-up work.
+Automatic replay, operator recovery tooling, remote state, CI/CD, real AWS
+deployment, and real CloudWatch validation remain separate follow-up work.
 
 ## Current resources
 
@@ -201,7 +205,7 @@ aws_cloudwatch_log_group.dead_letter_reconciler
 | Document Processor | `clouddoc.handlers.process_uploaded_document.lambda_handler` | 1024 MB | 120 seconds | Processes uploaded source documents and persists attempt-aware outcomes |
 | Dead-Letter Reconciler | `clouddoc.handlers.reconcile_dead_lettered_document.lambda_handler` | 512 MB | 30 seconds | Reconciles exhausted deliveries into authoritative job state |
 
-#### Runtime platform
+#### Runtime platform and logging
 
 All four functions use:
 
@@ -209,9 +213,14 @@ All four functions use:
 Python 3.12
 x86_64
 Zip package type
-JSON logging
+logging_config.log_format = JSON
+logging_config.application_log_level = INFO
+logging_config.system_log_level = WARN
 publish disabled
 ```
+
+Application events remain visible at INFO. Platform system logs are restricted
+below WARN. Log retention and role-scoped log permissions are unchanged.
 
 The runtime architecture matches the deterministic package builder. Changing the
 runtime or architecture requires updating the packaging contract in the same
@@ -300,6 +309,16 @@ action, `bedrock:InvokeModel`, against one exact partition-aware regional
 accountless foundation-model ARN for Nova Micro. Streaming actions and Bedrock
 wildcards are not granted.
 
+Execution policies intentionally omit:
+
+```text
+cloudwatch:PutMetricData
+cloudwatch:*
+```
+
+Alarms and dashboard panels consume AWS-native service metrics. No custom metric
+namespace, Embedded Metric Format publisher, or log metric filter is introduced.
+
 #### Bedrock invocation boundary
 
 ```text
@@ -324,6 +343,74 @@ prod = 30 days
 
 Terraform owns log-group creation and retention. Runtime roles may create streams
 and put events only within their own log group.
+
+### Observability
+
+```text
+aws_cloudwatch_metric_alarm.control_plane_5xx
+aws_cloudwatch_metric_alarm.processor_lambda_errors
+aws_cloudwatch_metric_alarm.dead_letter_reconciler_lambda_errors
+aws_cloudwatch_metric_alarm.processing_queue_age
+aws_cloudwatch_metric_alarm.processing_dlq_visible
+aws_cloudwatch_metric_alarm.reconciliation_quarantine_visible
+aws_cloudwatch_metric_alarm.bedrock_client_errors
+aws_cloudwatch_metric_alarm.bedrock_server_errors
+aws_cloudwatch_metric_alarm.bedrock_throttles
+aws_cloudwatch_dashboard.operations
+```
+
+Dashboard name:
+
+```text
+${project_name}-${environment}-operations
+```
+
+Default local values produce:
+
+```text
+clouddoc-dev-operations
+```
+
+The dashboard exposes ten widgets:
+
+```text
+Operational alarm status
+Control plane traffic and errors
+Control plane latency
+Lambda errors and throttles
+Lambda duration and concurrency
+Processing queue health
+Dead-letter and quarantine health
+Amazon Bedrock invocations and errors
+Amazon Bedrock invocation latency
+Amazon Bedrock token usage
+```
+
+Detailed alarm thresholds, dimensions, and widget metric contracts are documented
+in [CloudWatch observability](../../docs/architecture/cloudwatch-observability.md).
+
+#### Native metric boundary
+
+Alarms and dashboard panels use AWS-native namespaces and low-cardinality
+dimensions only:
+
+```text
+AWS/ApiGateway with ApiId + Stage
+AWS/Lambda with FunctionName
+AWS/SQS with QueueName
+AWS/Bedrock with ModelId
+```
+
+No custom metric namespace, EMF, or log metric filter is introduced.
+
+#### Alarm notification boundary
+
+Alarm resources intentionally declare no `alarm_actions`, `ok_actions`, or
+`insufficient_data_actions`.
+
+This is not accidental incompleteness. Incident routing requires an approved
+operator and environment-specific notification channel before actions are
+attached.
 
 ### Processing queue consumer
 
@@ -397,7 +484,7 @@ S3 ObjectCreated
     → processing SQS queue
     → Lambda event source mapping
     → Document Processor Lambda
-    → S3 / DynamoDB / future AI provider
+    → S3 / DynamoDB / Amazon Bedrock
 ```
 
 ## Failure flow
@@ -914,12 +1001,13 @@ processing event-source topology
 dead-letter reconciliation topology
 API Gateway control-plane topology
 Processor-only Bedrock runtime and IAM isolation
+CloudWatch observability contracts
 ```
 
 The current validated total is:
 
 ```text
-25 passed, 0 failed
+29 passed, 0 failed
 ```
 
 Bedrock isolation coverage lives in:
@@ -939,6 +1027,26 @@ bedrock_runtime_isolation
 Those runs assert Processor-only Bedrock environment variables, the exact Nova
 Micro foundation-model ARN permission, and the absence of Bedrock settings or
 actions on the other three functions.
+
+Observability coverage lives in:
+
+```text
+infra/terraform/tests/observability.tftest.hcl
+```
+
+Its four runs are:
+
+```text
+cloudwatch_alarm_contracts
+operations_dashboard_contract
+lambda_structured_logging_contract
+observability_isolation_boundaries
+```
+
+Those runs assert the nine approved alarms, the ten-widget operations dashboard,
+JSON / INFO / WARN Lambda logging, AWS-native metric namespaces only, the
+absence of notification actions, and the absence of `cloudwatch:PutMetricData`
+or `cloudwatch:*` in execution policies.
 The dead-letter reconciliation tests validate:
 
 ```text
@@ -1032,6 +1140,12 @@ control_plane_api_stage_name
 control_plane_api_access_log_group_name
 ```
 
+Observability outputs:
+
+```text
+operations_dashboard_name
+```
+
 The base URL includes the named stage and excludes route paths. These
 identifiers support alarm wiring, runbook inspection, caller policy design, and
 deployment verification. Outputs expose resource identifiers only; they do not
@@ -1079,7 +1193,7 @@ no anonymous default or catch-all routes
 
 Malware scanning, Object Lock, access logging, and CloudTrail data events are
 not part of this slice. AWS Backup, global tables, DAX, Contributor Insights,
-customer-managed KMS, and CloudWatch alarms are not declared for the table.
+and customer-managed KMS are not declared for the table.
 
 ## Retention nuance
 
@@ -1155,6 +1269,19 @@ no custom domain
 no API Gateway caching
 ```
 
+Observability cost decisions:
+
+```text
+native AWS metrics instead of custom metrics
+one dashboard per environment
+nine focused alarms
+bounded log retention
+no route-level detailed metrics
+no event-source mapping detailed metrics
+no X-Ray
+no PutMetricData publisher
+```
+
 Document bytes bypass API Gateway through presigned S3 upload. The control
 plane therefore remains a low-volume authenticated boundary rather than a
 document-transfer path.
@@ -1200,8 +1327,6 @@ response transformation
 API Gateway caching
 AWS WAF
 X-Ray tracing
-CloudWatch alarms
-dashboards
 synthetic monitoring
 caller IAM identities
 CI caller identity
@@ -1212,27 +1337,23 @@ quarantine consumer
 automatic replay
 operator replay API
 message-move permissions
-processing DLQ depth alarm
-quarantine depth alarm
-message-age alarm
-reconciler failure alarm
+alarm notification actions
 manual recovery runbook
 provisioned concurrency
 provisioned pollers
 batch size greater than 1
 event filtering
-queue-age alarms
-DLQ-depth alarms
-Lambda throttling alarms
 Secrets Manager
 versions and aliases
 artifact publication to S3
 code signing
 real AWS deployment
+real CloudWatch dashboard and alarm validation
 model-access readiness validation
 real inference validation
 failure injection
 recovery testing
+SLOs
 ```
 
 OAuth and JWT remain intentionally deferred while the project establishes a
@@ -1278,3 +1399,5 @@ real AWS deployment and restore validation
 - [ADR-022: Use API Gateway HTTP API for the control plane](../../docs/adr/ADR-022-use-http-api-for-control-plane.md)
 - [Bedrock AI provider integration](../../docs/architecture/bedrock-ai-provider-integration.md)
 - [ADR-023: Use Amazon Nova Micro through Bedrock Converse](../../docs/adr/ADR-023-use-amazon-nova-micro-through-bedrock-converse.md)
+- [CloudWatch observability](../../docs/architecture/cloudwatch-observability.md)
+- [ADR-024: Use native AWS metrics and structured application logs](../../docs/adr/ADR-024-use-native-aws-metrics-and-structured-application-logs.md)

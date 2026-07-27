@@ -109,8 +109,12 @@ runtime = python3.12
 architecture = x86_64
 package type = Zip
 publish = false
-log format = JSON
+logging_config.log_format = JSON
+logging_config.application_log_level = INFO
+logging_config.system_log_level = WARN
 ```
+
+Application events remain visible at INFO. Platform system logs are restricted below WARN.
 
 The package builder targets CPython 3.12 and Linux x86_64.
 
@@ -312,9 +316,13 @@ The roles do not receive:
 ```text
 logs:CreateLogGroup
 Resource = *
+cloudwatch:PutMetricData
+cloudwatch:*
 ```
 
 Terraform, rather than the runtime, owns log-group creation and retention.
+
+Execution policies intentionally omit custom CloudWatch metric publication. Alarms and the operations dashboard consume AWS-native service metrics only and declare no notification actions.
 
 ## Control-Plane Permissions
 
@@ -451,7 +459,14 @@ API Gateway integrations
 Lambda invoke permissions
 SQS event-source mappings
 CloudWatch alarms
+operations dashboard inspection
 deployment inspection
+```
+
+The root also exports:
+
+```text
+operations_dashboard_name
 ```
 
 The root does not export:
@@ -472,6 +487,7 @@ The runtime infrastructure is covered by:
 ```text
 infra/terraform/tests/lambda_runtime_functions.tftest.hcl
 infra/terraform/tests/bedrock_runtime.tftest.hcl
+infra/terraform/tests/observability.tftest.hcl
 ```
 
 The tests use:
@@ -517,7 +533,28 @@ absence of streaming and wildcard Bedrock actions
 absence of Bedrock settings and permissions on other functions
 ```
 
-The tests do not create AWS resources, require AWS credentials, or perform real Bedrock calls.
+The observability test validates:
+
+```text
+nine CloudWatch alarms
+ten-widget operations dashboard
+JSON / INFO / WARN Lambda logging
+AWS-native metric namespaces and dimensions
+absence of alarm notification actions
+absence of cloudwatch:PutMetricData and cloudwatch:*
+operations_dashboard_name output
+```
+
+Native metric dimensions used by alarms and dashboard panels are:
+
+```text
+AWS/ApiGateway with ApiId + Stage
+AWS/Lambda with FunctionName
+AWS/SQS with QueueName
+AWS/Bedrock with ModelId
+```
+
+The tests do not create AWS resources, require AWS credentials, or perform real Bedrock or CloudWatch calls.
 
 ## Security Boundary
 
@@ -627,23 +664,53 @@ Non-Processor functions receive AI settings they must not own, breaking isolatio
 
 The exact-model IAM boundary collapses and unused models become reachable.
 
+### Incorrect Alarm Dimension
+
+An alarm watches the wrong resource and fails to signal the intended failure mode.
+
+### Dashboard Has No Data
+
+Declared panels remain empty until the corresponding AWS resources emit native metrics in a deployed environment.
+
+### Alarm Has No Action
+
+Alarm state can change without notifying an operator because notification actions are intentionally absent.
+
+### Logging Level Suppresses Required Events
+
+Raising the application log level above INFO can hide required structured operational events.
+
+### High-Cardinality Metric Dimension Introduced
+
+Per-job or per-request dimensions inflate metric cardinality and cost without improving aggregate health signals.
+
+### PutMetricData Permission Introduced
+
+Execution roles gain custom metric publication capability outside the approved native-metric strategy.
+
 ## Cost Posture
 
 This slice introduces potential costs for:
 
-`	ext
+text
 Lambda invocation duration
 Lambda memory allocation
 CloudWatch Logs ingestion
 CloudWatch Logs retention
-`
+nine CloudWatch metric alarms
+one CloudWatch operations dashboard
+
 
 Cost-aware decisions include:
 
-`	ext
+text
 small control-plane memory budgets
 short control-plane timeouts
 explicit log retention
+native AWS metrics instead of custom metrics
+one dashboard per environment
+nine focused alarms
+no PutMetricData publisher
 no provisioned concurrency
 no Lambda versions or aliases
 no VPC attachment
@@ -655,7 +722,7 @@ Amazon Nova Micro
 maximum event-source concurrency five
 two total SDK attempts
 mock inference for automated tests
-`
+
 
 The processor receives a larger memory budget because it owns document loading, validation, and AI orchestration.
 
@@ -665,10 +732,9 @@ Its final budget should be revisited after deployed measurements.
 
 The following remain separate implementation slices:
 
-`	ext
+text
 reserved concurrency
-CloudWatch alarms
-CloudWatch dashboards
+alarm notification actions
 X-Ray tracing
 Secrets Manager
 Lambda aliases and versions
@@ -678,40 +744,43 @@ VPC integration
 remote Terraform state
 CI/CD deployment gates
 real AWS deployment
-real AWS validation
+real AWS dashboard and alarm validation
 operator recovery tooling
-`
+SLOs
+
 
 These concerns are intentionally sequenced around concrete operational and deployment boundaries.
 
 ## Validation Commands
 
-`ash
+bash
 terraform -chdir=infra/terraform fmt -check -recursive
 terraform -chdir=infra/terraform validate
 terraform -chdir=infra/terraform test
-`
+
 
 Repository validation remains:
 
-`ash
+bash
 make check
 make lambda-package-check
 git diff --check
-`
 
-No 	erraform apply or AWS credentials are required for the automated validation path.
+
+No Terraform apply or AWS credentials are required for the automated validation path.
 
 ## Follow-Up Work
 
-The next operational slice is observability: CloudWatch alarms, dashboards, and structured operational telemetry for the declared control plane and processing path.
+The next slice is Terraform remote state and environment workflow.
 
-Controlled deployment, remote state, CI/CD gates, real AWS validation, and operator recovery remain subsequent work.
+Real AWS dashboard and alarm validation, controlled deployment, CI/CD gates, notification routing, and operator recovery remain subsequent work.
 
 ## Related Documentation
 
+- [CloudWatch Observability](cloudwatch-observability.md)
 - [Bedrock AI Provider Integration](bedrock-ai-provider-integration.md)
 - [Processing queue consumer infrastructure](processing-queue-consumer-infrastructure.md)
 - [Dead-letter reconciliation infrastructure](dead-letter-reconciliation-infrastructure.md)
 - [Runtime Composition](runtime-composition.md)
 - [ADR-023: Use Amazon Nova Micro through Bedrock Converse](../adr/ADR-023-use-amazon-nova-micro-through-bedrock-converse.md)
+- [ADR-024: Use Native AWS Metrics and Structured Application Logs](../adr/ADR-024-use-native-aws-metrics-and-structured-application-logs.md)

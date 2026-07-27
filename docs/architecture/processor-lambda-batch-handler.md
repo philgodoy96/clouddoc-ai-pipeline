@@ -25,6 +25,23 @@ AI inference
 idempotency persistence
 ```
 
+Those effects belong to the authoritative processing adapter and application workflow.
+
+## Evolution Note
+
+Earlier slices stabilized the batch-handler contract with a NoOp processor while S3 retrieval, AI invocation, Terraform event-source mapping, and structured logging remained sequenced follow-up work.
+
+The current repository state advances that contract:
+
+```text
+ApplicationUploadedDocumentProcessor is the authoritative processing adapter
+S3 retrieval and AI invocation are implemented in the processing workflow
+Terraform event-source mapping is implemented
+structured operational logging is implemented
+```
+
+The original partial-batch semantics remain unchanged.
+
 ## Batch Flow
 
 ```text
@@ -241,39 +258,54 @@ The current runtime composition maps:
 ```text
 UploadedDocumentProcessor
     → ApplicationUploadedDocumentProcessor
-    → StartDocumentProcessing
+    → ProcessUploadedDocument
 ```
 
-The processor now:
+The authoritative processing adapter:
 
 ```text
 loads the authoritative job through the repository
 validates canonical object ownership
 acquires or reconciles a bounded ProcessingAttempt claim
-treats active processing and succeeded states idempotently
+loads the source document from S3
+invokes the configured AI provider
+persists attempt-aware completion or terminal failure
+treats already-applied effects idempotently
 ```
 
-It still does not:
+Authoritative processing-start ownership, claim semantics, and attempt-aware finalization are documented separately.
 
-```text
-download S3 content
-invoke the AI provider
-persist processing results
-```
-
-Authoritative processing-start ownership and claim semantics are documented separately.
-
-The handler slice continues to stabilize:
+The handler continues to own:
 
 ```text
 batch isolation
 partial failure semantics
 event fan-out
 handler composition
-retry classification
+retry classification for reportable failures
 ```
 
-S3 reads, AI execution, and attempt-aware result persistence remain intentionally deferred.
+## Processing Telemetry Ownership
+
+Telemetry ownership is split:
+
+```text
+adapter emits processing.record_completed
+handler emits processing.record_failed
+handler emits processing.batch_completed
+```
+
+Successful authoritative workflow outcomes emit one `processing.record_completed` event from the adapter. The handler does not emit a duplicate successful record event.
+
+The handler emits `processing.record_failed` for reportable per-message failures that enter `batchItemFailures`.
+
+The handler emits one `processing.batch_completed` summary per invocation.
+
+Malformed outer-event and missing-message-ID cases still emit best-effort `processing.batch_completed` telemetry with `outcome=event_rejected` before the original exception propagates.
+
+Logging failure cannot change acknowledgement or partial-batch behavior.
+
+Detailed field contracts are documented in [CloudWatch Observability](cloudwatch-observability.md).
 
 ## Handler Structure
 
@@ -292,8 +324,14 @@ def handle(
     *,
     processor,
     expected_bucket_name,
+    logger=...,
+    timer=...,
 ): ...
 ```
+
+Production `lambda_handler` uses `StandardOperationalLogger`.
+
+Direct `handle` tests default to `NullOperationalLogger`.
 
 The testable `handle()` function does not access AWS.
 
@@ -349,7 +387,7 @@ The handler catches exceptions associated with a valid SQS message ID and conver
 
 Internal exception details are not returned.
 
-Structured logging is intentionally deferred to a dedicated observability slice.
+Structured operational logging is implemented for record and batch telemetry. Logs remain best-effort operational evidence and do not claim exactly-once delivery.
 
 ## Testing Strategy
 
@@ -369,22 +407,26 @@ fail-fast behavior within one message
 unique failed message identifiers
 malformed outer event failure
 missing message identity failure
+processing.record_completed ownership on the adapter
+processing.record_failed ownership on the handler
+processing.batch_completed summaries
+logging-failure isolation
 no AWS access
 ```
 
 ## Intentionally Deferred
 
 ```text
-S3 GetObject
-UTF-8 validation
-AI provider invocation
-attempt-aware result persistence
-retry release and terminal failure persistence
 lease heartbeat or extension
-structured logging
-CloudWatch metrics
-visibility timeout configuration
-DLQ reconciliation
-Terraform
-real Lambda deployment
+custom metrics
+distributed tracing
+operator recovery tooling
+real Lambda deployment and end-to-end AWS validation
 ```
+
+## Related Documentation
+
+- [CloudWatch Observability](cloudwatch-observability.md)
+- [Runtime Composition](runtime-composition.md)
+- [Bedrock AI Provider Integration](bedrock-ai-provider-integration.md)
+- [ADR-024: Use Native AWS Metrics and Structured Application Logs](../adr/ADR-024-use-native-aws-metrics-and-structured-application-logs.md)

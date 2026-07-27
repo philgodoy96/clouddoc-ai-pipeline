@@ -8,7 +8,9 @@ This document describes how CloudDoc reconciles exhausted processing-queue deliv
 
 The reconciler records unfinished attempted jobs as `dead`, preserves terminal business outcomes, protects active workers, and isolates failures through the Lambda partial batch response.
 
-Automatic redrive, operator replay, stale-job scanning, CloudWatch observability, IAM, and Terraform remain separate follow-up work.
+Automatic redrive, operator replay, stale-job scanning, real AWS deployment validation, and operator recovery tooling remain separate follow-up work.
+
+Structured operational logging, CloudWatch alarms, dashboard declarations, reconciler IAM, and Terraform consumer topology are implemented in the repository.
 
 ## Purpose
 
@@ -509,6 +511,7 @@ Each direct builder call creates a fresh object graph containing:
 - one `SystemClock`
 - one reconciliation workflow
 - one delivery adapter
+- an injected operational logger
 
 The builder does not create:
 
@@ -522,6 +525,28 @@ The Lambda module caches only the fully composed delivery processor for warm inv
 Runtime settings are loaded for every invocation.
 
 A composition failure leaves the cache empty and fails the invocation.
+
+## Reconciliation Telemetry Ownership
+
+Telemetry ownership is split:
+
+```text
+adapter emits reconciliation.record_completed
+handler emits reconciliation.record_failed
+handler emits reconciliation.batch_completed
+```
+
+`DEAD_RECORDED` emits `reconciliation.record_completed` at warning severity with:
+
+```text
+failure_reason=processing_retries_exhausted
+```
+
+`EFFECT_ALREADY_APPLIED` emits the same event name at info severity.
+
+The handler owns failed-record and batch-summary telemetry. Logging failure cannot change acknowledgement or partial-batch behavior.
+
+Detailed field contracts, Terraform consumer wiring, quarantine alarms, and the operations dashboard are documented in [CloudWatch Observability](cloudwatch-observability.md) and the dead-letter reconciliation infrastructure document.
 
 ## Acknowledgement Semantics
 
@@ -631,6 +656,11 @@ Coverage includes:
 - Lambda cold-start composition
 - Lambda warm processor caching
 - builder failure propagation
+- reconciliation.record_completed ownership on the adapter
+- reconciliation.record_failed ownership on the handler
+- reconciliation.batch_completed summaries
+- dead_recorded warning severity and failure_reason
+- logging-failure isolation
 
 Tests do not require real AWS services.
 
@@ -644,23 +674,24 @@ The following are intentionally deferred:
 - lease heartbeat
 - maximum processing-attempt policy
 - receive-count-aware business policy
-- structured logging implementation
-- CloudWatch metrics and alarms
 - EventBridge recovery schedules
-- Terraform resources
-- IAM policies
+- custom metrics
+- distributed tracing
 - deployed AWS validation
+- operator recovery tooling
 
 ## Follow-Up Work
 
-The next operational stage should define:
+Remaining operational follow-up includes:
 
-- infrastructure resources for processing queue and DLQ
-- SQS redrive policy
-- DLQ event-source mapping
-- least-privilege reconciler IAM
-- Lambda timeout, batch size, visibility timeout, and concurrency
-- structured logs with request and correlation context
-- metrics for dead recorded, terminal no-op, conflicts, and missing jobs
-- alarms for DLQ depth and reconciliation failures
+- real AWS deployment and validation
+- alarm notification routing
 - operator-controlled replay and investigation workflow
+- SLO definitions
+
+## Related Documentation
+
+- [CloudWatch Observability](cloudwatch-observability.md)
+- [Dead-letter reconciliation infrastructure](dead-letter-reconciliation-infrastructure.md)
+- [Runtime Composition](runtime-composition.md)
+- [ADR-024: Use Native AWS Metrics and Structured Application Logs](../adr/ADR-024-use-native-aws-metrics-and-structured-application-logs.md)

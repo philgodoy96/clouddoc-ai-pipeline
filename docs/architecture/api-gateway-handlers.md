@@ -26,6 +26,7 @@ calling application services
 mapping application results to HTTP responses
 mapping application errors to safe external errors
 serializing JSON responses
+emitting one terminal structured request event
 ```
 
 It is not responsible for:
@@ -39,6 +40,56 @@ evaluating persistence conditions
 loading AWS credentials
 returning internal exception details
 ```
+
+## Request Completion Telemetry
+
+Each control-plane handler emits one terminal event:
+
+```text
+control_plane.request_completed
+```
+
+Operations:
+
+```text
+create_document_job
+get_document_job
+```
+
+Outcome mapping follows the HTTP result path, including:
+
+```text
+succeeded
+invalid_request
+conflict
+not_found
+dependency_failure
+internal_error
+```
+
+Safe trace fields include:
+
+```text
+request_id
+correlation_id
+job_id when available
+status_code
+duration_ms
+error_code
+exception_type
+```
+
+Severity follows status class:
+
+```text
+2xx/3xx → info
+4xx → warning
+5xx → error
+```
+
+Exactly one completion event is emitted per request. Logging failure cannot change the HTTP response.
+
+Detailed field contracts are documented in [CloudWatch Observability](cloudwatch-observability.md).
 
 ## Request Identity
 
@@ -179,8 +230,12 @@ def lambda_handler(event, context): ...
 and:
 
 ```python
-def handle(event, context, *, service): ...
+def handle(event, context, *, service, logger=..., timer=...): ...
 ```
+
+Production `lambda_handler` uses `StandardOperationalLogger`.
+
+Direct `handle` tests default to `NullOperationalLogger` and may inject a timer.
 
 Tests inject application-service doubles into `handle()`.
 
@@ -206,11 +261,20 @@ All event fields are treated as untrusted input.
 
 The handlers validate event containers, path parameters, and request bodies; reject unsupported encodings; avoid arbitrary object serialization; and never expose internal exception details.
 
+Operational telemetry does not log:
+
+```text
+request or response bodies
+presigned upload URLs
+object keys
+exception messages
+```
+
 Authentication and authorization are intentionally deferred to a dedicated identity boundary.
 
 ## Testing Strategy
 
-Tests verify header normalization, trace precedence, generated request identity, safe success and error responses, invalid request handling, path validation, application error mapping, unexpected exception protection, and trace-header propagation.
+Tests verify header normalization, trace precedence, generated request identity, safe success and error responses, invalid request handling, path validation, application error mapping, unexpected exception protection, trace-header propagation, one terminal `control_plane.request_completed` event per request, severity-by-status mapping, safe field emission, and logging-failure isolation that preserves the HTTP response.
 
 ## Intentionally Deferred
 
@@ -219,12 +283,14 @@ CORS policy
 authentication
 authorization
 OpenAPI specification
-API Gateway deployment
-Terraform
-structured logging
-metrics
+custom metrics
 distributed tracing
 S3 presigned uploads
 AI result exposure
-request throttling
 ```
+
+## Related Documentation
+
+- [CloudWatch Observability](cloudwatch-observability.md)
+- [Runtime Composition](runtime-composition.md)
+- [ADR-024: Use Native AWS Metrics and Structured Application Logs](../adr/ADR-024-use-native-aws-metrics-and-structured-application-logs.md)
