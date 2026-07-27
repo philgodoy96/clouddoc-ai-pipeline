@@ -1,8 +1,10 @@
 locals {
-  name_prefix                        = "${var.project_name}-${var.environment}"
-  documents_bucket_name              = "${local.name_prefix}-${data.aws_caller_identity.current.account_id}-documents"
-  document_jobs_table_name           = "${local.name_prefix}-document-jobs"
-  reconciliation_failures_queue_name = "${local.name_prefix}-reconciliation-failures"
+  name_prefix                             = "${var.project_name}-${var.environment}"
+  documents_bucket_name                   = "${local.name_prefix}-${data.aws_caller_identity.current.account_id}-documents"
+  document_jobs_table_name                = "${local.name_prefix}-document-jobs"
+  reconciliation_failures_queue_name      = "${local.name_prefix}-reconciliation-failures"
+  control_plane_api_name                  = "${local.name_prefix}-control-plane"
+  control_plane_api_access_log_group_name = "/aws/apigateway/${local.control_plane_api_name}"
 
   create_job_function_name             = "${local.name_prefix}-create-job"
   get_job_function_name                = "${local.name_prefix}-get-job"
@@ -20,8 +22,9 @@ locals {
     CLOUDDOC_MAX_DOCUMENT_SIZE_BYTES           = "65536"
   })
 
-  is_production             = var.environment == "prod"
-  lambda_log_retention_days = local.is_production ? 30 : 14
+  is_production                        = var.environment == "prod"
+  lambda_log_retention_days            = local.is_production ? 30 : 14
+  control_plane_api_log_retention_days = local.is_production ? 30 : 14
 
   common_tags = {
     Project     = var.project_name
