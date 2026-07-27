@@ -21,7 +21,9 @@ resource "aws_lambda_function" "create_job" {
   }
 
   logging_config {
-    log_format = "JSON"
+    log_format            = "JSON"
+    application_log_level = "INFO"
+    system_log_level      = "WARN"
   }
 
   tags = {
@@ -59,7 +61,9 @@ resource "aws_lambda_function" "get_job" {
   }
 
   logging_config {
-    log_format = "JSON"
+    log_format            = "JSON"
+    application_log_level = "INFO"
+    system_log_level      = "WARN"
   }
 
   tags = {
@@ -97,7 +101,9 @@ resource "aws_lambda_function" "processor" {
   }
 
   logging_config {
-    log_format = "JSON"
+    log_format            = "JSON"
+    application_log_level = "INFO"
+    system_log_level      = "WARN"
   }
 
   tags = {
@@ -136,7 +142,9 @@ resource "aws_lambda_function" "dead_letter_reconciler" {
   }
 
   logging_config {
-    log_format = "JSON"
+    log_format            = "JSON"
+    application_log_level = "INFO"
+    system_log_level      = "WARN"
   }
 
   tags = {
