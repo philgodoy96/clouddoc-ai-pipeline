@@ -9,16 +9,17 @@ mock_provider "aws" {
 }
 
 variables {
-  aws_region                   = "us-east-1"
-  project_name                 = "clouddoc"
-  github_repository_owner      = "philgodoy96"
-  github_repository_name       = "clouddoc-ai-pipeline"
-  github_repository_id         = "987654321"
-  github_repository_owner_id   = "12345678"
-  github_environment           = "dev"
-  github_ref                   = "refs/heads/main"
-  github_identity_workflow_ref = "philgodoy96/clouddoc-ai-pipeline/.github/workflows/reusable-aws-identity.yml@refs/heads/main"
-  role_max_session_duration    = 3600
+  aws_region                         = "us-east-1"
+  project_name                       = "clouddoc"
+  github_repository_owner            = "philgodoy96"
+  github_repository_name             = "clouddoc-ai-pipeline"
+  github_repository_id               = "987654321"
+  github_repository_owner_id         = "12345678"
+  github_environment                 = "dev"
+  github_ref                         = "refs/heads/main"
+  github_identity_workflow_ref       = "philgodoy96/clouddoc-ai-pipeline/.github/workflows/reusable-aws-identity.yml@refs/heads/main"
+  github_terraform_plan_workflow_ref = "philgodoy96/clouddoc-ai-pipeline/.github/workflows/reusable-terraform-plan.yml@refs/heads/main"
+  role_max_session_duration          = 3600
 }
 
 override_resource {
@@ -82,6 +83,40 @@ run "github_oidc_provider_contract" {
 
 run "github_identity_trust_contract" {
   command = plan
+
+  assert {
+    condition = (
+      var.github_identity_workflow_ref ==
+      "philgodoy96/clouddoc-ai-pipeline/.github/workflows/reusable-aws-identity.yml@refs/heads/main" &&
+      var.github_terraform_plan_workflow_ref ==
+      "philgodoy96/clouddoc-ai-pipeline/.github/workflows/reusable-terraform-plan.yml@refs/heads/main" &&
+      var.github_identity_workflow_ref !=
+      var.github_terraform_plan_workflow_ref
+    )
+    error_message = "Both approved reusable workflow refs must be exact, distinct, and pinned to main."
+  }
+
+  assert {
+    condition = (
+      length(local.github_trusted_workflow_refs) == 2 &&
+      local.github_trusted_workflow_refs == sort([
+        "philgodoy96/clouddoc-ai-pipeline/.github/workflows/reusable-aws-identity.yml@refs/heads/main",
+        "philgodoy96/clouddoc-ai-pipeline/.github/workflows/reusable-terraform-plan.yml@refs/heads/main",
+      ]) &&
+      alltrue([
+        for value in local.github_trusted_workflow_refs :
+        endswith(value, "@refs/heads/main")
+      ]) &&
+      alltrue([
+        for value in local.github_trusted_workflow_refs :
+        !strcontains(value, "*") &&
+        !strcontains(value, "?") &&
+        !strcontains(value, "refs/pull/") &&
+        !strcontains(value, "refs/tags/")
+      ])
+    )
+    error_message = "The trusted workflow allowlist must be exactly two deterministic main-branch refs without wildcards, pull requests, or tags."
+  }
 
   assert {
     condition = (
@@ -182,6 +217,7 @@ run "github_identity_trust_contract" {
           variable = "token.actions.githubusercontent.com:job_workflow_ref"
           values = toset([
             "philgodoy96/clouddoc-ai-pipeline/.github/workflows/reusable-aws-identity.yml@refs/heads/main",
+            "philgodoy96/clouddoc-ai-pipeline/.github/workflows/reusable-terraform-plan.yml@refs/heads/main",
           ])
         },
         ] : length([
@@ -195,7 +231,35 @@ run "github_identity_trust_contract" {
           )
       ]) == 1
     ])
-    error_message = "Every approved GitHub OIDC claim must have one exact reviewed value."
+    error_message = "Every approved GitHub OIDC claim must have one exact reviewed value set."
+  }
+
+  assert {
+    condition = (
+      length([
+        for condition in one(
+          data.aws_iam_policy_document.github_identity_assume_role.statement
+        ).condition : condition
+        if condition.variable == "token.actions.githubusercontent.com:job_workflow_ref"
+      ]) == 1 &&
+      length(
+        one([
+          for condition in one(
+            data.aws_iam_policy_document.github_identity_assume_role.statement
+          ).condition : condition.values
+          if condition.variable == "token.actions.githubusercontent.com:job_workflow_ref"
+        ])
+      ) == 2 &&
+      toset(
+        one([
+          for condition in one(
+            data.aws_iam_policy_document.github_identity_assume_role.statement
+          ).condition : condition.values
+          if condition.variable == "token.actions.githubusercontent.com:job_workflow_ref"
+        ])
+      ) == toset(local.github_trusted_workflow_refs)
+    )
+    error_message = "job_workflow_ref must appear once with exactly the two trusted workflow refs."
   }
 
   assert {
@@ -275,8 +339,13 @@ run "github_identity_outputs_contract" {
         repository_owner_id = "12345678"
       } &&
       output.github_identity_workflow_ref ==
-      "philgodoy96/clouddoc-ai-pipeline/.github/workflows/reusable-aws-identity.yml@refs/heads/main"
+      "philgodoy96/clouddoc-ai-pipeline/.github/workflows/reusable-aws-identity.yml@refs/heads/main" &&
+      output.github_trusted_workflow_refs == sort([
+        "philgodoy96/clouddoc-ai-pipeline/.github/workflows/reusable-aws-identity.yml@refs/heads/main",
+        "philgodoy96/clouddoc-ai-pipeline/.github/workflows/reusable-terraform-plan.yml@refs/heads/main",
+      ]) &&
+      length(output.github_trusted_workflow_refs) == 2
     )
-    error_message = "Identity outputs must expose the exact trusted repository and reusable workflow contract."
+    error_message = "Identity outputs must expose the exact trusted repository, singular identity workflow, and two-value allowlist."
   }
 }

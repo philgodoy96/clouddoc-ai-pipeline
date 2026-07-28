@@ -118,6 +118,25 @@ variable "github_identity_workflow_ref" {
   }
 }
 
+variable "github_terraform_plan_workflow_ref" {
+  description = "Exact reusable workflow ref that identifies the only Terraform plan reusable workflow allowed by the identity trust boundary."
+  type        = string
+  default     = "philgodoy96/clouddoc-ai-pipeline/.github/workflows/reusable-terraform-plan.yml@refs/heads/main"
+  nullable    = false
+
+  validation {
+    condition = var.github_terraform_plan_workflow_ref == (
+      "${var.github_repository_owner}/${var.github_repository_name}/.github/workflows/reusable-terraform-plan.yml@refs/heads/main"
+    )
+    error_message = "github_terraform_plan_workflow_ref must identify reusable-terraform-plan.yml from the approved repository main branch."
+  }
+
+  validation {
+    condition     = var.github_terraform_plan_workflow_ref != var.github_identity_workflow_ref
+    error_message = "github_terraform_plan_workflow_ref must be distinct from github_identity_workflow_ref."
+  }
+}
+
 variable "role_max_session_duration" {
   description = "Maximum session duration for the permissionless GitHub identity verification role."
   type        = number

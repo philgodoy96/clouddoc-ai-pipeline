@@ -82,9 +82,7 @@ data "aws_iam_policy_document" "github_identity_assume_role" {
       test     = "StringEquals"
       variable = "${local.github_oidc_host}:job_workflow_ref"
 
-      values = [
-        var.github_identity_workflow_ref,
-      ]
+      values = local.github_trusted_workflow_refs
     }
   }
 }
