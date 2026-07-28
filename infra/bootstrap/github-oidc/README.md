@@ -68,7 +68,7 @@ no state permissions
 no application permissions
 ```
 
-A later slice may add narrowly scoped authorization after the identity trust is verified end to end.
+Terraform plan authorization is now implemented as a separate authorization boundary in repository source. This root remains authentication only; the authorization roles are owned by `../terraform-authorization/README.md`, and the trust-source extension must still be applied in AWS after merge.
 
 ## Terraform Root
 
@@ -209,10 +209,11 @@ complements job_workflow_ref
 contains no wildcard
 ```
 
-`job_workflow_ref` remains ref-based:
+`job_workflow_ref` remains ref-based and now trusts exactly two reusable workflows on `refs/heads/main`:
 
 ```text
 ...reusable-aws-identity.yml@refs/heads/main
+...reusable-terraform-plan.yml@refs/heads/main
 ```
 
 `job_workflow_sha` is a separate GitHub claim and is intentionally not part of this trust contract.
@@ -349,8 +350,9 @@ All preflight claims match but AWS denies assume-role
 ```text
 source trust correction implemented
 OIDC claim preflight implemented in the reusable workflow
-AWS trust correction not yet applied
-end-to-end identity proof not yet re-verified
+second exact reusable workflow trust entry implemented in source
+AWS trust extension not yet applied
+Terraform plan federation not yet verified
 role remains permissionless
 ```
 
@@ -395,7 +397,22 @@ REPLACE_WITH_GITHUB_REPOSITORY_OWNER_ID
 
 The IDs are identifiers, not secrets.
 
-Do not invent them.
+Key workflow-ref inputs remain reviewed source contracts:
+
+```text
+github_identity_workflow_ref
+github_terraform_plan_workflow_ref
+github_trusted_workflow_refs
+```
+
+Expected default values are the two exact reusable workflows pinned to `refs/heads/main`:
+
+```text
+philgodoy96/clouddoc-ai-pipeline/.github/workflows/reusable-aws-identity.yml@refs/heads/main
+philgodoy96/clouddoc-ai-pipeline/.github/workflows/reusable-terraform-plan.yml@refs/heads/main
+```
+
+The identity role remains permissionless. Do not add plan or state permissions here. Do not invent the IDs.
 
 ## Prerequisites for Offline Validation
 
@@ -489,7 +506,7 @@ The plan must contain only:
 ```text
 one GitHub IAM OIDC provider
 one permissionless identity role
-one exact trust policy
+one exact trust policy that allows two reviewed reusable workflow refs on main
 ```
 
 ## Apply
@@ -522,9 +539,11 @@ github_dev_identity_role_arn
 github_dev_identity_role_max_session_duration
 github_repository_identity
 github_identity_workflow_ref
+github_terraform_plan_workflow_ref
+github_trusted_workflow_refs
 ```
 
-No credential or token is an output.
+No credential or token is an output. The workflow-ref outputs should show exactly the two reviewed reusable workflows on `refs/heads/main`, not wildcard values or a single-workflow trust set.
 
 ## GitHub Configuration Boundary
 
@@ -624,7 +643,7 @@ The trust policy requires refs/heads/main.
 
 The trust policy requires the dev environment.
 
-The trust policy requires one reusable workflow on main.
+The trust policy requires exactly two reusable workflows on main.
 
 All trust conditions use StringEquals.
 
@@ -660,5 +679,8 @@ These capabilities require separate implementation, review, and operational evid
 ## Related Documentation
 
 - [Terraform State Bootstrap](../terraform-state/README.md)
+- [Terraform Authorization Bootstrap](../terraform-authorization/README.md)
+- [Terraform Plan Authorization](../../../docs/architecture/terraform-plan-authorization.md)
+- [Terraform Plan Workflow Runbook](../../../docs/operations/terraform-plan-workflow.md)
 - [Terraform State and Environment Workflow](../../../docs/architecture/terraform-state-and-environment-workflow.md)
 - [Infrastructure CI Validation](../../../docs/architecture/infrastructure-ci-validation.md)

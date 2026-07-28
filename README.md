@@ -4,7 +4,28 @@ Production-minded AWS serverless document intelligence pipeline designed to inge
 
 ## Project Status
 
-CloudDoc AI Pipeline contains incrementally implemented application and infrastructure foundations in the repository. AWS resource deployment and end-to-end cloud validation remain future work.
+CloudDoc AI Pipeline contains incrementally implemented application and infrastructure foundations in the repository. The project now also contains the source implementation for GitHub OIDC authentication, separate Terraform state and plan authorization, a manual Terraform plan workflow, and a sanitized Terraform plan summary path. AWS activation and live remote-plan proof for those Terraform operations remain pending.
+
+### Implemented and operationally verified
+
+* existing application capabilities documented in this README
+* the original GitHub OIDC identity proof
+
+### Implemented in source, activation pending
+
+* second exact GitHub OIDC reusable-workflow trust entry for `.github/workflows/reusable-terraform-plan.yml`
+* separate Terraform authorization bootstrap for `clouddoc-dev-terraform-state` and `clouddoc-dev-terraform-plan`
+* backend state-role wiring and provider plan-role wiring in `infra/terraform/` and `scripts/terraform_workflow.py`
+* manual Terraform plan workflow in `.github/workflows/terraform-plan.yml` and `.github/workflows/reusable-terraform-plan.yml`
+* sanitized plan summary generation in `scripts/summarize_terraform_plan.py`
+* no saved-plan retention beyond runner-temporary execution
+
+### Intentionally deferred
+
+* apply role
+* deployment workflow
+* production authorization
+* plan artifact promotion
 
 Foundations already implemented in the repository include:
 
@@ -56,7 +77,7 @@ Foundations already implemented in the repository include:
 
 Validation workflows are implemented in the repository. Deployment workflows are not. Branch protection is not claimed as configured.
 
-GitHub OIDC trust bootstrap, the permissionless identity role, and the manual identity-check workflows are implemented in repository source. They are not yet provisioned or verified in AWS. Real AWS identity federation, the GitHub `dev` Environment, and repository variables remain pending.
+GitHub OIDC trust bootstrap, the permissionless identity role, the identity-check workflows, the Terraform authorization bootstrap, and the manual Terraform plan workflows are implemented in repository source. The previously completed GitHub OIDC identity proof is the completed operational checkpoint in this area. Extending that trust to the Terraform plan reusable workflow, provisioning `clouddoc-dev-terraform-state` and `clouddoc-dev-terraform-plan`, configuring the required Terraform plan repository variables, and proving a live remote Terraform plan remain post-merge activation work.
 
 Architecture and delivery foundations already defined include:
 
@@ -260,6 +281,10 @@ Detailed principles are documented in:
 * [CloudWatch Observability](docs/architecture/cloudwatch-observability.md)
 * [Infrastructure CI Validation](docs/architecture/infrastructure-ci-validation.md)
 * [GitHub OIDC Trust Bootstrap](docs/architecture/github-oidc-trust-bootstrap.md)
+* [Terraform Plan Authorization](docs/architecture/terraform-plan-authorization.md)
+* [ADR-027: Separate Terraform State, Plan, and Apply Authorization](docs/adr/ADR-027-separate-terraform-state-plan-and-apply-authorization.md)
+* [Terraform Plan Workflow Runbook](docs/operations/terraform-plan-workflow.md)
+* [Terraform Authorization Bootstrap](infra/bootstrap/terraform-authorization/README.md)
 * [ADR-017: Package Python Lambdas as a Shared Deterministic ZIP](docs/adr/ADR-017-package-python-lambdas-as-a-shared-zip.md)
 * [ADR-023: Use Amazon Nova Micro through Bedrock Converse](docs/adr/ADR-023-use-amazon-nova-micro-through-bedrock-converse.md)
 * [ADR-024: Use Native AWS Metrics and Structured Application Logs](docs/adr/ADR-024-use-native-aws-metrics-and-structured-application-logs.md)

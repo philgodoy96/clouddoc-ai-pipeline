@@ -13,6 +13,8 @@ deterministic Lambda package validation
 Lambda package reproducibility validation
 application Terraform offline validation
 state-bootstrap Terraform offline validation
+GitHub OIDC bootstrap offline validation
+Terraform authorization bootstrap offline validation
 immutable action references
 Dependabot maintenance for GitHub Actions
 static workflow contract tests
@@ -45,6 +47,8 @@ Reusable AWS Identity
 ```
 
 Those identity workflows are manually initiated identity proofs. They are not required pull-request validation checks. They do not run on pull requests or pushes. They do not deploy. End-to-end OIDC verification against AWS is not yet claimed.
+Infrastructure quality remains an offline validation category with no AWS access. The manual Terraform plan workflow is a separate authenticated operational category: it runs only from `main`, uses the `dev` environment, requests temporary GitHub OIDC credentials, and produces a speculative plan only. It is not a pull-request CI gate.
+
 
 ## Purpose
 
@@ -147,7 +151,14 @@ AWS Identity Check
 Reusable AWS Identity
 ```
 
-Validation workflows remain `contents: read` only. Identity workflows receive `id-token: write` in addition to `contents: read`. Identity workflows are not required pull-request validation checks and do not run on pull requests or pushes.
+Authenticated operational workflow:
+
+```text
+Terraform Plan
+Reusable Terraform Plan
+```
+
+Validation workflows remain `contents: read` only. Identity workflows and the manual Terraform plan workflow receive `id-token: write` where required for GitHub OIDC. They are not required pull-request validation checks and do not run on pull requests or pushes.
 
 ## Workflow Triggers
 
@@ -1105,7 +1116,7 @@ Identity workflows separately request `id-token: write` and use the approved AWS
 
 GitHub Actions remain third-party code executed by the repository.
 
-Immutable SHAs reduce reference mutation risk but do not remove the need to review action source, publisher ownership, release notes, runtime changes, and permissions.
+Immutable SHAs reduce reference mutation risk but do not remove the need to review action source, publisher ownership, release notes, runtime changes, and permissions. Static workflow-contract testing now also covers the manual Terraform plan workflows and their action pins.
 
 ## Reliability Considerations
 
@@ -1287,8 +1298,10 @@ Do not mark branch protection complete until the repository setting is active an
 ## Related Documentation
 
 - [GitHub OIDC Trust Bootstrap](github-oidc-trust-bootstrap.md)
+- [Terraform Plan Authorization](terraform-plan-authorization.md)
 - [ADR-026: Separate OIDC Authentication from Deployment Authorization](../adr/ADR-026-separate-oidc-authentication-from-deployment-authorization.md)
 - [Terraform State and Environment Workflow](terraform-state-and-environment-workflow.md)
+- [Terraform Plan Workflow Runbook](../operations/terraform-plan-workflow.md)
 - [Lambda Packaging](lambda-packaging.md)
 - [Lambda Runtime Infrastructure](lambda-runtime-infrastructure.md)
 - [Engineering Principles](engineering-principles.md)
