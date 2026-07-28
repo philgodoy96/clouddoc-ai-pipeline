@@ -91,3 +91,44 @@ variable "terraform_plan_role_arn" {
     error_message = "terraform_plan_role_arn account must match expected_aws_account_id when both values are set."
   }
 }
+
+variable "terraform_apply_role_arn" {
+  description = "Role assumed by the AWS provider only for controlled Terraform deployment."
+  type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    condition = (
+      var.terraform_apply_role_arn == null ||
+      can(regex(
+        "^arn:(aws|aws-us-gov|aws-cn):iam::[0-9]{12}:role/clouddoc-dev-terraform-apply$",
+        var.terraform_apply_role_arn,
+      ))
+    )
+    error_message = "terraform_apply_role_arn must be null or an IAM role ARN for role/clouddoc-dev-terraform-apply using an accepted partition and a 12-digit account ID."
+  }
+
+  validation {
+    condition = (
+      var.terraform_apply_role_arn == null ||
+      var.terraform_plan_role_arn == null
+    )
+    error_message = "terraform_apply_role_arn and terraform_plan_role_arn cannot both be set."
+  }
+
+  validation {
+    condition = (
+      var.terraform_apply_role_arn == null ||
+      var.expected_aws_account_id == null ||
+      can(regex(
+        format(
+          "^arn:(aws|aws-us-gov|aws-cn):iam::%s:role/clouddoc-dev-terraform-apply$",
+          var.expected_aws_account_id,
+        ),
+        var.terraform_apply_role_arn,
+      ))
+    )
+    error_message = "terraform_apply_role_arn account must match expected_aws_account_id when both values are set."
+  }
+}
