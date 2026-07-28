@@ -86,6 +86,12 @@ locals {
     "arn:${data.aws_partition.current.partition}:lambda:${var.aws_region}:${var.aws_account_id}:function:${local.dead_letter_reconciler_function_name}",
   ])
 
+  # Mapping UUID is assigned at CreateEventSourceMapping; tag APIs use this ARN
+  # prefix only (not FunctionArn or queue ARNs).
+  application_lambda_event_source_mapping_arn_prefix = (
+    "arn:${data.aws_partition.current.partition}:lambda:${var.aws_region}:${var.aws_account_id}:event-source-mapping:*"
+  )
+
   application_apigateway_apis_resource = (
     "arn:${data.aws_partition.current.partition}:apigateway:${var.aws_region}::/apis"
   )

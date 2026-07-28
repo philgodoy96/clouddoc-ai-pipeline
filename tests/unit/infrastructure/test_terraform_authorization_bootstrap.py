@@ -784,7 +784,45 @@ def test_encoded_api_gateway_stage_tag_resource_is_exact() -> None:
         "apigateway:PATCH",
         "apigateway:POST",
     }
+    assert "apigateway:PUT" not in quoted_actions(api_gateway_body)
     assert "execute-api:Invoke" not in quoted_actions(api_gateway_body)
+
+
+def test_complete_tagged_api_gateway_stage_creation_uses_put_on_stage_tag() -> None:
+    """Tagged CreateStage requires dedicated PUT on the encoded Stage tag resource."""
+    apply_block = extract_policy_document_block("terraform_apply_access")
+    put_body = re.search(
+        r'sid\s*=\s*"CompleteTaggedApiGatewayV2StageCreation".*?(?=sid\s*=|\Z)',
+        apply_block,
+        flags=re.DOTALL,
+    )
+    manage_body = re.search(
+        r'sid\s*=\s*"ManageApiGatewayV2ControlPlane".*?(?=sid\s*=|\Z)',
+        apply_block,
+        flags=re.DOTALL,
+    )
+    assert put_body is not None
+    assert manage_body is not None
+    put_statement = put_body.group(0)
+    manage_statement = manage_body.group(0)
+
+    assert quoted_actions(put_statement) == {"apigateway:PUT"}
+    assert "apigateway:PUT" not in quoted_actions(manage_statement)
+    assert quoted_actions(manage_statement) == {
+        "apigateway:DELETE",
+        "apigateway:GET",
+        "apigateway:PATCH",
+        "apigateway:POST",
+    }
+    assert "local.application_apigateway_stage_tag_resource" in put_statement
+    assert "local.application_apigateway_api_tag_resource" not in put_statement
+    assert "/tags/*" not in put_statement
+    assert "application_apigateway_stages_resource" not in put_statement
+    assert "application_apigateway_stage_resource_prefix" not in put_statement
+    assert re.search(r'resources\s*=\s*\[\s*"\*"\s*,?\s*\]', put_statement) is None
+    assert "execute-api:Invoke" not in quoted_actions(put_statement)
+    assert "condition" not in put_statement
+    assert len(re.findall(r"local\.application_apigateway_\w+", put_statement)) == 1
 
 
 def test_event_source_mapping_function_arns_are_exactly_two_consumers() -> None:
@@ -806,8 +844,61 @@ def test_event_source_mapping_function_arns_are_exactly_two_consumers() -> None:
     assert "event-source-mapping" not in mapping_body
     assert ":sqs:" not in mapping_body
     assert "function:*" not in mapping_body
-    assert "application_lambda_event_source_mapping_arn_prefix" not in locals_source
     assert mapping_body.count("function:${local.") == 2
+
+
+def test_event_source_mapping_arn_prefix_is_restored_for_tag_apis_only() -> None:
+    """Mapping ARN prefix must be account/region-scoped for tag APIs only."""
+    locals_source = read_bootstrap_file("locals.tf")
+    local_block = extract_named_block(locals_source, "locals")
+    prefix_match = re.search(
+        r"application_lambda_event_source_mapping_arn_prefix\s*=\s*\((.*?)\)",
+        local_block,
+        flags=re.DOTALL,
+    )
+    assert prefix_match is not None
+    prefix_body = prefix_match.group(1)
+
+    assert "event-source-mapping:*" in prefix_body
+    assert "data.aws_partition.current.partition" in prefix_body
+    assert "var.aws_region" in prefix_body
+    assert "var.aws_account_id" in prefix_body
+    assert ":function:" not in prefix_body
+    assert ":sqs:" not in prefix_body
+    assert '"*"' not in prefix_body
+    assert "application_lambda_event_source_mapping_function_arns" in locals_source
+
+    plan_block = extract_policy_document_block("terraform_plan_access")
+    apply_block = extract_policy_document_block("terraform_apply_access")
+    plan_tags = re.search(
+        r'sid\s*=\s*"ReadLambdaEventSourceMappingTags".*?(?=sid\s*=|\Z)',
+        plan_block,
+        flags=re.DOTALL,
+    )
+    apply_tags = re.search(
+        r'sid\s*=\s*"ManageLambdaEventSourceMappingTags".*?(?=sid\s*=|\Z)',
+        apply_block,
+        flags=re.DOTALL,
+    )
+    apply_mutate = re.search(
+        r'sid\s*=\s*"ManageLambdaEventSourceMappings".*?(?=sid\s*=|\Z)',
+        apply_block,
+        flags=re.DOTALL,
+    )
+    assert plan_tags is not None
+    assert apply_tags is not None
+    assert apply_mutate is not None
+    assert (
+        "local.application_lambda_event_source_mapping_arn_prefix" in plan_tags.group(0)
+    )
+    assert (
+        "local.application_lambda_event_source_mapping_arn_prefix"
+        in apply_tags.group(0)
+    )
+    assert (
+        "local.application_lambda_event_source_mapping_arn_prefix"
+        not in apply_mutate.group(0)
+    )
 
 
 def test_plan_get_event_source_mapping_uses_service_required_star() -> None:
@@ -825,6 +916,41 @@ def test_plan_get_event_source_mapping_uses_service_required_star() -> None:
     assert re.search(r'resources\s*=\s*\[\s*"\*"\s*,?\s*\]', body) is not None
     assert "condition" not in body
     assert "application_lambda_event_source_mapping_arn_prefix" not in body
+    assert FORBIDDEN_PLAN_ACTION_PATTERN.search(plan_block) is None
+    assert "iam:PassRole" not in plan_block
+    assert PLAN_DATA_PLANE_ACTIONS.isdisjoint(quoted_actions(plan_block))
+    for forbidden in (
+        "terraform_state_bucket_arn",
+        "terraform_state_object_arn",
+        "terraform_lock_object_arn",
+    ):
+        assert forbidden not in plan_block
+
+
+def test_plan_list_tags_uses_only_event_source_mapping_arn_prefix() -> None:
+    """Plan ListTags for mappings must use only the mapping ARN prefix."""
+    plan_block = extract_policy_document_block("terraform_plan_access")
+    statement = re.search(
+        r'sid\s*=\s*"ReadLambdaEventSourceMappingTags".*?(?=sid\s*=|\Z)',
+        plan_block,
+        flags=re.DOTALL,
+    )
+    assert statement is not None
+    body = statement.group(0)
+
+    assert quoted_actions(body) == {"lambda:ListTags"}
+    assert (
+        "resources = [\n      local.application_lambda_event_source_mapping_arn_prefix,"
+        in body
+        or "local.application_lambda_event_source_mapping_arn_prefix" in body
+    )
+    assert re.search(r'resources\s*=\s*\[\s*"\*"\s*,?\s*\]', body) is None
+    assert "condition" not in body
+    assert "lambda:TagResource" not in quoted_actions(body)
+    assert "lambda:UntagResource" not in quoted_actions(body)
+    assert "lambda:CreateEventSourceMapping" not in quoted_actions(body)
+    assert ":function:" not in body
+    assert ":sqs:" not in body
     assert FORBIDDEN_PLAN_ACTION_PATTERN.search(plan_block) is None
     assert "iam:PassRole" not in plan_block
     assert PLAN_DATA_PLANE_ACTIONS.isdisjoint(quoted_actions(plan_block))
@@ -886,6 +1012,7 @@ def test_apply_event_source_mapping_mutation_uses_function_arn_condition() -> No
     }
     assert "lambda:GetEventSourceMapping" not in quoted_actions(body)
     assert "lambda:ListEventSourceMappings" not in quoted_actions(body)
+    assert "lambda:ListTags" not in quoted_actions(body)
     assert "lambda:TagResource" not in quoted_actions(body)
     assert "lambda:UntagResource" not in quoted_actions(body)
     assert re.search(r'resources\s*=\s*\[\s*"\*"\s*,?\s*\]', body) is not None
@@ -895,6 +1022,7 @@ def test_apply_event_source_mapping_mutation_uses_function_arn_condition() -> No
     assert (
         "values = local.application_lambda_event_source_mapping_function_arns" in body
     )
+    assert "application_lambda_event_source_mapping_arn_prefix" not in body
     assert "create_job" not in body
     assert "get_job" not in body
     assert "lambda:InvokeFunction" not in quoted_actions(apply_block)
@@ -905,6 +1033,35 @@ def test_apply_event_source_mapping_mutation_uses_function_arn_condition() -> No
         "sqs:ChangeMessageVisibility",
         "sqs:PurgeQueue",
     }.isdisjoint(quoted_actions(apply_block))
+
+
+def test_apply_event_source_mapping_tags_use_mapping_arn_prefix() -> None:
+    """Apply mapping tag APIs must use ListTags/Tag/Untag on the mapping ARN prefix."""
+    apply_block = extract_policy_document_block("terraform_apply_access")
+    statement = re.search(
+        r'sid\s*=\s*"ManageLambdaEventSourceMappingTags".*?(?=sid\s*=|\Z)',
+        apply_block,
+        flags=re.DOTALL,
+    )
+    assert statement is not None
+    body = statement.group(0)
+
+    assert quoted_actions(body) == {
+        "lambda:ListTags",
+        "lambda:TagResource",
+        "lambda:UntagResource",
+    }
+    assert "lambda:GetEventSourceMapping" not in quoted_actions(body)
+    assert "lambda:CreateEventSourceMapping" not in quoted_actions(body)
+    assert "lambda:UpdateEventSourceMapping" not in quoted_actions(body)
+    assert "lambda:DeleteEventSourceMapping" not in quoted_actions(body)
+    assert "local.application_lambda_event_source_mapping_arn_prefix" in body
+    assert re.search(r'resources\s*=\s*\[\s*"\*"\s*,?\s*\]', body) is None
+    assert "condition" not in body
+    assert ":function:" not in body
+    assert ":sqs:" not in body
+    assert "application_lambda_function_arns" not in body
+    assert "application_sqs_queue_arns" not in body
 
 
 def test_authorization_security_boundaries_remain_intact_after_apply_fix() -> None:
@@ -944,8 +1101,11 @@ def test_authorization_security_boundaries_remain_intact_after_apply_fix() -> No
     assert "application_log_group_arns" in locals_source
     assert "application_log_group_management_arns" in locals_source
     assert "ReadLambdaEventSourceMapping" in apply_block
+    assert "CompleteTaggedApiGatewayV2StageCreation" in apply_block
+    assert "ManageLambdaEventSourceMappingTags" in apply_block
+    assert "ReadLambdaEventSourceMappingTags" in plan_block
     assert "application_lambda_event_source_mapping_function_arns" in locals_source
-    assert "application_lambda_event_source_mapping_arn_prefix" not in locals_source
+    assert "application_lambda_event_source_mapping_arn_prefix" in locals_source
     assert (
         len(re.findall(r"function:\$\{local\.\w+_function_name\}", locals_source)) >= 4
     )

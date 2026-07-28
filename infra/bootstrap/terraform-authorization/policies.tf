@@ -49,6 +49,20 @@ data "aws_iam_policy_document" "terraform_apply_access" {
     ]
   }
 
+  # Tagged CreateStage also requires apigateway:PUT on the encoded Stage tag resource.
+  statement {
+    sid    = "CompleteTaggedApiGatewayV2StageCreation"
+    effect = "Allow"
+
+    actions = [
+      "apigateway:PUT",
+    ]
+
+    resources = [
+      local.application_apigateway_stage_tag_resource,
+    ]
+  }
+
   statement {
     sid    = "DescribeCloudWatchAlarmMetrics"
     effect = "Allow"
@@ -313,6 +327,23 @@ data "aws_iam_policy_document" "terraform_apply_access" {
 
       values = local.application_lambda_event_source_mapping_function_arns
     }
+  }
+
+  # Provider default_tags apply to event-source mappings and require tag APIs
+  # on the mapping ARN (UUID assigned at create time).
+  statement {
+    sid    = "ManageLambdaEventSourceMappingTags"
+    effect = "Allow"
+
+    actions = [
+      "lambda:ListTags",
+      "lambda:TagResource",
+      "lambda:UntagResource",
+    ]
+
+    resources = [
+      local.application_lambda_event_source_mapping_arn_prefix,
+    ]
   }
 
   statement {

@@ -245,6 +245,19 @@ data "aws_iam_policy_document" "terraform_plan_access" {
   }
 
   statement {
+    sid    = "ReadLambdaEventSourceMappingTags"
+    effect = "Allow"
+
+    actions = [
+      "lambda:ListTags",
+    ]
+
+    resources = [
+      local.application_lambda_event_source_mapping_arn_prefix,
+    ]
+  }
+
+  statement {
     sid    = "ReadDocumentsBucketConfiguration"
     effect = "Allow"
 
