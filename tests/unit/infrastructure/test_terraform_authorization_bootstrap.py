@@ -524,3 +524,109 @@ def test_example_tfvars_uses_placeholders_and_only_the_deploy_role_name() -> Non
     assert "arn:aws:" not in source
     assert "AKIA" not in source
     assert "secret" not in source.lower()
+
+
+def test_apply_policy_uses_valid_s3_lifecycle_and_put_control_plane_actions() -> None:
+    """Apply S3 auth must use valid lifecycle and Put* control-plane actions."""
+    apply_block = extract_policy_document_block("terraform_apply_access")
+    actions = quoted_actions(apply_block)
+
+    assert "s3:GetLifecycleConfiguration" in actions
+    assert "s3:GetBucketLifecycleConfiguration" not in actions
+    assert "s3:PutLifecycleConfiguration" in actions
+    assert {
+        "s3:DeleteBucketEncryption",
+        "s3:DeleteBucketOwnershipControls",
+        "s3:DeleteBucketTagging",
+        "s3:DeleteBucketPublicAccessBlock",
+    }.isdisjoint(actions)
+    assert {
+        "s3:PutBucketOwnershipControls",
+        "s3:PutBucketPublicAccessBlock",
+        "s3:PutBucketTagging",
+        "s3:PutEncryptionConfiguration",
+        "s3:PutLifecycleConfiguration",
+    }.issubset(actions)
+
+
+def test_application_log_group_arns_use_create_log_group_resource_shape() -> None:
+    """Log-group ARNs must end with :* for CreateLogGroup authorization."""
+    locals_source = read_bootstrap_file("locals.tf")
+    match = re.search(
+        r"application_log_group_arns\s*=\s*\[(.*?)\]",
+        locals_source,
+        flags=re.DOTALL,
+    )
+    assert match is not None
+    list_body = match.group(1)
+    arn_entries = re.findall(r'"([^"]+)"', list_body)
+
+    assert len(arn_entries) == 5
+    assert all(entry.endswith(":*") for entry in arn_entries)
+    assert "local.control_plane_api_access_log_group_name" in list_body
+    assert sum("/aws/lambda/" in entry for entry in arn_entries) == 4
+    assert (
+        'control_plane_api_access_log_group_name = "/aws/apigateway/' in locals_source
+    )
+
+
+def test_apply_policy_includes_encoded_api_gateway_tag_resource() -> None:
+    """Tagged CreateApi must authorize the encoded /v2/apis/* tag resource."""
+    locals_source = read_bootstrap_file("locals.tf")
+    apply_block = extract_policy_document_block("terraform_apply_access")
+    api_gateway_statement = re.search(
+        r'sid\s*=\s*"ManageApiGatewayV2ControlPlane".*?(?=sid\s*=|\Z)',
+        apply_block,
+        flags=re.DOTALL,
+    )
+    assert api_gateway_statement is not None
+    api_gateway_body = api_gateway_statement.group(0)
+
+    assert "application_apigateway_api_tag_resource" in locals_source
+    assert "%2Fv2%2Fapis%2F*" in locals_source
+    assert "local.application_apigateway_api_tag_resource" in api_gateway_body
+    assert 'resources = ["*"]' not in api_gateway_body
+    assert 'resources = ["*"]' not in re.search(
+        r'sid\s*=\s*"ManageCloudWatchLogGroups".*?(?=sid\s*=|\Z)',
+        apply_block,
+        flags=re.DOTALL,
+    ).group(0)
+    for expected_resource in (
+        "local.application_apigateway_apis_resource",
+        "local.application_apigateway_api_resource_prefix",
+        "local.application_apigateway_integrations_resource",
+        "local.application_apigateway_integration_resource_prefix",
+        "local.application_apigateway_routes_resource",
+        "local.application_apigateway_route_resource_prefix",
+        "local.application_apigateway_stages_resource",
+        "local.application_apigateway_stage_resource_prefix",
+        "local.application_apigateway_api_tag_resource",
+    ):
+        assert expected_resource in api_gateway_body
+
+
+def test_authorization_security_boundaries_remain_intact_after_apply_fix() -> None:
+    """State, plan, data-plane, invocation, and PassRole boundaries must remain."""
+    apply_block = extract_policy_document_block("terraform_apply_access")
+    plan_block = extract_policy_document_block("terraform_plan_access")
+    state_block = extract_policy_document_block("terraform_state_access")
+    apply_actions = quoted_actions(apply_block)
+
+    assert quoted_actions(state_block) == STATE_POLICY_ACTIONS
+    assert FORBIDDEN_PLAN_ACTION_PATTERN.search(plan_block) is None
+    assert "iam:PassRole" not in plan_block
+    assert FORBIDDEN_APPLY_ACTIONS.isdisjoint(apply_actions)
+    assert apply_block.count("iam:PassRole") == 1
+    assert "resources = local.lambda_execution_role_arns" in apply_block
+    assert 'variable = "iam:PassedToService"' in apply_block
+    assert '"lambda.amazonaws.com"' in apply_block
+    for forbidden in (
+        "terraform_state_bucket_arn",
+        "terraform_state_object_arn",
+        "terraform_lock_object_arn",
+        "tfstate",
+        ".tflock",
+    ):
+        assert forbidden not in apply_block
+    assert "aws_iam_policy_attachment" not in terraform_source()
+    assert "permissions_boundary" not in terraform_source().lower()
