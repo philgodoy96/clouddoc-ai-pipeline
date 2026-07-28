@@ -837,6 +837,141 @@ def test_complete_tagged_api_gateway_stage_creation_uses_put_on_stages_and_tag()
     ) < resources_body.index("application_apigateway_stage_tag_resource")
 
 
+def test_lambda_permission_lifecycle_covers_control_plane_functions() -> None:
+    """Add/Get/Remove must cover create-job and get-job without InvokeFunction."""
+    locals_source = read_bootstrap_file("locals.tf")
+    apply_block = extract_policy_document_block("terraform_apply_access")
+    permissions_body = re.search(
+        r'sid\s*=\s*"ManageLambdaPermissions".*?(?=sid\s*=|\Z)',
+        apply_block,
+        flags=re.DOTALL,
+    )
+    assert permissions_body is not None
+    body = permissions_body.group(0)
+
+    assert quoted_actions(body) == {
+        "lambda:AddPermission",
+        "lambda:GetPolicy",
+        "lambda:RemovePermission",
+    }
+    assert "resources = local.application_lambda_function_arns" in body
+    assert "create_job_function_name" in locals_source
+    assert "get_job_function_name" in locals_source
+    function_arns = re.search(
+        r"application_lambda_function_arns\s*=\s*\[(.*?)\]",
+        locals_source,
+        flags=re.DOTALL,
+    )
+    assert function_arns is not None
+    arns_body = function_arns.group(1)
+    assert "create_job_function_name" in arns_body
+    assert "get_job_function_name" in arns_body
+    assert "processor_function_name" in arns_body
+    assert "dead_letter_reconciler_function_name" in arns_body
+    assert arns_body.count("function:${local.") == 4
+    assert "lambda:InvokeFunction" not in quoted_actions(apply_block)
+    assert re.search(r'resources\s*=\s*\[\s*"\*"\s*,?\s*\]', body) is None
+
+
+def test_cloudwatch_dashboard_lifecycle_is_exact_and_untagged() -> None:
+    """Dashboard Get/Put/Delete uses the exact ARN; ListDashboards stays on *."""
+    application_observability = (
+        APPLICATION_TERRAFORM_ROOT / "observability.tf"
+    ).read_text(encoding="utf-8")
+    dashboard_resource = extract_named_block(
+        application_observability,
+        'resource "aws_cloudwatch_dashboard" "operations"',
+    )
+    assert "tags" not in dashboard_resource
+
+    apply_block = extract_policy_document_block("terraform_apply_access")
+    list_body = re.search(
+        r'sid\s*=\s*"ListCloudWatchDashboards".*?(?=sid\s*=|\Z)',
+        apply_block,
+        flags=re.DOTALL,
+    )
+    manage_body = re.search(
+        r'sid\s*=\s*"ManageCloudWatchDashboard".*?(?=sid\s*=|\Z)',
+        apply_block,
+        flags=re.DOTALL,
+    )
+    assert list_body is not None
+    assert manage_body is not None
+    list_statement = list_body.group(0)
+    manage_statement = manage_body.group(0)
+
+    assert quoted_actions(list_statement) == {"cloudwatch:ListDashboards"}
+    assert re.search(r'resources\s*=\s*\[\s*"\*"\s*,?\s*\]', list_statement) is not None
+    assert "condition" not in list_statement
+    assert quoted_actions(manage_statement) == {
+        "cloudwatch:DeleteDashboards",
+        "cloudwatch:GetDashboard",
+        "cloudwatch:PutDashboard",
+    }
+    assert "local.operations_dashboard_arn" in manage_statement
+    assert re.search(r'resources\s*=\s*\[\s*"\*"\s*,?\s*\]', manage_statement) is None
+    assert {
+        "cloudwatch:ListTagsForResource",
+        "cloudwatch:TagResource",
+        "cloudwatch:UntagResource",
+    }.isdisjoint(quoted_actions(manage_statement))
+
+
+def test_cloudwatch_alarm_lifecycle_and_wildcard_reads_are_separated() -> None:
+    """Alarm CRUD/tagging uses the alarm ARN prefix; metric describe stays on *."""
+    application_observability = (
+        APPLICATION_TERRAFORM_ROOT / "observability.tf"
+    ).read_text(encoding="utf-8")
+    alarm_resource = extract_named_block(
+        application_observability,
+        'resource "aws_cloudwatch_metric_alarm" "control_plane_5xx"',
+    )
+    assert "tags" in alarm_resource
+    assert "alarm_actions" not in alarm_resource
+    assert "ok_actions" not in alarm_resource
+    assert "insufficient_data_actions" not in alarm_resource
+
+    apply_block = extract_policy_document_block("terraform_apply_access")
+    describe_body = re.search(
+        r'sid\s*=\s*"DescribeCloudWatchAlarmMetrics".*?(?=sid\s*=|\Z)',
+        apply_block,
+        flags=re.DOTALL,
+    )
+    manage_body = re.search(
+        r'sid\s*=\s*"ManageCloudWatchAlarms".*?(?=sid\s*=|\Z)',
+        apply_block,
+        flags=re.DOTALL,
+    )
+    assert describe_body is not None
+    assert manage_body is not None
+    describe_statement = describe_body.group(0)
+    manage_statement = manage_body.group(0)
+
+    assert quoted_actions(describe_statement) == {
+        "cloudwatch:DescribeAlarmsForMetric",
+    }
+    assert (
+        re.search(r'resources\s*=\s*\[\s*"\*"\s*,?\s*\]', describe_statement)
+        is not None
+    )
+    assert "condition" not in describe_statement
+    assert quoted_actions(manage_statement) == {
+        "cloudwatch:DeleteAlarms",
+        "cloudwatch:DescribeAlarms",
+        "cloudwatch:ListTagsForResource",
+        "cloudwatch:PutMetricAlarm",
+        "cloudwatch:TagResource",
+        "cloudwatch:UntagResource",
+    }
+    assert "local.application_alarm_arn_prefix" in manage_statement
+    assert re.search(r'resources\s*=\s*\[\s*"\*"\s*,?\s*\]', manage_statement) is None
+    assert {
+        "cloudwatch:SetAlarmState",
+        "cloudwatch:EnableAlarmActions",
+        "cloudwatch:DisableAlarmActions",
+    }.isdisjoint(quoted_actions(apply_block))
+
+
 def test_event_source_mapping_function_arns_are_exactly_two_consumers() -> None:
     """Event-source mapping FunctionArn must target only the two SQS consumers."""
     locals_source = read_bootstrap_file("locals.tf")
