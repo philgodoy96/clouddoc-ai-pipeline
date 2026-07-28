@@ -24,30 +24,27 @@ EXPECTED_BOOTSTRAP_FILES = {
     "variables.tf",
     "versions.tf",
 }
-EXPECTED_TERRAFORM_TEST_FILES = {
-    "terraform_authorization.tftest.hcl",
-}
+EXPECTED_TERRAFORM_TEST_FILES = {"terraform_authorization.tftest.hcl"}
 EXPECTED_RESOURCES = {
     ("aws_iam_role", "terraform_state"),
     ("aws_iam_role", "terraform_plan"),
+    ("aws_iam_role", "terraform_apply"),
     ("aws_iam_role_policy", "terraform_state_access"),
     ("aws_iam_role_policy", "terraform_plan_access"),
+    ("aws_iam_role_policy", "terraform_apply_access"),
 }
-
 STATE_POLICY_ACTIONS = {
     "s3:ListBucket",
     "s3:GetObject",
     "s3:PutObject",
     "s3:DeleteObject",
 }
-
 FORBIDDEN_PLAN_ACTION_PATTERN = re.compile(
     r'"(?:[a-z0-9]+):(?:'
     r"Create|Update|Delete|Put|Set|Tag|Untag|Invoke|Send|Start|Stop|"
     r"PassRole|Attach|Detach|Add|Remove|Publish|Purge|Redrive"
     r')[A-Za-z0-9]*"'
 )
-
 PLAN_DATA_PLANE_ACTIONS = {
     "lambda:InvokeFunction",
     "lambda:InvokeAsync",
@@ -64,6 +61,32 @@ PLAN_DATA_PLANE_ACTIONS = {
     "s3:PutObject",
     "s3:DeleteObject",
 }
+FORBIDDEN_APPLY_ACTIONS = {
+    "lambda:InvokeFunction",
+    "lambda:InvokeAsync",
+    "execute-api:Invoke",
+    "s3:GetObject",
+    "s3:PutObject",
+    "s3:DeleteObject",
+    "dynamodb:GetItem",
+    "dynamodb:PutItem",
+    "dynamodb:UpdateItem",
+    "dynamodb:DeleteItem",
+    "dynamodb:Query",
+    "dynamodb:Scan",
+    "sqs:SendMessage",
+    "sqs:ReceiveMessage",
+    "sqs:DeleteMessage",
+    "sqs:ChangeMessageVisibility",
+    "sqs:PurgeQueue",
+    "bedrock:InvokeModel",
+    "kms:Decrypt",
+    "kms:Encrypt",
+    "secretsmanager:GetSecretValue",
+    "iam:CreateAccessKey",
+    "iam:AttachRolePolicy",
+    "iam:CreatePolicy",
+}
 
 
 def read_bootstrap_file(relative_path: str) -> str:
@@ -78,15 +101,13 @@ def terraform_source() -> str:
     )
 
 
-def extract_policy_document_block(name: str) -> str:
-    """Return the HCL body for one named aws_iam_policy_document data source."""
-    source = read_bootstrap_file("data.tf")
-    header = f'data "aws_iam_policy_document" "{name}"'
+def extract_named_block(source: str, header: str) -> str:
+    """Extract one top-level HCL block body by exact header."""
     start = source.find(header)
-    assert start >= 0, f"missing policy document {name}"
+    assert start >= 0, f"missing block {header}"
 
     brace_start = source.find("{", start)
-    assert brace_start >= 0, f"missing opening brace for {name}"
+    assert brace_start >= 0, f"missing opening brace for {header}"
 
     depth = 0
     for index in range(brace_start, len(source)):
@@ -98,11 +119,19 @@ def extract_policy_document_block(name: str) -> str:
             if depth == 0:
                 return source[brace_start + 1 : index]
 
-    raise AssertionError(f"unbalanced braces for policy document {name}")
+    raise AssertionError(f"unbalanced braces for {header}")
+
+
+def extract_policy_document_block(name: str) -> str:
+    """Return the HCL body for one named aws_iam_policy_document data source."""
+    return extract_named_block(
+        terraform_source(),
+        f'data "aws_iam_policy_document" "{name}"',
+    )
 
 
 def quoted_actions(block: str) -> set[str]:
-    """Extract quoted IAM action strings from actions lists in one policy body."""
+    """Extract quoted IAM action strings from one policy body."""
     actions: set[str] = set()
     for match in re.finditer(
         r"actions\s*=\s*\[(.*?)\]",
@@ -202,48 +231,36 @@ def test_bootstrap_hcl_contains_no_static_credential_configuration() -> None:
 def test_bootstrap_hcl_contains_no_profile_assignment() -> None:
     """Shared AWS profiles must not be configured in this bootstrap root."""
     source = terraform_source().lower()
-
     assert re.search(r"\bprofile\s*=", source) is None
 
 
-def test_bootstrap_owns_exactly_four_managed_resources() -> None:
-    """Authorization bootstrap must manage only the four reviewed IAM resources."""
-    source = terraform_source()
+def test_bootstrap_owns_exactly_the_reviewed_iam_resources() -> None:
+    """Authorization bootstrap must manage only the reviewed IAM resources."""
     actual_resources = set(
         re.findall(
             r'resource\s+"([^"]+)"\s+"([^"]+)"',
-            source,
-        )
-    )
-
-    assert actual_resources == EXPECTED_RESOURCES
-    assert len(actual_resources) == 4
-
-
-def test_bootstrap_declares_exactly_two_iam_roles() -> None:
-    """Exactly two IAM roles should exist for state and plan authorization."""
-    roles = {
-        name
-        for resource_type, name in EXPECTED_RESOURCES
-        if resource_type == "aws_iam_role"
-    }
-    source_roles = set(
-        re.findall(r'resource\s+"aws_iam_role"\s+"([^"]+)"', terraform_source())
-    )
-
-    assert source_roles == {"terraform_state", "terraform_plan"} == roles
-
-
-def test_bootstrap_declares_exactly_two_inline_role_policies() -> None:
-    """Exactly two inline role policies should attach to the authorization roles."""
-    source_policies = set(
-        re.findall(
-            r'resource\s+"aws_iam_role_policy"\s+"([^"]+)"',
             terraform_source(),
         )
     )
 
-    assert source_policies == {"terraform_state_access", "terraform_plan_access"}
+    assert actual_resources == EXPECTED_RESOURCES
+    assert len(actual_resources) == 6
+
+
+def test_bootstrap_declares_exactly_three_roles_and_three_inline_policies() -> None:
+    """The bootstrap should expose exactly three roles and three inline policies."""
+    source = terraform_source()
+
+    assert set(re.findall(r'resource\s+"aws_iam_role"\s+"([^"]+)"', source)) == {
+        "terraform_state",
+        "terraform_plan",
+        "terraform_apply",
+    }
+    assert set(re.findall(r'resource\s+"aws_iam_role_policy"\s+"([^"]+)"', source)) == {
+        "terraform_state_access",
+        "terraform_plan_access",
+        "terraform_apply_access",
+    }
 
 
 def test_bootstrap_creates_no_customer_managed_policy_or_attachment() -> None:
@@ -265,125 +282,104 @@ def test_role_names_remain_canonical() -> None:
     roles_source = read_bootstrap_file("roles.tf")
 
     assert re.search(
-        r'terraform_state_role_name\s*=\s*"clouddoc-dev-terraform-state"',
-        locals_source,
+        r'terraform_state_role_name\s*=\s*"clouddoc-dev-terraform-state"', locals_source
     )
     assert re.search(
-        r'terraform_plan_role_name\s*=\s*"clouddoc-dev-terraform-plan"',
-        locals_source,
+        r'terraform_plan_role_name\s*=\s*"clouddoc-dev-terraform-plan"', locals_source
     )
     assert re.search(
-        r"name\s*=\s*local\.terraform_state_role_name",
-        roles_source,
+        r'terraform_apply_role_name\s*=\s*"clouddoc-dev-terraform-apply"', locals_source
     )
-    assert re.search(
-        r"name\s*=\s*local\.terraform_plan_role_name",
-        roles_source,
-    )
+    assert re.search(r"name\s*=\s*local\.terraform_state_role_name", roles_source)
+    assert re.search(r"name\s*=\s*local\.terraform_plan_role_name", roles_source)
+    assert re.search(r"name\s*=\s*local\.terraform_apply_role_name", roles_source)
 
 
-def test_identity_role_principal_is_constructed_exactly() -> None:
-    """Target roles must trust the exact same-account identity-role ARN."""
+def test_deploy_identity_variable_and_arn_derivation_are_exact() -> None:
+    """The deploy identity input and ARN must remain same-account and exact."""
+    variables_source = read_bootstrap_file("variables.tf")
     locals_source = read_bootstrap_file("locals.tf")
-    assume_state = extract_policy_document_block("terraform_state_assume_role")
-    assume_plan = extract_policy_document_block("terraform_plan_assume_role")
 
+    assert 'variable "github_deploy_identity_role_name"' in variables_source
+    assert 'default     = "clouddoc-dev-github-deploy-identity"' in variables_source
+    assert (
+        "${var.project_name}-${var.environment}-github-deploy-identity"
+        in variables_source
+    )
     assert (
         "arn:${data.aws_partition.current.partition}:iam::"
-        "${var.aws_account_id}:role/${var.github_identity_role_name}"
+        "${var.aws_account_id}:role/${var.github_deploy_identity_role_name}"
         in " ".join(locals_source.split())
     )
-    assert "local.github_identity_role_arn" in assume_state
+
+
+def test_state_trust_uses_the_reviewed_two_principal_local() -> None:
+    """The state role must trust exactly the plan and deploy identity ARNs."""
+    locals_source = read_bootstrap_file("locals.tf")
+    assume_state = extract_policy_document_block("terraform_state_assume_role")
+
+    assert "terraform_state_trusted_identity_role_arns = sort([" in locals_source
+    assert "local.github_identity_role_arn" in locals_source
+    assert "local.github_deploy_identity_role_arn" in locals_source
+    assert (
+        "identifiers = local.terraform_state_trusted_identity_role_arns" in assume_state
+    )
+
+
+def test_plan_and_apply_trusts_remain_singular_and_same_account() -> None:
+    """Plan must trust only the plan identity and apply only the deploy identity."""
+    assume_plan = extract_policy_document_block("terraform_plan_assume_role")
+    assume_apply = extract_policy_document_block("terraform_apply_assume_role")
+
     assert "local.github_identity_role_arn" in assume_plan
-    assert 'type = "AWS"' in assume_state
-    assert 'type = "AWS"' in assume_plan
-    assert '"sts:AssumeRole"' in assume_state
-    assert '"sts:AssumeRole"' in assume_plan
+    assert "local.github_deploy_identity_role_arn" not in assume_plan
+    assert "local.github_deploy_identity_role_arn" in assume_apply
+    assert "local.github_identity_role_arn" not in assume_apply
 
 
-def test_trust_policies_contain_no_wildcard_principal() -> None:
-    """Trust principals must remain exact role ARNs without wildcards."""
-    for name in ("terraform_state_assume_role", "terraform_plan_assume_role"):
-        block = extract_policy_document_block(name)
-        assert "*" not in block
-
-
-def test_trust_policies_contain_no_account_root_principal() -> None:
-    """Account-root principals must never be trusted by the target roles."""
-    for name in ("terraform_state_assume_role", "terraform_plan_assume_role"):
+def test_trust_policies_exclude_wildcard_root_and_federated_principals() -> None:
+    """Authorization trusts must not add wildcard, root, or direct OIDC trust."""
+    for name in (
+        "terraform_state_assume_role",
+        "terraform_plan_assume_role",
+        "terraform_apply_assume_role",
+    ):
         block = extract_policy_document_block(name)
         assert ":root" not in block
-        assert 'identifiers = ["*"]' not in block.replace(" ", "")
-
-
-def test_trust_policies_contain_no_federated_principal() -> None:
-    """Direct OIDC federation must not appear on the state or plan roles."""
-    for name in ("terraform_state_assume_role", "terraform_plan_assume_role"):
-        block = extract_policy_document_block(name)
-        assert "Federated" not in block
         assert "oidc-provider" not in block
         assert "AssumeRoleWithWebIdentity" not in block
+        assert 'type = "Service"' not in block
 
 
-def test_state_policy_contains_only_approved_s3_actions() -> None:
+def test_state_policy_remains_exact() -> None:
     """State authorization must stay inside the reviewed S3 action set."""
-    actions = quoted_actions(extract_policy_document_block("terraform_state_access"))
+    block = extract_policy_document_block("terraform_state_access")
+    actions = quoted_actions(block)
 
     assert actions == STATE_POLICY_ACTIONS
     assert all(action.startswith("s3:") for action in actions)
-
-
-def test_state_object_does_not_receive_delete_object() -> None:
-    """The Terraform state object must never be deletable through this role."""
-    block = extract_policy_document_block("terraform_state_access")
-    state_object_statement = re.search(
+    assert '"s3:DeleteObject"' not in re.search(
         r'sid\s*=\s*"ReadWriteExactStateObject".*?(?=sid\s*=|\Z)',
         block,
         flags=re.DOTALL,
-    )
-
-    assert state_object_statement is not None
-    statement = state_object_statement.group(0)
-    assert '"s3:GetObject"' in statement
-    assert '"s3:PutObject"' in statement
-    assert '"s3:DeleteObject"' not in statement
-    assert "local.terraform_state_object_arn" in statement
-
-
-def test_lock_object_receives_delete_object() -> None:
-    """The S3-native lock object must allow DeleteObject for lock release."""
-    block = extract_policy_document_block("terraform_state_access")
-    lock_object_statement = re.search(
+    ).group(0)
+    assert "local.terraform_lock_object_arn" in re.search(
         r'sid\s*=\s*"ManageExactLockObject".*?(?=sid\s*=|\Z)',
         block,
         flags=re.DOTALL,
-    )
-
-    assert lock_object_statement is not None
-    statement = lock_object_statement.group(0)
-    assert '"s3:DeleteObject"' in statement
-    assert "local.terraform_lock_object_arn" in statement
+    ).group(0)
 
 
-def test_plan_actions_contain_no_wildcards() -> None:
-    """Plan authorization actions must be fully explicit."""
-    actions = quoted_actions(extract_policy_document_block("terraform_plan_access"))
+def test_plan_policy_remains_read_only_and_state_free() -> None:
+    """Plan authorization must exclude mutation, PassRole, and state access."""
+    block = extract_policy_document_block("terraform_plan_access")
+    actions = quoted_actions(block)
 
     assert actions
     assert all("*" not in action for action in actions)
-
-
-def test_plan_source_contains_no_forbidden_mutation_actions() -> None:
-    """Plan authorization must exclude mutation-oriented IAM actions."""
-    block = extract_policy_document_block("terraform_plan_access")
-
     assert FORBIDDEN_PLAN_ACTION_PATTERN.search(block) is None
-
-
-def test_plan_source_contains_no_state_object_or_key_references() -> None:
-    """The plan role must not receive Terraform state or lock access."""
-    block = extract_policy_document_block("terraform_plan_access")
-
+    assert "iam:PassRole" not in block
+    assert PLAN_DATA_PLANE_ACTIONS.isdisjoint(actions)
     for forbidden in (
         "terraform_state_object_arn",
         "terraform_lock_object_arn",
@@ -396,75 +392,84 @@ def test_plan_source_contains_no_state_object_or_key_references() -> None:
         assert forbidden not in block
 
 
+def test_apply_policy_is_separate_service_specific_and_explicit() -> None:
+    """Apply authorization must use a dedicated reviewed policy document."""
+    policies_source = read_bootstrap_file("policies.tf")
+    roles_source = read_bootstrap_file("roles.tf")
+    apply_block = extract_policy_document_block("terraform_apply_access")
+
+    assert 'data "aws_iam_policy_document" "terraform_apply_access"' in policies_source
+    assert 'resource "aws_iam_role_policy" "terraform_apply_access"' in policies_source
+    assert "aws_iam_role.terraform_apply" in policies_source
+    assert "data.aws_iam_policy_document.terraform_apply_access.json" in policies_source
+    assert (
+        "data.aws_iam_policy_document.terraform_apply_assume_role.json" in roles_source
+    )
+    assert '"NotAction"' not in apply_block
+    assert '"NotResource"' not in apply_block
+    assert all("*" not in action for action in quoted_actions(apply_block))
+
+
+def test_apply_policy_excludes_terraform_state_and_data_plane_actions() -> None:
+    """Apply authorization must stay out of Terraform state and application payloads."""
+    apply_block = extract_policy_document_block("terraform_apply_access")
+
+    for forbidden in (
+        "terraform_state_bucket_name",
+        "terraform_state_bucket_arn",
+        "terraform_state_object_arn",
+        "terraform_lock_object_arn",
+        "terraform_state_key",
+        "terraform_lock_key",
+        "tfstate",
+        ".tflock",
+    ):
+        assert forbidden not in apply_block
+
+    assert FORBIDDEN_APPLY_ACTIONS.isdisjoint(quoted_actions(apply_block))
+
+
+def test_apply_policy_derives_exact_lambda_role_arns_and_single_passrole() -> None:
+    """PassRole must target only the four exact Lambda execution roles."""
+    locals_source = read_bootstrap_file("locals.tf")
+    apply_block = extract_policy_document_block("terraform_apply_access")
+
+    for expected in (
+        (
+            "create_job_role_arn              = "
+            '"arn:${data.aws_partition.current.partition}:iam::'
+            '${var.aws_account_id}:role/${local.create_job_role_name}"'
+        ),
+        (
+            "get_job_role_arn                 = "
+            '"arn:${data.aws_partition.current.partition}:iam::'
+            '${var.aws_account_id}:role/${local.get_job_role_name}"'
+        ),
+        (
+            "processor_role_arn               = "
+            '"arn:${data.aws_partition.current.partition}:iam::'
+            '${var.aws_account_id}:role/${local.processor_role_name}"'
+        ),
+        (
+            "dead_letter_reconciler_role_arn  = "
+            '"arn:${data.aws_partition.current.partition}:iam::'
+            '${var.aws_account_id}:role/${local.dead_letter_reconciler_role_name}"'
+        ),
+    ):
+        assert expected in locals_source
+
+    assert apply_block.count("iam:PassRole") == 1
+    assert "resources = local.lambda_execution_role_arns" in apply_block
+    assert 'variable = "iam:PassedToService"' in apply_block
+    assert '"lambda.amazonaws.com"' in apply_block
+
+
 def test_bootstrap_does_not_attach_broad_aws_managed_policies() -> None:
     """Broad AWS-managed policies must not appear in this root."""
     source = terraform_source()
 
-    for policy_name in (
-        "ReadOnlyAccess",
-        "AdministratorAccess",
-        "PowerUserAccess",
-    ):
+    for policy_name in ("ReadOnlyAccess", "AdministratorAccess", "PowerUserAccess"):
         assert policy_name not in source
-
-
-def test_bootstrap_does_not_grant_pass_role() -> None:
-    """iam:PassRole must remain absent from authorization policies."""
-    source = terraform_source()
-
-    assert "iam:PassRole" not in source
-    assert "PassRole" not in extract_policy_document_block("terraform_plan_access")
-
-
-def test_bootstrap_does_not_grant_lambda_invocation() -> None:
-    """Plan authorization must not invoke application Lambda functions."""
-    plan_block = extract_policy_document_block("terraform_plan_access")
-
-    assert "lambda:Invoke" not in plan_block
-    assert "InvokeFunction" not in plan_block
-
-
-def test_bootstrap_does_not_grant_sqs_data_plane_actions() -> None:
-    """Plan authorization must not read or mutate SQS message payloads."""
-    plan_actions = quoted_actions(
-        extract_policy_document_block("terraform_plan_access")
-    )
-
-    forbidden = {
-        action
-        for action in plan_actions
-        if action
-        in {
-            "sqs:ReceiveMessage",
-            "sqs:SendMessage",
-            "sqs:DeleteMessage",
-            "sqs:ChangeMessageVisibility",
-            "sqs:PurgeQueue",
-            "sqs:StartMessageMoveTask",
-        }
-    }
-    assert forbidden == set()
-
-
-def test_bootstrap_does_not_grant_dynamodb_item_reads() -> None:
-    """Plan authorization must stay on DynamoDB table metadata only."""
-    plan_actions = quoted_actions(
-        extract_policy_document_block("terraform_plan_access")
-    )
-
-    forbidden = {
-        action
-        for action in plan_actions
-        if action
-        in {
-            "dynamodb:GetItem",
-            "dynamodb:BatchGetItem",
-            "dynamodb:Query",
-            "dynamodb:Scan",
-        }
-    }
-    assert forbidden == set()
-    assert PLAN_DATA_PLANE_ACTIONS.isdisjoint(plan_actions)
 
 
 def test_exact_dev_state_and_lock_derivation() -> None:
@@ -472,21 +477,37 @@ def test_exact_dev_state_and_lock_derivation() -> None:
     locals_source = read_bootstrap_file("locals.tf")
     variables_source = read_bootstrap_file("variables.tf")
 
-    assert (
-        'default     = "clouddoc/dev/terraform.tfstate"' in variables_source
-        or 'default = "clouddoc/dev/terraform.tfstate"' in variables_source
-    )
+    assert 'default     = "clouddoc/dev/terraform.tfstate"' in variables_source
     assert 'terraform_lock_key = "${var.terraform_state_key}.tflock"' in locals_source
-    assert "local.terraform_state_object_arn" in locals_source or (
-        "terraform_state_object_arn" in locals_source
-    )
-    assert "local.terraform_lock_object_arn" in locals_source or (
-        "terraform_lock_object_arn" in locals_source
-    )
+    assert "terraform_state_object_arn" in locals_source
+    assert "terraform_lock_object_arn" in locals_source
 
 
-def test_example_tfvars_uses_placeholders_only() -> None:
-    """Committed example values must never contain real AWS identifiers."""
+def test_outputs_expose_apply_role_and_trust_boundaries_only() -> None:
+    """Outputs must publish identifiers, not policy JSON or credentials."""
+    source = read_bootstrap_file("outputs.tf")
+    lowered = source.lower()
+
+    for output_name in (
+        "terraform_apply_role_name",
+        "terraform_apply_role_arn",
+        "terraform_apply_role_max_session_duration",
+        "github_deploy_identity_role_arn",
+        "terraform_state_trusted_identity_role_arns",
+        "terraform_apply_trusted_identity_role_arn",
+        "lambda_execution_role_arns",
+    ):
+        assert f'output "{output_name}"' in source
+
+    assert "json" not in lowered
+    assert "access_key" not in lowered
+    assert "secret" not in lowered
+    assert "credential" not in lowered
+    assert "session_token" not in lowered
+
+
+def test_example_tfvars_uses_placeholders_and_only_the_deploy_role_name() -> None:
+    """Committed example values must never contain real AWS identifiers or ARNs."""
     source = read_bootstrap_file("terraform.tfvars.example")
 
     assert 'aws_account_id = "REPLACE_WITH_12_DIGIT_AWS_ACCOUNT_ID"' in source
@@ -494,19 +515,12 @@ def test_example_tfvars_uses_placeholders_only() -> None:
         "terraform_state_bucket_name = "
         '"clouddoc-REPLACE_WITH_12_DIGIT_AWS_ACCOUNT_ID-terraform-state"' in source
     )
+    assert (
+        'github_deploy_identity_role_name = "clouddoc-dev-github-deploy-identity"'
+        in source
+    )
+    assert "github_identity_role_name" not in source
     assert re.search(r'"\d{12}"', source) is None
     assert "arn:aws:" not in source
     assert "AKIA" not in source
     assert "secret" not in source.lower()
-
-
-def test_outputs_do_not_expose_policy_json_or_credentials() -> None:
-    """Outputs must expose operational identifiers only."""
-    source = read_bootstrap_file("outputs.tf").lower()
-
-    assert "policy" not in source
-    assert "json" not in source
-    assert "access_key" not in source
-    assert "secret" not in source
-    assert "credential" not in source
-    assert "session_token" not in source

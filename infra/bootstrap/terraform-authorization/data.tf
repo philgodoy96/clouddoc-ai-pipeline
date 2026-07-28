@@ -12,9 +12,7 @@ data "aws_iam_policy_document" "terraform_state_assume_role" {
     principals {
       type = "AWS"
 
-      identifiers = [
-        local.github_identity_role_arn,
-      ]
+      identifiers = local.terraform_state_trusted_identity_role_arns
     }
   }
 }
@@ -33,6 +31,25 @@ data "aws_iam_policy_document" "terraform_plan_assume_role" {
 
       identifiers = [
         local.github_identity_role_arn,
+      ]
+    }
+  }
+}
+
+data "aws_iam_policy_document" "terraform_apply_assume_role" {
+  statement {
+    sid    = "AllowGitHubDeployIdentityAssumeApplyRole"
+    effect = "Allow"
+
+    actions = [
+      "sts:AssumeRole",
+    ]
+
+    principals {
+      type = "AWS"
+
+      identifiers = [
+        local.github_deploy_identity_role_arn,
       ]
     }
   }

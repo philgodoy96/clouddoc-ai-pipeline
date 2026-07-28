@@ -15,13 +15,14 @@ mock_provider "aws" {
 }
 
 variables {
-  aws_account_id              = "123456789012"
-  aws_region                  = "us-east-1"
-  environment                 = "dev"
-  project_name                = "clouddoc"
-  terraform_state_bucket_name = "clouddoc-123456789012-terraform-state"
-  terraform_state_key         = "clouddoc/dev/terraform.tfstate"
-  github_identity_role_name   = "clouddoc-dev-github-identity"
+  aws_account_id                   = "123456789012"
+  aws_region                       = "us-east-1"
+  environment                      = "dev"
+  project_name                     = "clouddoc"
+  terraform_state_bucket_name      = "clouddoc-123456789012-terraform-state"
+  terraform_state_key              = "clouddoc/dev/terraform.tfstate"
+  github_identity_role_name        = "clouddoc-dev-github-identity"
+  github_deploy_identity_role_name = "clouddoc-dev-github-deploy-identity"
 }
 
 override_resource {
@@ -44,6 +45,16 @@ override_resource {
   }
 }
 
+override_resource {
+  target          = aws_iam_role.terraform_apply
+  override_during = plan
+
+  values = {
+    arn       = "arn:aws:iam::123456789012:role/clouddoc-dev-terraform-apply"
+    unique_id = "AROATESTTERRAFORMAPPLY"
+  }
+}
+
 run "resource_and_role_contract" {
   command = plan
 
@@ -53,22 +64,26 @@ run "resource_and_role_contract" {
         for resource in [
           aws_iam_role.terraform_state,
           aws_iam_role.terraform_plan,
+          aws_iam_role.terraform_apply,
           aws_iam_role_policy.terraform_state_access,
           aws_iam_role_policy.terraform_plan_access,
+          aws_iam_role_policy.terraform_apply_access,
         ] : resource
-      ]) == 4
+      ]) == 6
     )
-    error_message = "This root must manage exactly two IAM roles and two inline role policies."
+    error_message = "This root must manage exactly three IAM roles and three inline role policies."
   }
 
   assert {
     condition = (
       aws_iam_role.terraform_state.name == "clouddoc-dev-terraform-state" &&
       aws_iam_role.terraform_plan.name == "clouddoc-dev-terraform-plan" &&
+      aws_iam_role.terraform_apply.name == "clouddoc-dev-terraform-apply" &&
       aws_iam_role.terraform_state.max_session_duration == 3600 &&
-      aws_iam_role.terraform_plan.max_session_duration == 3600
+      aws_iam_role.terraform_plan.max_session_duration == 3600 &&
+      aws_iam_role.terraform_apply.max_session_duration == 3600
     )
-    error_message = "The state and plan roles must retain their canonical names and 3600-second max session duration."
+    error_message = "The authorization roles must retain their canonical names and 3600-second max session duration."
   }
 
   assert {
@@ -90,10 +105,14 @@ run "resource_and_role_contract" {
       "clouddoc-dev-terraform-state-access" &&
       aws_iam_role_policy.terraform_plan_access.name ==
       "clouddoc-dev-terraform-plan-access" &&
+      aws_iam_role_policy.terraform_apply_access.name ==
+      "clouddoc-dev-terraform-apply-access" &&
       aws_iam_role_policy.terraform_state_access.role ==
       aws_iam_role.terraform_state.id &&
       aws_iam_role_policy.terraform_plan_access.role ==
-      aws_iam_role.terraform_plan.id
+      aws_iam_role.terraform_plan.id &&
+      aws_iam_role_policy.terraform_apply_access.role ==
+      aws_iam_role.terraform_apply.name
     )
     error_message = "Each inline policy must attach only to its matching authorization role."
   }
@@ -106,39 +125,64 @@ run "exact_same_account_trust_contract" {
     condition = (
       length(data.aws_iam_policy_document.terraform_state_assume_role.statement) == 1 &&
       length(data.aws_iam_policy_document.terraform_plan_assume_role.statement) == 1 &&
+      length(data.aws_iam_policy_document.terraform_apply_assume_role.statement) == 1 &&
       one(data.aws_iam_policy_document.terraform_state_assume_role.statement).sid ==
       "AllowGitHubIdentityAssumeStateRole" &&
       one(data.aws_iam_policy_document.terraform_plan_assume_role.statement).sid ==
-      "AllowGitHubIdentityAssumePlanRole"
+      "AllowGitHubIdentityAssumePlanRole" &&
+      one(data.aws_iam_policy_document.terraform_apply_assume_role.statement).sid ==
+      "AllowGitHubDeployIdentityAssumeApplyRole"
     )
     error_message = "Each target role must declare exactly one descriptive assume-role statement."
   }
 
   assert {
+    condition = (
+      one(data.aws_iam_policy_document.terraform_state_assume_role.statement).effect == "Allow" &&
+      toset(one(data.aws_iam_policy_document.terraform_state_assume_role.statement).actions) == toset(["sts:AssumeRole"]) &&
+      length(one(data.aws_iam_policy_document.terraform_state_assume_role.statement).principals) == 1 &&
+      one(one(data.aws_iam_policy_document.terraform_state_assume_role.statement).principals).type == "AWS" &&
+      toset(one(one(data.aws_iam_policy_document.terraform_state_assume_role.statement).principals).identifiers) == toset([
+        "arn:aws:iam::123456789012:role/clouddoc-dev-github-deploy-identity",
+        "arn:aws:iam::123456789012:role/clouddoc-dev-github-identity",
+      ]) &&
+      one(data.aws_iam_policy_document.terraform_plan_assume_role.statement).effect == "Allow" &&
+      toset(one(data.aws_iam_policy_document.terraform_plan_assume_role.statement).actions) == toset(["sts:AssumeRole"]) &&
+      length(one(data.aws_iam_policy_document.terraform_plan_assume_role.statement).principals) == 1 &&
+      one(one(data.aws_iam_policy_document.terraform_plan_assume_role.statement).principals).type == "AWS" &&
+      toset(one(one(data.aws_iam_policy_document.terraform_plan_assume_role.statement).principals).identifiers) == toset([
+        "arn:aws:iam::123456789012:role/clouddoc-dev-github-identity",
+      ]) &&
+      one(data.aws_iam_policy_document.terraform_apply_assume_role.statement).effect == "Allow" &&
+      toset(one(data.aws_iam_policy_document.terraform_apply_assume_role.statement).actions) == toset(["sts:AssumeRole"]) &&
+      length(one(data.aws_iam_policy_document.terraform_apply_assume_role.statement).principals) == 1 &&
+      one(one(data.aws_iam_policy_document.terraform_apply_assume_role.statement).principals).type == "AWS" &&
+      toset(one(one(data.aws_iam_policy_document.terraform_apply_assume_role.statement).principals).identifiers) == toset([
+        "arn:aws:iam::123456789012:role/clouddoc-dev-github-deploy-identity",
+      ])
+    )
+    error_message = "State, plan, and apply trust policies must use the reviewed same-account identity-role principals only."
+  }
+
+  assert {
     condition = alltrue([
-      for statement in [
-        one(data.aws_iam_policy_document.terraform_state_assume_role.statement),
-        one(data.aws_iam_policy_document.terraform_plan_assume_role.statement),
-      ] :
-      (
-        statement.effect == "Allow" &&
-        toset(statement.actions) == toset(["sts:AssumeRole"]) &&
-        length(statement.principals) == 1 &&
-        one(statement.principals).type == "AWS" &&
-        toset(one(statement.principals).identifiers) == toset([
-          "arn:aws:iam::123456789012:role/clouddoc-dev-github-identity",
-        ]) &&
-        length([
-          for identifier in one(statement.principals).identifiers : identifier
-          if(
-            strcontains(identifier, "*") ||
-            endswith(identifier, ":root") ||
-            strcontains(identifier, "oidc-provider")
-          )
-        ]) == 0
-      )
+      for identifier in flatten([
+        one(one(data.aws_iam_policy_document.terraform_state_assume_role.statement).principals).identifiers,
+        one(one(data.aws_iam_policy_document.terraform_plan_assume_role.statement).principals).identifiers,
+        one(one(data.aws_iam_policy_document.terraform_apply_assume_role.statement).principals).identifiers,
+      ]) :
+      !strcontains(identifier, "*") &&
+      !endswith(identifier, ":root") &&
+      !strcontains(identifier, "oidc-provider")
     ])
-    error_message = "Both trust policies must allow only sts:AssumeRole from the exact same-account identity-role ARN."
+    error_message = "Authorization trusts must exclude wildcard, account-root, and direct OIDC principals."
+  }
+
+  assert {
+    condition = (
+      aws_iam_role.terraform_apply.max_session_duration == 3600
+    )
+    error_message = "The apply role max session duration must remain 3600 seconds."
   }
 }
 
@@ -399,6 +443,180 @@ run "plan_read_only_boundary_contract" {
   }
 }
 
+run "apply_boundary_contract" {
+  command = plan
+
+  assert {
+    condition = (
+      toset([
+        for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+        statement.sid
+        ]) == toset([
+        "ReadCallerIdentity",
+        "ManageApiGatewayV2ControlPlane",
+        "DescribeCloudWatchAlarmMetrics",
+        "ManageCloudWatchAlarms",
+        "ListCloudWatchDashboards",
+        "ManageCloudWatchDashboard",
+        "DescribeCloudWatchLogGroups",
+        "ManageCloudWatchLogGroups",
+        "ManageDynamoDBTableControlPlane",
+        "ManageLambdaExecutionRoles",
+        "ManageLambdaExecutionRoleInlinePolicies",
+        "PassOnlyLambdaExecutionRolesToLambdaService",
+        "ManageLambdaFunctions",
+        "ManageLambdaPermissions",
+        "ListLambdaEventSourceMappings",
+        "ManageLambdaEventSourceMappings",
+        "ReadDocumentsBucketConfiguration",
+        "ManageDocumentsBucketControlPlane",
+        "ManageApplicationSqsQueues",
+      ])
+    )
+    error_message = "The apply policy must keep the reviewed service-specific statement set."
+  }
+
+  assert {
+    condition = (
+      length([
+        for action in flatten([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement.actions
+        ]) : action
+        if strcontains(action, "*")
+      ]) == 0
+    )
+    error_message = "The apply policy must enumerate explicit actions only."
+  }
+
+  assert {
+    condition = (
+      length([
+        for resource in flatten([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement.resources
+        ]) : resource
+        if(
+          strcontains(resource, "clouddoc-123456789012-terraform-state") ||
+          strcontains(resource, "terraform.tfstate") ||
+          strcontains(resource, ".tflock")
+        )
+      ]) == 0
+    )
+    error_message = "The apply policy must not reference the Terraform state bucket, state object, or lock object."
+  }
+
+  assert {
+    condition = (
+      length([
+        for action in flatten([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement.actions
+        ]) : action
+        if contains([
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:DeleteObject",
+          "lambda:InvokeFunction",
+          "lambda:InvokeAsync",
+          "execute-api:Invoke",
+          "sqs:SendMessage",
+          "sqs:ReceiveMessage",
+          "sqs:DeleteMessage",
+          "sqs:ChangeMessageVisibility",
+          "sqs:PurgeQueue",
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:DeleteItem",
+          "dynamodb:Query",
+          "dynamodb:Scan",
+          "bedrock:InvokeModel",
+          "kms:Decrypt",
+          "kms:Encrypt",
+          "secretsmanager:GetSecretValue",
+          "iam:CreateAccessKey",
+          "iam:AttachRolePolicy",
+          "iam:CreatePolicy",
+        ], action)
+      ]) == 0
+    )
+    error_message = "The apply policy must exclude application data-plane, invocation, static credential, and prohibited service-family actions."
+  }
+
+  assert {
+    condition = (
+      length([
+        for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+        statement
+        if contains(statement.actions, "iam:PassRole")
+      ]) == 1 &&
+      toset(one([
+        for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+        statement
+        if contains(statement.actions, "iam:PassRole")
+        ]).resources) == toset([
+        "arn:aws:iam::123456789012:role/clouddoc-dev-create-job-role",
+        "arn:aws:iam::123456789012:role/clouddoc-dev-get-job-role",
+        "arn:aws:iam::123456789012:role/clouddoc-dev-process-document-role",
+        "arn:aws:iam::123456789012:role/clouddoc-dev-reconcile-dead-letter-role",
+      ]) &&
+      one(one([
+        for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+        statement
+        if contains(statement.actions, "iam:PassRole")
+      ]).condition).test == "StringEquals" &&
+      one(one([
+        for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+        statement
+        if contains(statement.actions, "iam:PassRole")
+      ]).condition).variable == "iam:PassedToService" &&
+      toset(one(one([
+        for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+        statement
+        if contains(statement.actions, "iam:PassRole")
+      ]).condition).values) == toset(["lambda.amazonaws.com"])
+    )
+    error_message = "PassRole must appear exactly once, target only the four Lambda execution roles, and restrict passing to lambda.amazonaws.com."
+  }
+
+  assert {
+    condition = (
+      toset([
+        for service in [
+          "apigateway:",
+          "cloudwatch:",
+          "logs:",
+          "dynamodb:",
+          "iam:",
+          "lambda:",
+          "s3:",
+          "sqs:",
+          "sts:",
+        ] : service
+        if length([
+          for action in flatten([
+            for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+            statement.actions
+          ]) : action
+          if startswith(action, service)
+        ]) > 0
+        ]) == toset([
+        "apigateway:",
+        "cloudwatch:",
+        "logs:",
+        "dynamodb:",
+        "iam:",
+        "lambda:",
+        "s3:",
+        "sqs:",
+        "sts:",
+      ])
+    )
+    error_message = "The apply policy must remain within the reviewed service families only."
+  }
+}
+
 run "outputs_contract" {
   command = plan
 
@@ -406,20 +624,38 @@ run "outputs_contract" {
     condition = (
       output.terraform_state_role_name == "clouddoc-dev-terraform-state" &&
       output.terraform_plan_role_name == "clouddoc-dev-terraform-plan" &&
+      output.terraform_apply_role_name == "clouddoc-dev-terraform-apply" &&
       output.terraform_state_role_arn ==
       "arn:aws:iam::123456789012:role/clouddoc-dev-terraform-state" &&
       output.terraform_plan_role_arn ==
       "arn:aws:iam::123456789012:role/clouddoc-dev-terraform-plan" &&
+      output.terraform_apply_role_arn ==
+      "arn:aws:iam::123456789012:role/clouddoc-dev-terraform-apply" &&
       output.terraform_state_role_max_session_duration == 3600 &&
-      output.terraform_plan_role_max_session_duration == 3600
+      output.terraform_plan_role_max_session_duration == 3600 &&
+      output.terraform_apply_role_max_session_duration == 3600
     )
-    error_message = "Role outputs must expose the exact state and plan role identifiers and session duration."
+    error_message = "Role outputs must expose the exact state, plan, and apply role identifiers and session duration."
   }
 
   assert {
     condition = (
       output.github_identity_role_arn ==
       "arn:aws:iam::123456789012:role/clouddoc-dev-github-identity" &&
+      output.github_deploy_identity_role_arn ==
+      "arn:aws:iam::123456789012:role/clouddoc-dev-github-deploy-identity" &&
+      toset(output.terraform_state_trusted_identity_role_arns) == toset([
+        "arn:aws:iam::123456789012:role/clouddoc-dev-github-identity",
+        "arn:aws:iam::123456789012:role/clouddoc-dev-github-deploy-identity",
+      ]) &&
+      output.terraform_apply_trusted_identity_role_arn ==
+      "arn:aws:iam::123456789012:role/clouddoc-dev-github-deploy-identity" &&
+      toset(output.lambda_execution_role_arns) == toset([
+        "arn:aws:iam::123456789012:role/clouddoc-dev-create-job-role",
+        "arn:aws:iam::123456789012:role/clouddoc-dev-get-job-role",
+        "arn:aws:iam::123456789012:role/clouddoc-dev-process-document-role",
+        "arn:aws:iam::123456789012:role/clouddoc-dev-reconcile-dead-letter-role",
+      ]) &&
       output.terraform_state_bucket_name ==
       "clouddoc-123456789012-terraform-state" &&
       output.terraform_state_key == "clouddoc/dev/terraform.tfstate" &&
@@ -429,6 +665,6 @@ run "outputs_contract" {
       output.terraform_lock_object_arn ==
       "arn:aws:s3:::clouddoc-123456789012-terraform-state/clouddoc/dev/terraform.tfstate.tflock"
     )
-    error_message = "Outputs must expose the exact identity principal and derived state and lock paths."
+    error_message = "Outputs must expose the exact trust principals, PassRole role ARNs, and derived state and lock paths."
   }
 }
