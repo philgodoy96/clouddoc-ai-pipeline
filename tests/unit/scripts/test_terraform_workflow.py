@@ -387,6 +387,9 @@ def test_remote_inputs_load_valid_values() -> None:
 
     assert inputs.state_bucket == "clouddoc-123456789012-terraform-state"
     assert inputs.expected_account_id == "123456789012"
+    assert inputs.state_role_arn is None
+    assert inputs.plan_role_arn is None
+    assert inputs.uses_chained_roles is False
 
 
 @pytest.mark.parametrize(
@@ -625,9 +628,19 @@ def test_initialize_backend_builds_exact_safe_command(
     config = workflow.EnvironmentConfig.load(paths, "dev")
     inputs = workflow.RemoteInputs.load(remote_environment())
     captured: dict[str, Any] = {}
+    override_snapshot: dict[str, str] = {}
 
     def fake_run_terraform(**kwargs: Any) -> int:
         captured.update(kwargs)
+        override_argument = next(
+            argument
+            for argument in kwargs["arguments"]
+            if argument.startswith("-backend-config=")
+            and argument.endswith(workflow.BACKEND_OVERRIDE_FILENAME)
+        )
+        override_path = Path(override_argument.removeprefix("-backend-config="))
+        override_snapshot["path"] = str(override_path)
+        override_snapshot["content"] = override_path.read_text(encoding="utf-8")
         return 0
 
     monkeypatch.setattr(workflow, "run_terraform", fake_run_terraform)
@@ -639,16 +652,29 @@ def test_initialize_backend_builds_exact_safe_command(
         inputs=inputs,
     )
 
+    override_path = Path(override_snapshot["path"])
     assert captured["arguments"] == [
         "init",
         "-input=false",
         "-reconfigure",
         "-lockfile=readonly",
         f"-backend-config={config.backend_file}",
-        "-backend-config=bucket=clouddoc-123456789012-terraform-state",
+        f"-backend-config={override_path}",
     ]
     assert captured["expected_account_id"] == "123456789012"
+    assert captured["plan_role_arn"] is None
     assert captured["data_dir"] == paths.data_dir("dev")
+    assert override_snapshot["content"] == (
+        'bucket = "clouddoc-123456789012-terraform-state"\n'
+    )
+    assert "assume_role" not in override_snapshot["content"]
+    assert not override_path.exists()
+    assert config.backend_file.read_text(encoding="utf-8") == (
+        'key = "clouddoc/dev/terraform.tfstate"\n'
+        'region = "us-east-1"\n'
+        "encrypt = true\n"
+        "use_lockfile = true\n"
+    )
 
 
 def test_plan_manifest_round_trip_is_strict(paths: Any) -> None:
@@ -889,11 +915,17 @@ def test_command_show_plan_rejects_tampering_without_running_terraform(
     assert called is False
 
 
-def test_offline_check_runs_both_roots_with_backend_disabled(
+def test_offline_check_runs_committed_roots_with_backend_disabled(
     paths: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Offline validation must never initialize the S3 backend."""
+    """Offline validation must cover every committed root without remote state."""
+    for relative_root in workflow.OFFLINE_TERRAFORM_ROOTS:
+        (paths.repository_root.joinpath(*relative_root.split("/"))).mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
     calls: list[dict[str, Any]] = []
 
     def fake_run_terraform(**kwargs: Any) -> int:
@@ -908,9 +940,24 @@ def test_offline_check_runs_both_roots_with_backend_disabled(
 
     workflow.command_offline_check(binary="terraform", paths=paths)
 
-    assert len(calls) == 8
+    assert workflow.OFFLINE_TERRAFORM_ROOTS == (
+        "infra/terraform",
+        "infra/bootstrap/terraform-state",
+        "infra/bootstrap/github-oidc",
+        "infra/bootstrap/terraform-authorization",
+    )
+    assert len(workflow.OFFLINE_TERRAFORM_ROOTS) == 4
+    assert len(calls) == 16
+
+    roots = {str(call["root"]) for call in calls}
+    expected_roots = {
+        str(paths.repository_root.joinpath(*relative.split("/")))
+        for relative in workflow.OFFLINE_TERRAFORM_ROOTS
+    }
+    assert roots == expected_roots
+
     init_calls = [call for call in calls if call["arguments"][0] == "init"]
-    assert len(init_calls) == 2
+    assert len(init_calls) == 4
     for call in init_calls:
         assert call["arguments"] == (
             "init",
@@ -919,6 +966,10 @@ def test_offline_check_runs_both_roots_with_backend_disabled(
             "-input=false",
         )
         assert call.get("expected_account_id") is None
+        assert call.get("plan_role_arn") is None
+
+    forbidden = {"plan", "apply", "destroy", "import", "state"}
+    assert not any(call["arguments"][0] in forbidden for call in calls)
 
 
 def test_cli_exposes_only_approved_commands() -> None:
@@ -997,3 +1048,506 @@ def test_main_returns_one_for_missing_remote_inputs(
     assert exit_code == 1
     assert "Missing required environment variable" in captured.err
     assert "Traceback" not in captured.err
+
+
+ACCOUNT_ID = "123456789012"
+OTHER_ACCOUNT_ID = "999999999999"
+VALID_STATE_ROLE = f"arn:aws:iam::{ACCOUNT_ID}:role/{workflow.STATE_ROLE_NAME}"
+VALID_PLAN_ROLE = f"arn:aws:iam::{ACCOUNT_ID}:role/{workflow.PLAN_ROLE_NAME}"
+
+
+def role_environment(
+    *,
+    state_role: str | None = VALID_STATE_ROLE,
+    plan_role: str | None = VALID_PLAN_ROLE,
+    account_id: str = ACCOUNT_ID,
+    bucket: str | None = None,
+) -> dict[str, str]:
+    """Build remote inputs with optional paired role ARNs."""
+    environ = remote_environment(
+        account_id=account_id,
+        bucket=(f"clouddoc-{account_id}-terraform-state" if bucket is None else bucket),
+    )
+    if state_role is not None:
+        environ[workflow.STATE_ROLE_ENV] = state_role
+    if plan_role is not None:
+        environ[workflow.PLAN_ROLE_ENV] = plan_role
+    return environ
+
+
+def test_remote_inputs_load_chained_roles() -> None:
+    """Both valid role ARNs enable chained-role mode."""
+    inputs = workflow.RemoteInputs.load(role_environment())
+
+    assert inputs.state_role_arn == VALID_STATE_ROLE
+    assert inputs.plan_role_arn == VALID_PLAN_ROLE
+    assert inputs.uses_chained_roles is True
+
+
+@pytest.mark.parametrize(
+    ("environ", "message"),
+    [
+        (
+            role_environment(plan_role=None),
+            "missing paired role",
+        ),
+        (
+            role_environment(state_role=None),
+            "missing paired role",
+        ),
+        (
+            {
+                **remote_environment(),
+                workflow.STATE_ROLE_ENV: "",
+                workflow.PLAN_ROLE_ENV: VALID_PLAN_ROLE,
+            },
+            "state role",
+        ),
+        (
+            {
+                **remote_environment(),
+                workflow.STATE_ROLE_ENV: VALID_STATE_ROLE,
+                workflow.PLAN_ROLE_ENV: "",
+            },
+            "plan role",
+        ),
+        (
+            role_environment(
+                state_role=f"arn:aws:iam::{ACCOUNT_ID}:role/other-state-role",
+            ),
+            "state role",
+        ),
+        (
+            role_environment(
+                plan_role=f"arn:aws:iam::{ACCOUNT_ID}:role/other-plan-role",
+            ),
+            "plan role",
+        ),
+        (
+            role_environment(
+                state_role=(
+                    f"arn:aws:iam::{OTHER_ACCOUNT_ID}:role/{workflow.STATE_ROLE_NAME}"
+                ),
+            ),
+            "account mismatch",
+        ),
+        (
+            role_environment(
+                plan_role=(
+                    f"arn:aws:iam::{OTHER_ACCOUNT_ID}:role/{workflow.PLAN_ROLE_NAME}"
+                ),
+            ),
+            "account mismatch",
+        ),
+        (
+            role_environment(
+                state_role=(
+                    f"arn:aws:iam::{ACCOUNT_ID}:role/{workflow.STATE_ROLE_NAME}*"
+                ),
+            ),
+            "invalid ARN shape",
+        ),
+        (
+            role_environment(
+                state_role=(
+                    f"arn:aws:sts::{ACCOUNT_ID}:assumed-role/"
+                    f"{workflow.STATE_ROLE_NAME}/session"
+                ),
+            ),
+            "invalid ARN shape",
+        ),
+        (
+            role_environment(
+                plan_role=(
+                    f"arn:aws:iam::{ACCOUNT_ID}:role/path/{workflow.PLAN_ROLE_NAME}"
+                ),
+            ),
+            "invalid ARN shape",
+        ),
+    ],
+)
+def test_remote_inputs_reject_invalid_role_pairs(
+    environ: dict[str, str],
+    message: str,
+) -> None:
+    """Paired-role validation must fail with sanitized diagnostics."""
+    with pytest.raises(workflow.WorkflowError, match=message) as raised:
+        workflow.RemoteInputs.load(environ)
+
+    error_text = str(raised.value)
+    assert VALID_STATE_ROLE not in error_text
+    assert VALID_PLAN_ROLE not in error_text
+    assert "arn:aws:" not in error_text
+
+
+def test_run_terraform_sets_plan_role_tf_var_in_chained_mode(
+    paths: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Chained mode must publish the plan role through TF_VAR_*."""
+    captured_environment: dict[str, str] = {}
+
+    def fake_run(
+        command: list[str],
+        *,
+        cwd: Path,
+        env: dict[str, str],
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        del command, cwd, check
+        captured_environment.update(env)
+        return subprocess.CompletedProcess([], 0)
+
+    monkeypatch.setattr(workflow.subprocess, "run", fake_run)
+
+    workflow.run_terraform(
+        binary="terraform",
+        root=paths.terraform_root,
+        repository_root=paths.repository_root,
+        data_dir=paths.data_dir("dev"),
+        arguments=["validate"],
+        expected_account_id=ACCOUNT_ID,
+        plan_role_arn=VALID_PLAN_ROLE,
+    )
+
+    assert captured_environment[workflow.PLAN_ROLE_TF_VAR] == VALID_PLAN_ROLE
+
+
+def test_run_terraform_accepts_matching_preexisting_plan_role_tf_var(
+    paths: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An identical pre-existing TF_VAR value is accepted."""
+    captured_environment: dict[str, str] = {}
+
+    def fake_run(
+        command: list[str],
+        *,
+        cwd: Path,
+        env: dict[str, str],
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        del command, cwd, check
+        captured_environment.update(env)
+        return subprocess.CompletedProcess([], 0)
+
+    monkeypatch.setattr(workflow.subprocess, "run", fake_run)
+    monkeypatch.setenv(workflow.PLAN_ROLE_TF_VAR, VALID_PLAN_ROLE)
+
+    workflow.run_terraform(
+        binary="terraform",
+        root=paths.terraform_root,
+        repository_root=paths.repository_root,
+        data_dir=paths.data_dir("dev"),
+        arguments=["validate"],
+        expected_account_id=ACCOUNT_ID,
+        plan_role_arn=VALID_PLAN_ROLE,
+    )
+
+    assert captured_environment[workflow.PLAN_ROLE_TF_VAR] == VALID_PLAN_ROLE
+
+
+def test_run_terraform_rejects_conflicting_plan_role_tf_var(
+    paths: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A conflicting pre-existing TF_VAR value must fail before Terraform."""
+    monkeypatch.setenv(
+        workflow.PLAN_ROLE_TF_VAR,
+        f"arn:aws:iam::{ACCOUNT_ID}:role/other-plan-role",
+    )
+    called = False
+
+    def fail_if_called(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        nonlocal called
+        called = True
+        return subprocess.CompletedProcess([], 0)
+
+    monkeypatch.setattr(workflow.subprocess, "run", fail_if_called)
+
+    with pytest.raises(workflow.WorkflowError, match="conflicting"):
+        workflow.run_terraform(
+            binary="terraform",
+            root=paths.terraform_root,
+            repository_root=paths.repository_root,
+            data_dir=paths.data_dir("dev"),
+            arguments=["validate"],
+            expected_account_id=ACCOUNT_ID,
+            plan_role_arn=VALID_PLAN_ROLE,
+        )
+
+    assert called is False
+
+
+def test_run_terraform_ambient_mode_leaves_plan_role_tf_var_absent(
+    paths: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ambient mode must not synthesize a provider role TF variable."""
+    captured_environment: dict[str, str] = {}
+
+    def fake_run(
+        command: list[str],
+        *,
+        cwd: Path,
+        env: dict[str, str],
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        del command, cwd, check
+        captured_environment.update(env)
+        return subprocess.CompletedProcess([], 0)
+
+    monkeypatch.setattr(workflow.subprocess, "run", fake_run)
+    monkeypatch.delenv(workflow.PLAN_ROLE_TF_VAR, raising=False)
+
+    workflow.run_terraform(
+        binary="terraform",
+        root=paths.terraform_root,
+        repository_root=paths.repository_root,
+        data_dir=paths.data_dir("dev"),
+        arguments=["validate"],
+        expected_account_id=ACCOUNT_ID,
+    )
+
+    assert workflow.PLAN_ROLE_TF_VAR not in captured_environment
+
+
+def test_run_terraform_ambient_mode_rejects_preexisting_plan_role_tf_var(
+    paths: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ambient mode rejects a non-empty pre-existing plan-role TF variable."""
+    monkeypatch.setenv(workflow.PLAN_ROLE_TF_VAR, VALID_PLAN_ROLE)
+    called = False
+
+    def fail_if_called(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        nonlocal called
+        called = True
+        return subprocess.CompletedProcess([], 0)
+
+    monkeypatch.setattr(workflow.subprocess, "run", fail_if_called)
+
+    with pytest.raises(workflow.WorkflowError, match="ambient mode"):
+        workflow.run_terraform(
+            binary="terraform",
+            root=paths.terraform_root,
+            repository_root=paths.repository_root,
+            data_dir=paths.data_dir("dev"),
+            arguments=["validate"],
+            expected_account_id=ACCOUNT_ID,
+        )
+
+    assert called is False
+
+
+def test_initialize_backend_writes_chained_override_without_logging_arn(
+    paths: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Chained mode must add assume_role fields only in the ephemeral override."""
+    write_environment(paths)
+    config = workflow.EnvironmentConfig.load(paths, "dev")
+    inputs = workflow.RemoteInputs.load(role_environment())
+    override_snapshot: dict[str, str] = {}
+    captured_arguments: list[str] = []
+
+    def fake_run_terraform(**kwargs: Any) -> int:
+        captured_arguments.extend(kwargs["arguments"])
+        override_argument = next(
+            argument
+            for argument in kwargs["arguments"]
+            if argument.startswith("-backend-config=")
+            and argument.endswith(workflow.BACKEND_OVERRIDE_FILENAME)
+        )
+        override_path = Path(override_argument.removeprefix("-backend-config="))
+        override_snapshot["path"] = str(override_path)
+        override_snapshot["content"] = override_path.read_text(encoding="utf-8")
+        assert kwargs["plan_role_arn"] == VALID_PLAN_ROLE
+        return 0
+
+    monkeypatch.setattr(workflow, "run_terraform", fake_run_terraform)
+
+    workflow.initialize_backend(
+        binary="terraform",
+        paths=paths,
+        config=config,
+        inputs=inputs,
+    )
+
+    override_path = Path(override_snapshot["path"])
+    content = override_snapshot["content"]
+    assert 'bucket = "clouddoc-123456789012-terraform-state"' in content
+    assert "assume_role = {" in content
+    assert f'role_arn     = "{VALID_STATE_ROLE}"' in content
+    assert f'session_name = "{workflow.STATE_ROLE_SESSION_NAME}"' in content
+    assert f'duration     = "{workflow.ROLE_SESSION_DURATION}"' in content
+    assert f"-backend-config={config.backend_file}" in captured_arguments
+    assert f"-backend-config={override_path}" in captured_arguments
+    assert VALID_STATE_ROLE not in " ".join(captured_arguments)
+    assert VALID_PLAN_ROLE not in " ".join(captured_arguments)
+    assert not override_path.exists()
+    assert VALID_STATE_ROLE not in capsys.readouterr().out
+
+
+def test_initialize_backend_deletes_override_after_failed_init(
+    paths: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Override cleanup must run even when initialization fails."""
+    write_environment(paths)
+    config = workflow.EnvironmentConfig.load(paths, "dev")
+    inputs = workflow.RemoteInputs.load(remote_environment())
+    override_path_holder: dict[str, Path] = {}
+
+    def fake_run_terraform(**kwargs: Any) -> int:
+        override_argument = next(
+            argument
+            for argument in kwargs["arguments"]
+            if argument.startswith("-backend-config=")
+            and argument.endswith(workflow.BACKEND_OVERRIDE_FILENAME)
+        )
+        override_path = Path(override_argument.removeprefix("-backend-config="))
+        override_path_holder["path"] = override_path
+        assert override_path.is_file()
+        raise workflow.WorkflowError("Terraform init failed with exit code 1.")
+
+    monkeypatch.setattr(workflow, "run_terraform", fake_run_terraform)
+
+    with pytest.raises(workflow.WorkflowError, match="init failed"):
+        workflow.initialize_backend(
+            binary="terraform",
+            paths=paths,
+            config=config,
+            inputs=inputs,
+        )
+
+    assert not override_path_holder["path"].exists()
+    assert config.backend_file.is_file()
+
+
+def test_initialize_backend_cleanup_failure_fails_operation(
+    paths: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cleanup failure must fail the command."""
+    write_environment(paths)
+    config = workflow.EnvironmentConfig.load(paths, "dev")
+    inputs = workflow.RemoteInputs.load(remote_environment())
+
+    monkeypatch.setattr(
+        workflow,
+        "run_terraform",
+        lambda **kwargs: 0,
+    )
+
+    def fail_cleanup(path: Path) -> None:
+        del path
+        raise workflow.WorkflowError(
+            "Could not remove temporary backend override: backend-override.tfbackend"
+        )
+
+    monkeypatch.setattr(workflow, "remove_backend_override", fail_cleanup)
+
+    with pytest.raises(
+        workflow.WorkflowError,
+        match="Could not remove temporary backend override",
+    ):
+        workflow.initialize_backend(
+            binary="terraform",
+            paths=paths,
+            config=config,
+            inputs=inputs,
+        )
+
+
+def test_resolve_plan_output_directory_defaults_to_artifacts(paths: Any) -> None:
+    """Absent --output-directory preserves the current artifact location."""
+    resolved = workflow.resolve_plan_output_directory(paths, "dev", None)
+
+    assert resolved == paths.plan_dir("dev")
+
+
+def test_resolve_plan_output_directory_accepts_absolute_external_path(
+    tmp_path: Path,
+    paths: Any,
+) -> None:
+    """Caller-supplied absolute directories outside the repository are accepted."""
+    external = tmp_path / "external-plan-output"
+
+    resolved = workflow.resolve_plan_output_directory(paths, "dev", external)
+
+    assert resolved == external.resolve()
+    assert resolved.is_dir()
+
+
+def test_resolve_plan_output_directory_resolves_relative_path(
+    tmp_path: Path,
+    paths: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Relative output directories resolve deterministically from the process cwd."""
+    monkeypatch.chdir(tmp_path)
+    relative = Path("relative-plan-output")
+
+    resolved = workflow.resolve_plan_output_directory(paths, "dev", relative)
+
+    assert resolved == (tmp_path / "relative-plan-output").resolve()
+    assert resolved.is_dir()
+
+
+def test_resolve_plan_output_directory_rejects_existing_file(
+    tmp_path: Path,
+    paths: Any,
+) -> None:
+    """An output path that points to a regular file must be rejected."""
+    target = tmp_path / "not-a-directory"
+    target.write_text("file", encoding="utf-8")
+
+    with pytest.raises(workflow.WorkflowError, match="regular file"):
+        workflow.resolve_plan_output_directory(paths, "dev", target)
+
+
+def test_command_plan_writes_artifacts_to_requested_output_directory(
+    paths: Any,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Plan artifacts must use the caller-supplied directory and current names."""
+    write_environment(paths)
+    write_valid_lambda_artifact(paths)
+    output_directory = tmp_path / "caller-output"
+
+    monkeypatch.setattr(
+        workflow,
+        "initialize_backend",
+        lambda **kwargs: None,
+    )
+
+    def fake_run_terraform(**kwargs: Any) -> int:
+        output_argument = next(
+            argument for argument in kwargs["arguments"] if argument.startswith("-out=")
+        )
+        Path(output_argument.removeprefix("-out=")).write_bytes(b"generated-plan")
+        return 2
+
+    monkeypatch.setattr(workflow, "run_terraform", fake_run_terraform)
+
+    workflow.command_plan(
+        binary="terraform",
+        paths=paths,
+        environment="dev",
+        environ=remote_environment(),
+        output_directory=output_directory,
+    )
+
+    plan_file = output_directory / workflow.PLAN_FILENAME
+    manifest_file = output_directory / workflow.MANIFEST_FILENAME
+    assert plan_file.is_file()
+    assert manifest_file.is_file()
+    assert not paths.plan_file("dev").exists()
+    assert set(output_directory.iterdir()) == {manifest_file, plan_file}
+
+    manifest = workflow.PlanManifest.read(manifest_file)
+    assert manifest.plan_file == str(plan_file.resolve())
+    assert manifest.plan_sha256 == hashlib.sha256(b"generated-plan").hexdigest()
