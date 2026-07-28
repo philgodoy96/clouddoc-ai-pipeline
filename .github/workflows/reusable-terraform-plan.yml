@@ -1,0 +1,681 @@
+name: Reusable Terraform Plan
+
+on:
+  workflow_call:
+    inputs:
+      aws_account_id:
+        description: Expected AWS account ID for the Terraform plan session.
+        required: true
+        type: string
+      aws_region:
+        description: AWS Region used by the CloudDoc dev environment.
+        required: true
+        type: string
+      identity_role_arn:
+        description: ARN of the permissionless CloudDoc GitHub identity role.
+        required: true
+        type: string
+      state_bucket:
+        description: Name of the CloudDoc Terraform remote-state bucket.
+        required: true
+        type: string
+      state_role_arn:
+        description: ARN of the CloudDoc dev Terraform state-access role.
+        required: true
+        type: string
+      plan_role_arn:
+        description: ARN of the CloudDoc dev Terraform plan-only role.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  plan-dev:
+    name: Plan dev infrastructure
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: dev
+
+    steps:
+      - name: Validate trusted workflow context
+        shell: bash
+        env:
+          EXPECTED_REPOSITORY: philgodoy96/clouddoc-ai-pipeline
+          EXPECTED_REF: refs/heads/main
+          EXPECTED_EVENT: workflow_dispatch
+          EXPECTED_REGION: us-east-1
+          REQUESTED_ACCOUNT_ID: ${{ inputs.aws_account_id }}
+          REQUESTED_REGION: ${{ inputs.aws_region }}
+          REQUESTED_IDENTITY_ROLE_ARN: ${{ inputs.identity_role_arn }}
+          REQUESTED_STATE_BUCKET: ${{ inputs.state_bucket }}
+          REQUESTED_STATE_ROLE_ARN: ${{ inputs.state_role_arn }}
+          REQUESTED_PLAN_ROLE_ARN: ${{ inputs.plan_role_arn }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$GITHUB_REPOSITORY" != "$EXPECTED_REPOSITORY" ]]; then
+            echo "::error::Unexpected GitHub repository."
+            exit 1
+          fi
+
+          if [[ "$GITHUB_REF" != "$EXPECTED_REF" ]]; then
+            echo "::error::Terraform plan must run from refs/heads/main."
+            exit 1
+          fi
+
+          if [[ "$GITHUB_EVENT_NAME" != "$EXPECTED_EVENT" ]]; then
+            echo "::error::Terraform plan must be started manually."
+            exit 1
+          fi
+
+          if ! [[ "$REQUESTED_ACCOUNT_ID" =~ ^[0-9]{12}$ ]]; then
+            echo "::error::CLOUDDOC_AWS_ACCOUNT_ID must contain exactly 12 digits."
+            exit 1
+          fi
+
+          if [[ "$REQUESTED_REGION" != "$EXPECTED_REGION" ]]; then
+            echo "::error::Terraform plan must use us-east-1."
+            exit 1
+          fi
+
+          expected_identity_role_arn="arn:aws:iam::${REQUESTED_ACCOUNT_ID}:role/clouddoc-dev-github-identity"
+          expected_state_role_arn="arn:aws:iam::${REQUESTED_ACCOUNT_ID}:role/clouddoc-dev-terraform-state"
+          expected_plan_role_arn="arn:aws:iam::${REQUESTED_ACCOUNT_ID}:role/clouddoc-dev-terraform-plan"
+          expected_state_bucket="clouddoc-${REQUESTED_ACCOUNT_ID}-terraform-state"
+
+          if [[ "$REQUESTED_IDENTITY_ROLE_ARN" != "$expected_identity_role_arn" ]]; then
+            echo "::error::The identity role does not match the approved account and role."
+            exit 1
+          fi
+
+          if [[ "$REQUESTED_STATE_ROLE_ARN" != "$expected_state_role_arn" ]]; then
+            echo "::error::The Terraform state role does not match the approved account and role."
+            exit 1
+          fi
+
+          if [[ "$REQUESTED_PLAN_ROLE_ARN" != "$expected_plan_role_arn" ]]; then
+            echo "::error::The Terraform plan role does not match the approved account and role."
+            exit 1
+          fi
+
+          if [[ "$REQUESTED_STATE_BUCKET" != "$expected_state_bucket" ]]; then
+            echo "::error::The Terraform state bucket does not match the approved account boundary."
+            exit 1
+          fi
+
+      - name: Validate GitHub OIDC token claims
+        shell: bash
+        env:
+          EXPECTED_AUDIENCE: sts.amazonaws.com
+          EXPECTED_REPOSITORY: ${{ github.repository }}
+          EXPECTED_REPOSITORY_ID: ${{ github.repository_id }}
+          EXPECTED_REPOSITORY_OWNER: ${{ github.repository_owner }}
+          EXPECTED_REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
+          EXPECTED_REF: ${{ github.ref }}
+          EXPECTED_ENVIRONMENT: dev
+          EXPECTED_JOB_WORKFLOW_REF: ${{ job.workflow_ref }}
+          CANONICAL_JOB_WORKFLOW_REF: philgodoy96/clouddoc-ai-pipeline/.github/workflows/reusable-terraform-plan.yml@refs/heads/main
+        run: |
+          python - <<'PY'
+          import base64
+          import hmac
+          import json
+          import os
+          import re
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+
+          MAX_RENDER_LENGTH = 300
+          REQUEST_TIMEOUT_SECONDS = 30
+
+
+          def fail(message: str) -> None:
+              print(f"::error::{message}")
+              raise SystemExit(1)
+
+
+          def require_env(name: str) -> str:
+              value = os.environ.get(name, "")
+              if not isinstance(value, str) or not value.strip():
+                  fail(f"Missing required environment value: {name}")
+              return value
+
+
+          def sanitize_control(value: str) -> str:
+              escaped = value.replace("\\", "\\\\")
+              escaped = escaped.replace("\r", "\\r").replace("\n", "\\n")
+              escaped = re.sub(r"[\x00-\x1f\x7f]", "?", escaped)
+
+              if len(escaped) > MAX_RENDER_LENGTH:
+                  return escaped[: MAX_RENDER_LENGTH - 3] + "..."
+
+              return escaped
+
+
+          def sanitize_id(value: object) -> str:
+              text = value if isinstance(value, str) else ""
+
+              if re.fullmatch(r"[0-9]+", text):
+                  return "<numeric-id>"
+
+              return "<invalid-id>"
+
+
+          def sanitize_sub(value: object) -> str:
+              text = value if isinstance(value, str) else str(value)
+              sanitized = re.sub(r"@([0-9]+)", "@<id>", text)
+              return sanitize_control(sanitized)
+
+
+          def sanitize_generic(value: object) -> str:
+              text = value if isinstance(value, str) else str(value)
+              sanitized = re.sub(r"[0-9]{4,}", "<number>", text)
+              return sanitize_control(sanitized)
+
+
+          def sanitize_claim(claim: str, value: object) -> str:
+              if claim in {"repository_id", "repository_owner_id"}:
+                  return sanitize_id(value)
+
+              if claim == "sub":
+                  return sanitize_sub(value)
+
+              return sanitize_generic(value)
+
+
+          def request_oidc_token(
+              request_url: str,
+              request_token: str,
+              audience: str,
+          ) -> str:
+              parsed = urllib.parse.urlparse(request_url)
+              query = urllib.parse.parse_qsl(
+                  parsed.query,
+                  keep_blank_values=True,
+              )
+              query = [
+                  (key, value)
+                  for key, value in query
+                  if key != "audience"
+              ]
+              query.append(("audience", audience))
+
+              token_url = urllib.parse.urlunparse(
+                  parsed._replace(
+                      query=urllib.parse.urlencode(query),
+                  )
+              )
+
+              request = urllib.request.Request(
+                  token_url,
+                  headers={
+                      "Authorization": f"Bearer {request_token}",
+                      "Accept": "application/json",
+                  },
+                  method="GET",
+              )
+
+              try:
+                  with urllib.request.urlopen(
+                      request,
+                      timeout=REQUEST_TIMEOUT_SECONDS,
+                  ) as response:
+                      body = response.read()
+              except urllib.error.HTTPError as exc:
+                  fail(
+                      "OIDC token request failed with "
+                      f"HTTP {exc.code}."
+                  )
+              except urllib.error.URLError:
+                  fail(
+                      "OIDC token request failed due to "
+                      "a network or URL error."
+                  )
+              except TimeoutError:
+                  fail("OIDC token request timed out.")
+
+              try:
+                  payload = json.loads(
+                      body.decode("utf-8"),
+                  )
+              except (
+                  UnicodeDecodeError,
+                  json.JSONDecodeError,
+              ):
+                  fail(
+                      "OIDC token response was not valid JSON."
+                  )
+
+              if not isinstance(payload, dict):
+                  fail(
+                      "OIDC token response was not a JSON object."
+                  )
+
+              token = payload.get("value")
+
+              if not isinstance(token, str) or not token.strip():
+                  fail(
+                      "OIDC token response did not contain "
+                      "a non-empty value field."
+                  )
+
+              return token
+
+
+          def decode_jwt_payload(token: str) -> dict:
+              segments = token.split(".")
+
+              if len(segments) != 3:
+                  fail(
+                      "OIDC token did not contain exactly "
+                      "three JWT segments."
+                  )
+
+              payload_segment = segments[1]
+              padding = "=" * (-len(payload_segment) % 4)
+
+              try:
+                  decoded = base64.urlsafe_b64decode(
+                      payload_segment + padding,
+                  )
+                  payload = json.loads(
+                      decoded.decode("utf-8"),
+                  )
+              except (
+                  ValueError,
+                  UnicodeDecodeError,
+                  json.JSONDecodeError,
+              ):
+                  fail(
+                      "OIDC token payload could not be "
+                      "decoded as JSON."
+                  )
+
+              if not isinstance(payload, dict):
+                  fail(
+                      "OIDC token payload was not a JSON object."
+                  )
+
+              return payload
+
+
+          expected_audience = require_env(
+              "EXPECTED_AUDIENCE",
+          )
+          expected_repository = require_env(
+              "EXPECTED_REPOSITORY",
+          )
+          expected_repository_id = require_env(
+              "EXPECTED_REPOSITORY_ID",
+          )
+          expected_repository_owner = require_env(
+              "EXPECTED_REPOSITORY_OWNER",
+          )
+          expected_repository_owner_id = require_env(
+              "EXPECTED_REPOSITORY_OWNER_ID",
+          )
+          expected_ref = require_env(
+              "EXPECTED_REF",
+          )
+          expected_environment = require_env(
+              "EXPECTED_ENVIRONMENT",
+          )
+          expected_job_workflow_ref = require_env(
+              "EXPECTED_JOB_WORKFLOW_REF",
+          )
+          canonical_job_workflow_ref = require_env(
+              "CANONICAL_JOB_WORKFLOW_REF",
+          )
+
+          if not hmac.compare_digest(
+              expected_job_workflow_ref,
+              canonical_job_workflow_ref,
+          ):
+              fail(
+                  "job.workflow_ref does not match the "
+                  "canonical reusable workflow ref."
+              )
+
+          repository_parts = expected_repository.split("/")
+
+          if len(repository_parts) != 2:
+              fail(
+                  "EXPECTED_REPOSITORY must be owner/repository."
+              )
+
+          owner_name, repository_name = repository_parts
+
+          if not hmac.compare_digest(
+              owner_name,
+              expected_repository_owner,
+          ):
+              fail(
+                  "EXPECTED_REPOSITORY owner does not match "
+                  "EXPECTED_REPOSITORY_OWNER."
+              )
+
+          expected_subject = (
+              f"repo:{expected_repository_owner}"
+              f"@{expected_repository_owner_id}/"
+              f"{repository_name}@{expected_repository_id}"
+              f":environment:{expected_environment}"
+          )
+
+          expected_claims = {
+              "aud": expected_audience,
+              "sub": expected_subject,
+              "repository": expected_repository,
+              "repository_id": expected_repository_id,
+              "repository_owner_id": (
+                  expected_repository_owner_id
+              ),
+              "ref": expected_ref,
+              "environment": expected_environment,
+              "job_workflow_ref": (
+                  expected_job_workflow_ref
+              ),
+          }
+
+          for claim_name, claim_value in expected_claims.items():
+              if (
+                  not isinstance(claim_value, str)
+                  or not claim_value.strip()
+              ):
+                  fail(
+                      "Expected OIDC claim "
+                      f"{claim_name} must be a non-empty string."
+                  )
+
+          request_url = os.environ.get(
+              "ACTIONS_ID_TOKEN_REQUEST_URL",
+              "",
+          )
+          request_token = os.environ.get(
+              "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+              "",
+          )
+
+          if (
+              not isinstance(request_url, str)
+              or not request_url.strip()
+          ):
+              fail(
+                  "ACTIONS_ID_TOKEN_REQUEST_URL is missing."
+              )
+
+          if (
+              not isinstance(request_token, str)
+              or not request_token.strip()
+          ):
+              fail(
+                  "ACTIONS_ID_TOKEN_REQUEST_TOKEN is missing."
+              )
+
+          oidc_token = request_oidc_token(
+              request_url,
+              request_token,
+              expected_audience,
+          )
+          actual_claims = decode_jwt_payload(
+              oidc_token,
+          )
+
+          mismatches = 0
+
+          for claim_name, expected_value in expected_claims.items():
+              actual_value = actual_claims.get(
+                  claim_name,
+              )
+
+              if not isinstance(actual_value, str):
+                  print(
+                      f"OIDC claim {claim_name}: mismatch"
+                  )
+                  print(
+                      "  expected="
+                      + sanitize_claim(
+                          claim_name,
+                          expected_value,
+                      )
+                  )
+                  print("  actual=<non-string>")
+                  mismatches += 1
+                  continue
+
+              if hmac.compare_digest(
+                  actual_value,
+                  expected_value,
+              ):
+                  print(
+                      f"OIDC claim {claim_name}: match"
+                  )
+                  continue
+
+              print(
+                  f"OIDC claim {claim_name}: mismatch"
+              )
+              print(
+                  "  expected="
+                  + sanitize_claim(
+                      claim_name,
+                      expected_value,
+                  )
+              )
+              print(
+                  "  actual="
+                  + sanitize_claim(
+                      claim_name,
+                      actual_value,
+                  )
+              )
+              mismatches += 1
+
+          if mismatches:
+              fail(
+                  "GitHub OIDC token claim contract failed for "
+                  f"{mismatches} claim(s)."
+              )
+
+          print(
+              "GitHub OIDC token claim contract verified."
+          )
+          PY
+
+      - name: Configure temporary AWS credentials
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          role-to-assume: ${{ inputs.identity_role_arn }}
+          aws-region: ${{ inputs.aws_region }}
+          allowed-account-ids: ${{ inputs.aws_account_id }}
+          role-duration-seconds: 900
+          role-session-name: clouddoc-plan-identity-${{ github.run_id }}
+          mask-aws-account-id: true
+          unset-current-credentials: true
+
+      - name: Verify assumed AWS identity
+        shell: bash
+        env:
+          EXPECTED_ROLE_NAME: clouddoc-dev-github-identity
+          EXPECTED_SESSION_NAME: clouddoc-plan-identity-${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          identity_arn="$(
+            aws sts get-caller-identity \
+              --query Arn \
+              --output text
+          )"
+
+          expected_suffix=":assumed-role/${EXPECTED_ROLE_NAME}/${EXPECTED_SESSION_NAME}"
+
+          if [[ "$identity_arn" != *"$expected_suffix" ]]; then
+            echo "::error::The temporary AWS session does not match the approved identity role."
+            exit 1
+          fi
+
+          echo "AWS OIDC identity federation verified."
+
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify repository checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          actual_sha="$(git rev-parse HEAD)"
+
+          if [[ "$actual_sha" != "$GITHUB_SHA" ]]; then
+            echo "::error::The checked-out commit does not match GITHUB_SHA."
+            exit 1
+          fi
+
+          if [[ -n "$(git status --porcelain)" ]]; then
+            echo "::error::The checked-out repository is not clean."
+            exit 1
+          fi
+
+          echo "Repository checkout verified."
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            requirements/lambda.lock.txt
+
+      - name: Install project
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: "1.15.8"
+          terraform_wrapper: false
+
+      - name: Build Lambda package
+        shell: bash
+        run: |
+          set -euo pipefail
+          make lambda-package
+
+      - name: Verify Lambda package
+        shell: bash
+        run: |
+          set -euo pipefail
+          make lambda-package-check
+
+      - name: Create and summarize Terraform plan
+        shell: bash
+        env:
+          CLOUDDOC_TERRAFORM_STATE_BUCKET: ${{ inputs.state_bucket }}
+          CLOUDDOC_EXPECTED_AWS_ACCOUNT_ID: ${{ inputs.aws_account_id }}
+          CLOUDDOC_DEV_TERRAFORM_STATE_ROLE_ARN: ${{ inputs.state_role_arn }}
+          CLOUDDOC_DEV_TERRAFORM_PLAN_ROLE_ARN: ${{ inputs.plan_role_arn }}
+          TF_DATA_DIR: ${{ github.workspace }}/infra/terraform/.terraform-data/dev
+        run: |
+          set -euo pipefail
+
+          PLAN_DIRECTORY="${RUNNER_TEMP}/clouddoc-terraform-plan"
+          PLAN_FILE="${PLAN_DIRECTORY}/clouddoc.tfplan"
+          MANIFEST_FILE="${PLAN_DIRECTORY}/clouddoc.tfplan.json"
+          PLAN_JSON="${PLAN_DIRECTORY}/terraform-show.json"
+
+          cleanup() {
+            original_status=$?
+            cleanup_status=0
+
+            if ! rm -rf -- "$PLAN_DIRECTORY"; then
+              cleanup_status=1
+            fi
+
+            if [[ -e "$PLAN_DIRECTORY" ]]; then
+              cleanup_status=1
+            fi
+
+            trap - EXIT
+
+            if [[ "$cleanup_status" -ne 0 ]]; then
+              echo "::error::Terraform plan cleanup failed."
+              exit 1
+            fi
+
+            exit "$original_status"
+          }
+
+          trap cleanup EXIT
+
+          if [[ -e "$PLAN_DIRECTORY" ]]; then
+            echo "::error::Terraform plan directory already exists."
+            exit 1
+          fi
+
+          mkdir -m 700 -p "$PLAN_DIRECTORY"
+
+          python scripts/terraform_workflow.py plan \
+            --environment dev \
+            --output-directory "$PLAN_DIRECTORY"
+
+          if [[ ! -f "$PLAN_FILE" ]]; then
+            echo "::error::Terraform did not create the expected saved plan."
+            exit 1
+          fi
+
+          if [[ ! -f "$MANIFEST_FILE" ]]; then
+            echo "::error::Terraform did not create the expected plan manifest."
+            exit 1
+          fi
+
+          terraform \
+            -chdir=infra/terraform \
+            show \
+            -json \
+            "$PLAN_FILE" \
+            > "$PLAN_JSON"
+
+          if [[ ! -s "$PLAN_JSON" ]]; then
+            echo "::error::Terraform did not create the expected JSON plan."
+            exit 1
+          fi
+
+          python scripts/summarize_terraform_plan.py \
+            "$PLAN_JSON" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+          {
+            echo
+            echo "> Speculative plan only. No deployment command was executed, and no saved plan was retained."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "Sanitized Terraform plan summary published."
+
+      - name: Verify Terraform plan cleanup
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          plan_directory="${RUNNER_TEMP}/clouddoc-terraform-plan"
+
+          if [[ -e "$plan_directory" ]]; then
+            echo "::error::Temporary Terraform plan files remain on the runner."
+            exit 1
+          fi
+
+          echo "Temporary Terraform plan cleanup verified."
