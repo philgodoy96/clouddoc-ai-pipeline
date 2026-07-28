@@ -251,7 +251,7 @@ data "aws_iam_policy_document" "terraform_plan_access" {
       "s3:GetAccelerateConfiguration",
       "s3:GetBucketAcl",
       "s3:GetBucketCORS",
-      "s3:GetBucketLifecycleConfiguration",
+      "s3:GetLifecycleConfiguration",
       "s3:GetBucketLocation",
       "s3:GetBucketLogging",
       "s3:GetBucketNotification",
