@@ -604,6 +604,7 @@ def test_application_log_group_arns_remain_bare_tagging_form() -> None:
 
     assert len(arn_entries) == 5
     assert all(not entry.endswith(":*") for entry in arn_entries)
+    assert "*" not in arn_entries
     assert all(":log-group:" in entry for entry in arn_entries)
     assert sum("/aws/lambda/" in entry for entry in arn_entries) == 4
     assert "local.control_plane_api_access_log_group_name" in list_body
@@ -655,6 +656,65 @@ def test_application_log_group_management_arns_derive_suffixed_form() -> None:
     assert "resources = local.application_log_group_management_arns" in manage_logs_body
     assert "resources = local.application_log_group_arns" not in manage_logs_body
     assert 'resources = ["*"]' not in manage_logs_body
+    assert quoted_actions(manage_logs_body) == {
+        "logs:CreateLogGroup",
+        "logs:DeleteLogGroup",
+        "logs:DeleteRetentionPolicy",
+        "logs:PutRetentionPolicy",
+    }
+    assert "logs:ListTagsForResource" not in quoted_actions(manage_logs_body)
+    assert "logs:TagResource" not in quoted_actions(manage_logs_body)
+    assert "logs:UntagResource" not in quoted_actions(manage_logs_body)
+
+    manage_tags = re.search(
+        r'sid\s*=\s*"ManageCloudWatchLogGroupTags".*?(?=sid\s*=|\Z)',
+        apply_block,
+        flags=re.DOTALL,
+    )
+    assert manage_tags is not None
+    manage_tags_body = manage_tags.group(0)
+    assert "resources = local.application_log_group_arns" in manage_tags_body
+    assert "application_log_group_management_arns" not in manage_tags_body
+    assert 'resources = ["*"]' not in manage_tags_body
+    assert quoted_actions(manage_tags_body) == {
+        "logs:ListTagsForResource",
+        "logs:TagResource",
+        "logs:UntagResource",
+    }
+
+
+def test_apply_cloudwatch_log_group_statements_keep_bare_versus_management_arns() -> (
+    None
+):
+    """Apply must separate management (:*) from tagging (bare) log-group ARNs."""
+    apply_block = extract_policy_document_block("terraform_apply_access")
+
+    manage_logs_body = re.search(
+        r'sid\s*=\s*"ManageCloudWatchLogGroups".*?(?=sid\s*=|\Z)',
+        apply_block,
+        flags=re.DOTALL,
+    ).group(0)
+    manage_tags_body = re.search(
+        r'sid\s*=\s*"ManageCloudWatchLogGroupTags".*?(?=sid\s*=|\Z)',
+        apply_block,
+        flags=re.DOTALL,
+    ).group(0)
+
+    assert "resources = local.application_log_group_management_arns" in manage_logs_body
+    assert "resources = local.application_log_group_arns" in manage_tags_body
+    assert 'resources = ["*"]' not in manage_logs_body
+    assert 'resources = ["*"]' not in manage_tags_body
+    assert re.search(r'resources\s*=\s*\[\s*"\*"\s*\]', manage_logs_body) is None
+    assert re.search(r'resources\s*=\s*\[\s*"\*"\s*\]', manage_tags_body) is None
+    assert "logs:ListTagsForResource" not in quoted_actions(manage_logs_body)
+    assert {"logs:TagResource", "logs:UntagResource"}.isdisjoint(
+        quoted_actions(manage_logs_body)
+    )
+    assert quoted_actions(manage_tags_body) == {
+        "logs:ListTagsForResource",
+        "logs:TagResource",
+        "logs:UntagResource",
+    }
 
 
 def test_apply_policy_includes_encoded_api_gateway_tag_resource() -> None:
@@ -675,6 +735,11 @@ def test_apply_policy_includes_encoded_api_gateway_tag_resource() -> None:
     assert 'resources = ["*"]' not in api_gateway_body
     assert 'resources = ["*"]' not in re.search(
         r'sid\s*=\s*"ManageCloudWatchLogGroups".*?(?=sid\s*=|\Z)',
+        apply_block,
+        flags=re.DOTALL,
+    ).group(0)
+    assert 'resources = ["*"]' not in re.search(
+        r'sid\s*=\s*"ManageCloudWatchLogGroupTags".*?(?=sid\s*=|\Z)',
         apply_block,
         flags=re.DOTALL,
     ).group(0)
@@ -717,3 +782,7 @@ def test_authorization_security_boundaries_remain_intact_after_apply_fix() -> No
         assert forbidden not in apply_block
     assert "aws_iam_policy_attachment" not in terraform_source()
     assert "permissions_boundary" not in terraform_source().lower()
+    assert "bedrock:InvokeModel" not in apply_actions
+    assert "lambda:InvokeFunction" not in apply_actions
+    assert PLAN_DATA_PLANE_ACTIONS.isdisjoint(quoted_actions(plan_block))
+    assert PLAN_DATA_PLANE_ACTIONS.isdisjoint(apply_actions)

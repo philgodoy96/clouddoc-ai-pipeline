@@ -128,13 +128,23 @@ data "aws_iam_policy_document" "terraform_apply_access" {
       "logs:CreateLogGroup",
       "logs:DeleteLogGroup",
       "logs:DeleteRetentionPolicy",
-      "logs:ListTagsForResource",
       "logs:PutRetentionPolicy",
+    ]
+
+    resources = local.application_log_group_management_arns
+  }
+
+  statement {
+    sid    = "ManageCloudWatchLogGroupTags"
+    effect = "Allow"
+
+    actions = [
+      "logs:ListTagsForResource",
       "logs:TagResource",
       "logs:UntagResource",
     ]
 
-    resources = local.application_log_group_management_arns
+    resources = local.application_log_group_arns
   }
 
   statement {
