@@ -31,3 +31,8 @@ output "github_identity_workflow_ref" {
   description = "Exact reusable workflow reference trusted by the role."
   value       = var.github_identity_workflow_ref
 }
+
+output "github_trusted_workflow_refs" {
+  description = "Exact reusable-workflow allowlist trusted by the GitHub identity role."
+  value       = local.github_trusted_workflow_refs
+}

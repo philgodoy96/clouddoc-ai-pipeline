@@ -9,5 +9,6 @@ github_repository_owner_id = "REPLACE_WITH_GITHUB_REPOSITORY_OWNER_ID"
 github_environment           = "dev"
 github_ref                   = "refs/heads/main"
 github_identity_workflow_ref = "philgodoy96/clouddoc-ai-pipeline/.github/workflows/reusable-aws-identity.yml@refs/heads/main"
+github_terraform_plan_workflow_ref = "philgodoy96/clouddoc-ai-pipeline/.github/workflows/reusable-terraform-plan.yml@refs/heads/main"
 
 role_max_session_duration = 3600

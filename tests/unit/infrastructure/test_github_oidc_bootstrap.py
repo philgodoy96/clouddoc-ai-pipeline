@@ -40,6 +40,14 @@ EXPECTED_TRUST_CLAIMS = {
     "environment",
     "job_workflow_ref",
 }
+IDENTITY_WORKFLOW_REF = (
+    "philgodoy96/clouddoc-ai-pipeline/.github/workflows/"
+    "reusable-aws-identity.yml@refs/heads/main"
+)
+TERRAFORM_PLAN_WORKFLOW_REF = (
+    "philgodoy96/clouddoc-ai-pipeline/.github/workflows/"
+    "reusable-terraform-plan.yml@refs/heads/main"
+)
 
 
 def read_bootstrap_file(relative_path: str) -> str:
@@ -145,8 +153,11 @@ def test_trust_policy_uses_only_exact_approved_claims() -> None:
     )
 
     assert actual_claims == EXPECTED_TRUST_CLAIMS
+    assert len(actual_claims) == 8
     assert source.count('test     = "StringEquals"') == 8
     assert source.count('"sts:AssumeRoleWithWebIdentity"') == 1
+    assert source.count("${local.github_oidc_host}:job_workflow_ref") == 1
+    assert "values = local.github_trusted_workflow_refs" in source
     assert "${local.github_oidc_host}:sub" in source
     assert "local.github_oidc_subject" in source
     assert "StringLike" not in source
@@ -154,6 +165,8 @@ def test_trust_policy_uses_only_exact_approved_claims() -> None:
     assert '"?"' not in source
     assert "job_workflow_sha" not in source
     assert "pull_request" not in source
+    assert "refs/pull/" not in source
+    assert "refs/tags/" not in source
 
 
 def test_oidc_subject_is_built_from_reviewed_identity_variables() -> None:
@@ -169,6 +182,17 @@ def test_oidc_subject_is_built_from_reviewed_identity_variables() -> None:
     assert "job_workflow_sha" not in locals_source
 
 
+def test_trusted_workflow_refs_local_contains_exactly_both_variables() -> None:
+    """Canonical allowlist must include exactly the identity and plan workflow refs."""
+    locals_source = re.sub(r"\s+", "", read_bootstrap_file("locals.tf"))
+
+    assert "github_trusted_workflow_refs=sort([" in locals_source
+    assert "var.github_identity_workflow_ref" in locals_source
+    assert "var.github_terraform_plan_workflow_ref" in locals_source
+    assert locals_source.count("var.github_identity_workflow_ref") == 1
+    assert locals_source.count("var.github_terraform_plan_workflow_ref") == 1
+
+
 def test_identity_role_has_no_authorization_policy() -> None:
     """The verification role must remain authentication-only."""
     source = terraform_source().lower()
@@ -182,6 +206,10 @@ def test_identity_role_has_no_authorization_policy() -> None:
         "permissions_boundary",
         "inline_policy",
         "policy_arn",
+        "arn:aws:iam::aws:policy/",
+        "administratoraccess",
+        "readonlyaccess",
+        "poweruseraccess",
     )
 
     for value in forbidden:
@@ -216,6 +244,12 @@ def test_example_variables_keep_identifiers_as_placeholders() -> None:
     ) in source
     assert 'github_environment           = "dev"' in source
     assert 'github_ref                   = "refs/heads/main"' in source
+    assert f'github_identity_workflow_ref = "{IDENTITY_WORKFLOW_REF}"' in source
+    assert (
+        f'github_terraform_plan_workflow_ref = "{TERRAFORM_PLAN_WORKFLOW_REF}"'
+    ) in source
+    assert re.search(r'=\s*"[0-9]{5,}"', source) is None
+    assert "arn:aws:iam::" not in source
 
     lowered = source.lower()
     assert "access_key" not in lowered
@@ -224,15 +258,31 @@ def test_example_variables_keep_identifiers_as_placeholders() -> None:
 
 
 def test_role_and_workflow_defaults_remain_narrow() -> None:
-    """Defaults should target one role, branch, environment, and workflow."""
+    """Defaults should target one role, branch, environment, and two workflows."""
     variables = read_bootstrap_file("variables.tf")
     locals_source = read_bootstrap_file("locals.tf")
+    outputs = read_bootstrap_file("outputs.tf")
 
+    assert 'variable "github_identity_workflow_ref"' in variables
+    assert 'variable "github_terraform_plan_workflow_ref"' in variables
     assert 'default     = "dev"' in variables
     assert 'default     = "refs/heads/main"' in variables
+    assert f'default     = "{IDENTITY_WORKFLOW_REF}"' in variables
+    assert f'default     = "{TERRAFORM_PLAN_WORKFLOW_REF}"' in variables
     assert "reusable-aws-identity.yml@refs/heads/main" in variables
+    assert "reusable-terraform-plan.yml@refs/heads/main" in variables
+    assert "*" not in IDENTITY_WORKFLOW_REF
+    assert "*" not in TERRAFORM_PLAN_WORKFLOW_REF
+    assert "?" not in IDENTITY_WORKFLOW_REF
+    assert "?" not in TERRAFORM_PLAN_WORKFLOW_REF
+    assert "refs/pull/" not in variables
+    assert "refs/tags/" not in variables
     assert "var.role_max_session_duration == 3600" in variables
     assert (
         '"${var.project_name}-${var.github_environment}-github-identity"'
         in locals_source
     )
+    assert 'output "github_identity_workflow_ref"' in outputs
+    assert 'output "github_trusted_workflow_refs"' in outputs
+    assert "value       = local.github_trusted_workflow_refs" in outputs
+    assert "value       = var.github_identity_workflow_ref" in outputs
