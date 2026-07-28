@@ -1,0 +1,46 @@
+name: Terraform Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      plan_run_id:
+        description: Successful Terraform Plan workflow run ID
+        required: true
+        type: string
+      confirmation:
+        description: Type APPLY-DEV to authorize the dev deployment
+        required: true
+        type: string
+      allow_destructive_changes:
+        description: Explicitly authorize delete or replacement actions
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  actions: read
+  contents: read
+  id-token: write
+
+concurrency:
+  group: clouddoc-terraform-deploy-dev
+  cancel-in-progress: false
+
+jobs:
+  deploy-dev:
+    name: Deploy dev infrastructure
+    uses: ./.github/workflows/reusable-terraform-deploy.yml
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    with:
+      plan_run_id: ${{ inputs.plan_run_id }}
+      confirmation: ${{ inputs.confirmation }}
+      allow_destructive_changes: ${{ inputs.allow_destructive_changes }}
+      aws_account_id: ${{ vars.CLOUDDOC_AWS_ACCOUNT_ID }}
+      aws_region: us-east-1
+      deploy_identity_role_arn: ${{ vars.CLOUDDOC_DEV_DEPLOY_IDENTITY_ROLE_ARN }}
+      state_bucket: ${{ vars.CLOUDDOC_TERRAFORM_STATE_BUCKET }}
+      state_role_arn: ${{ vars.CLOUDDOC_DEV_TERRAFORM_STATE_ROLE_ARN }}
+      apply_role_arn: ${{ vars.CLOUDDOC_DEV_TERRAFORM_APPLY_ROLE_ARN }}
