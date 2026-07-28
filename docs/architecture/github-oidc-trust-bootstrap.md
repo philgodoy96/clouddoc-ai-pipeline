@@ -3,13 +3,23 @@
 ## Status
 
 ```text
-Initial OIDC bootstrap was provisioned.
-The original AWS identity proof completed successfully.
-The repository now extends the source trust contract to a second exact reusable workflow.
-The permanent OIDC claim preflight is implemented in the reusable workflows.
-Applying that trust extension in AWS remains pending until post-merge activation.
-Terraform plan authorization is a separate boundary documented by ADR-027.
-Terraform plan federation has not yet been verified.
+OIDC identity proof:
+    operationally verified
+
+Terraform plan OIDC workflow trust:
+    source implemented, AWS apply pending
+
+Deployment identity:
+    source implemented, AWS apply pending
+
+Controlled deploy workflow trust:
+    source implemented, AWS apply pending
+
+Terraform plan federation:
+    pending operational activation
+
+Controlled deploy federation:
+    pending operational proof
 ```
 
 Preserve the distinction between:
@@ -27,19 +37,23 @@ The repository now contains:
 GitHub OIDC Terraform bootstrap root
 strict GitHub-to-AWS role trust policy with exact subject condition
 permissionless development identity role
+permissionless Terraform deployment identity role
 mocked Terraform trust tests
 static bootstrap security tests
 manual AWS identity-check caller workflow
 reusable AWS identity workflow
-static GitHub Actions identity and Terraform-plan workflow contracts
+exact workflow ownership for plan and deploy identities
+environment separation between dev and dev-deploy
+static GitHub Actions identity, plan, and deploy workflow contracts
 ```
 
 The following remain intentionally pending:
 
 ```text
 Terraform plan reusable-workflow trust apply
+deployment identity AWS apply
 Terraform plan federation verification
-deployment authorization
+controlled deploy federation verification
 ```
 
 ## Purpose
@@ -48,7 +62,7 @@ CloudDoc needs a production-minded mechanism for GitHub Actions to authenticate 
 
 This architecture establishes the identity trust boundary first.
 
-It does not grant Terraform plan authorization, Terraform apply authorization, or deployment authorization.
+It does not grant Terraform plan authorization, Terraform apply authorization, or deployment authorization. Those remain separate authorization-role boundaries.
 
 The central engineering decision is:
 
@@ -69,8 +83,44 @@ temporary permissionless session
         ↓
 identity verification
         ↓
-future least-privilege authorization
+separate least-privilege authorization roles
 ```
+
+## Identity Architecture
+
+CloudDoc uses two permissionless identity roles:
+
+```text
+clouddoc-dev-github-identity
+    plan/identity permissionless role
+    environment: dev
+    workflows:
+        reusable-aws-identity.yml
+        reusable-terraform-plan.yml
+
+clouddoc-dev-github-deploy-identity
+    deployment permissionless role
+    environment: dev-deploy
+    workflow:
+        reusable-terraform-deploy.yml
+```
+
+Exact workflow ownership and environment separation keep plan and deploy authentication distinct. Downstream authorization then separates further:
+
+```text
+state role
+    plan identity + deployment identity
+
+plan role
+    plan identity only
+
+apply role
+    deployment identity only
+```
+
+The existing identity role is not reused for apply authorization. Reusing it would allow plan-trusted workflows to reach the Terraform apply role.
+
+See [Terraform Deployment Authorization](terraform-deployment-authorization.md) and [ADR-028](../adr/ADR-028-controlled-single-operator-terraform-deployment.md).
 
 ## Architecture Overview
 
@@ -82,8 +132,9 @@ Human bootstrap operator
 infra/bootstrap/github-oidc
         │
         ├── aws_iam_openid_connect_provider
-        ├── strict trust policy
-        └── permissionless IAM role
+        ├── strict trust policies
+        ├── permissionless plan/identity role
+        └── permissionless deployment identity role
                      │
                      ▼
            AWS IAM trust substrate
@@ -92,31 +143,16 @@ infra/bootstrap/github-oidc
 Manual workflow dispatch from main
         │
         ▼
-AWS Identity Check
+AWS Identity Check / Terraform Plan / Terraform Deploy
         │
         ▼
-Reusable AWS Identity
+Reusable identity, plan, or deploy workflow
         │
-        ├── environment: dev
+        ├── environment: dev or dev-deploy
         ├── contents: read
         ├── id-token: write
-        ├── no checkout
-        ├── no project execution
-        ├── no deployment command
-        ├── workflow-context validation
-        └── OIDC claim preflight
-                     │
-                     ▼
-GitHub OIDC token (process-memory-only token handling)
-                     │
-                     ▼
-AWS STS AssumeRoleWithWebIdentity
-                     │
-                     ▼
-15-minute temporary permissionless session
-                     │
-                     ▼
-AWS STS GetCallerIdentity
+        ├── exact eight-claim OIDC preflight
+        └── temporary permissionless session only
 ```
 
 ## Component Boundaries
@@ -1680,7 +1716,7 @@ GitHub workflow run
 AWS STS assumed-role session
 ```
 
-Future CloudTrail review can use this session name when Terraform plan authorization and deployment authorization is introduced.
+Future CloudTrail review can use this session name when Terraform plan authorization and controlled deployment authorization are activated.
 
 CloudTrail alerting and formal audit dashboards remain deferred.
 
@@ -1706,7 +1742,10 @@ The AWS IAM OIDC provider and IAM role do not introduce material recurring compu
 ```text
 OIDC Terraform root
 strict trust policy with exact ID-qualified subject
-permissionless identity role
+permissionless plan/identity role
+permissionless deployment identity role
+exact workflow ownership for plan and deploy
+environment separation between dev and dev-deploy
 Terraform mocked tests
 static bootstrap tests
 manual caller workflow
@@ -1730,6 +1769,8 @@ original AWS identity proof
 
 ```text
 second exact reusable workflow trust entry for reusable-terraform-plan.yml
+deployment identity role for reusable-terraform-deploy.yml@refs/heads/main
+dev-deploy environment trust for the deployment identity
 ```
 
 ### Not yet re-verified against AWS
@@ -1737,9 +1778,10 @@ second exact reusable workflow trust entry for reusable-terraform-plan.yml
 ```text
 successful AssumeRoleWithWebIdentity for the Terraform plan reusable workflow
 successful GetCallerIdentity evidence for the Terraform plan reusable workflow
+successful AssumeRoleWithWebIdentity for the Terraform deploy reusable workflow
 ```
 
-### Not yet authorized
+### Not yet authorized by this root
 
 ```text
 Terraform state read
@@ -1747,22 +1789,13 @@ Terraform state write
 Terraform plan
 Terraform apply
 application resource management
-artifact publication
-deployment
-rollback
 ```
+
+Authorization roles are owned by the separate Terraform authorization bootstrap. Live plan activation and live deployment proof remain pending.
 
 ## Intentionally Deferred
 
 ```text
-Terraform state access policy
-Terraform plan role
-Terraform apply role
-application deployment policy
-IAM PassRole
-artifact publication
-artifact signing
-GitHub deployment approvals
 staging identity
 production identity
 cross-account deployment
@@ -1770,9 +1803,12 @@ permissions boundary
 inline session policy
 managed session policy
 CloudTrail alerting
-automatic deployment
-rollback workflow
-drift workflow
+team-based reviewers
+multi-party approval
+automatic rollback
+HCP Terraform
+persistent binary plans
+policy-as-code platforms
 ```
 
 These capabilities require distinct authorization, review, and operational contracts.
@@ -1785,9 +1821,12 @@ These capabilities require distinct authorization, review, and operational contr
 - [Terraform State Bootstrap](../../infra/bootstrap/terraform-state/README.md)
 - [Contributing](../../CONTRIBUTING.md)
 - [Terraform Plan Authorization](terraform-plan-authorization.md)
+- [Terraform Deployment Authorization](terraform-deployment-authorization.md)
 - [Terraform Plan Workflow Runbook](../operations/terraform-plan-workflow.md)
+- [Terraform Deploy Workflow Runbook](../operations/terraform-deploy-workflow.md)
 - [ADR-026: Separate OIDC Authentication from Deployment Authorization](../adr/ADR-026-separate-oidc-authentication-from-deployment-authorization.md)
 - [ADR-027: Separate Terraform State, Plan, and Apply Authorization](../adr/ADR-027-separate-terraform-state-plan-and-apply-authorization.md)
+- [ADR-028: Controlled Single-Operator Terraform Deployment](../adr/ADR-028-controlled-single-operator-terraform-deployment.md)
 
 ## References
 
