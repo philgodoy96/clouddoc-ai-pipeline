@@ -24,7 +24,16 @@ IDENTITY_WORKFLOWS = (
     REUSABLE_AWS_IDENTITY_WORKFLOW,
 )
 
-LOCAL_REUSABLE_WORKFLOW_USES = "uses: ./.github/workflows/reusable-aws-identity.yml"
+LOCAL_REUSABLE_AWS_IDENTITY_USES = "uses: ./.github/workflows/reusable-aws-identity.yml"
+LOCAL_REUSABLE_TERRAFORM_PLAN_USES = (
+    "uses: ./.github/workflows/reusable-terraform-plan.yml"
+)
+LOCAL_REUSABLE_WORKFLOW_USES = frozenset(
+    {
+        LOCAL_REUSABLE_AWS_IDENTITY_USES,
+        LOCAL_REUSABLE_TERRAFORM_PLAN_USES,
+    }
+)
 
 EXPECTED_ACTIONS = {
     "actions/checkout": (
@@ -45,10 +54,10 @@ EXPECTED_ACTIONS = {
     ),
 }
 EXPECTED_ACTION_COUNTS = {
-    "actions/checkout": 3,
-    "actions/setup-python": 3,
-    "hashicorp/setup-terraform": 1,
-    "aws-actions/configure-aws-credentials": 1,
+    "actions/checkout": 4,
+    "actions/setup-python": 4,
+    "hashicorp/setup-terraform": 2,
+    "aws-actions/configure-aws-credentials": 2,
 }
 
 ACTION_REFERENCE_PATTERN = re.compile(
@@ -321,7 +330,7 @@ def test_every_external_action_uses_an_approved_full_sha() -> None:
         for reference in action_references(source)
     ]
 
-    assert len(references) == 8
+    assert len(references) == 12
 
     for action, reference, comment in references:
         assert action in EXPECTED_ACTIONS
@@ -355,7 +364,7 @@ def test_no_mutable_action_reference_remains() -> None:
         assert action_lines, f"No action references found in {path}"
 
         for line in action_lines:
-            if line == LOCAL_REUSABLE_WORKFLOW_USES:
+            if line in LOCAL_REUSABLE_WORKFLOW_USES:
                 continue
 
             match = ACTION_REFERENCE_PATTERN.fullmatch(line)
@@ -371,8 +380,8 @@ def test_every_checkout_disables_persisted_credentials() -> None:
     sources = workflow_sources()
     combined = "\n".join(sources.values())
 
-    assert combined.count("actions/checkout@") == 3
-    assert combined.count("persist-credentials: false") == 3
+    assert combined.count("actions/checkout@") == 4
+    assert combined.count("persist-credentials: false") == 4
 
 
 @pytest.mark.parametrize(
@@ -501,7 +510,7 @@ def test_aws_identity_caller_delegates_to_the_reusable_workflow() -> None:
     source = read_text(AWS_IDENTITY_WORKFLOW)
     job = extract_job_block(source, "verify-aws-identity")
 
-    assert LOCAL_REUSABLE_WORKFLOW_USES in job
+    assert LOCAL_REUSABLE_AWS_IDENTITY_USES in job
     assert "aws_account_id: ${{ vars.CLOUDDOC_AWS_ACCOUNT_ID }}" in job
     assert "aws_region: us-east-1" in job
     assert "role_arn: ${{ vars.CLOUDDOC_DEV_IDENTITY_ROLE_ARN }}" in job
@@ -734,10 +743,10 @@ def test_workflows_forbid_static_aws_credentials() -> None:
 
 def test_workflows_contain_no_deployment_or_state_mutation_commands() -> None:
     """Workflows must never mutate remote infrastructure or publish releases."""
-    combined = "\n".join(workflow_sources().values()).lower()
+    combined = "\n".join(workflow_sources().values())
+    lowered = combined.lower()
 
     forbidden = (
-        "terraform plan",
         "terraform apply",
         "terraform destroy",
         "force-unlock",
@@ -751,7 +760,11 @@ def test_workflows_contain_no_deployment_or_state_mutation_commands() -> None:
     )
 
     for value in forbidden:
-        assert value not in combined
+        assert value not in lowered
+
+    # Speculative plans must go through the reviewed wrapper, not a raw CLI.
+    assert re.search(r"(?m)^\s*terraform\s+plan\b", combined) is None
+    assert "python scripts/terraform_workflow.py plan" in combined
 
 
 def test_only_reusable_identity_uses_the_dev_environment() -> None:

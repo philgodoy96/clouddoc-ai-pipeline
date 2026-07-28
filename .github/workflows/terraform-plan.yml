@@ -1,0 +1,27 @@
+name: Terraform Plan
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: terraform-plan-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  plan-dev:
+    name: Plan dev infrastructure
+    uses: ./.github/workflows/reusable-terraform-plan.yml
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      aws_account_id: ${{ vars.CLOUDDOC_AWS_ACCOUNT_ID }}
+      aws_region: us-east-1
+      identity_role_arn: ${{ vars.CLOUDDOC_DEV_IDENTITY_ROLE_ARN }}
+      state_bucket: ${{ vars.CLOUDDOC_TERRAFORM_STATE_BUCKET }}
+      state_role_arn: ${{ vars.CLOUDDOC_DEV_TERRAFORM_STATE_ROLE_ARN }}
+      plan_role_arn: ${{ vars.CLOUDDOC_DEV_TERRAFORM_PLAN_ROLE_ARN }}
