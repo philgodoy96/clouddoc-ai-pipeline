@@ -43,7 +43,7 @@ offline bootstrap and workflow tests
 
 Backend declaration, bootstrap root, environment files, and the guarded workflow are implemented in the repository. Real AWS state-bucket creation, remote backend initialization, and environment plan/apply against AWS remain pending.
 
-Credential-free infrastructure CI validation is implemented. Automatic replay, operator recovery tooling, deployment workflow, real AWS deployment, and real CloudWatch validation remain separate follow-up work.
+Credential-free infrastructure CI validation is implemented. Controlled deploy workflow source is implemented. GitHub configuration, AWS activation, and live deployment proof remain pending. Automatic replay, operator recovery tooling, real AWS deployment, and real CloudWatch validation remain separate follow-up work.
 
 ## Backend and state
 
@@ -58,14 +58,15 @@ Terraform infrastructure state is operational metadata for this root. It is dist
 | Lockfiles | S3-native lock objects alongside state (`use_lockfile = true`; no DynamoDB table) |
 | Committed environment inputs | `infra/terraform/environments/*.tfvars` and `*.s3.tfbackend` |
 | Runtime bucket and account inputs | `CLOUDDOC_TERRAFORM_STATE_BUCKET`, `CLOUDDOC_EXPECTED_AWS_ACCOUNT_ID` |
-| Optional chained-role inputs | `CLOUDDOC_DEV_TERRAFORM_STATE_ROLE_ARN`, `CLOUDDOC_DEV_TERRAFORM_PLAN_ROLE_ARN` |
-| Optional provider variable | `terraform_plan_role_arn` |
+| Optional chained-role inputs | `CLOUDDOC_DEV_TERRAFORM_STATE_ROLE_ARN`, `CLOUDDOC_DEV_TERRAFORM_PLAN_ROLE_ARN`, `CLOUDDOC_DEV_TERRAFORM_APPLY_ROLE_ARN` |
+| Optional provider variables | `terraform_plan_role_arn`, `terraform_apply_role_arn` (mutually exclusive) |
 | Provider wrong-account guard | optional `expected_aws_account_id` → `allowed_account_ids` |
 | Isolated Terraform metadata | `infra/terraform/.terraform-data/<environment>/` via `TF_DATA_DIR` |
 | Saved plans and manifests | `artifacts/terraform/<environment>/` (strict JSON manifest, plan SHA-256 binding) |
+| Deployment temporary output | runner temp / approved `--output-directory` |
 | Local-state migration | rejected when local state exists before remote init |
 
-Full operator workflow, IAM expectations, and integrity rules are documented in [Terraform State and Environment Workflow](../../docs/architecture/terraform-state-and-environment-workflow.md). Bootstrap local state for the state bucket itself is an intentional narrow exception and is not remote or collaborative.
+Full operator workflow, IAM expectations, and integrity rules are documented in [Terraform State and Environment Workflow](../../docs/architecture/terraform-state-and-environment-workflow.md), [Terraform Deployment Authorization](../../docs/architecture/terraform-deployment-authorization.md), and [Terraform Deploy Workflow Runbook](../../docs/operations/terraform-deploy-workflow.md). Bootstrap local state for the state bucket itself is an intentional narrow exception and is not remote or collaborative.
 
 Real bucket creation and remote backend initialization in AWS remain future work.
 
@@ -86,6 +87,28 @@ The bucket name is supplied at runtime through `CLOUDDOC_TERRAFORM_STATE_BUCKET`
 
 Local `terraform.tfvars`, state, plans, manifests, and credentials remain outside Git.
 
+## Provider authorization modes
+
+The AWS provider supports three mutually exclusive modes:
+
+```text
+ambient
+    both plan and apply role ARNs absent
+    local approved operation with ambient credentials
+
+plan role
+    state role + plan role present
+    apply role must be absent
+    used by plan
+
+apply role
+    state role + apply role present
+    plan role must be absent
+    used by controlled deploy
+```
+
+Plan uses state + plan roles. Deploy uses state + apply roles. The plan role must be absent during deploy. The apply role must be absent during plan. Ambient mode remains supported locally.
+
 ## Operator commands
 
 Use the guarded workflow script from the repository root:
@@ -97,14 +120,36 @@ python scripts/terraform_workflow.py plan --environment dev
 python scripts/terraform_workflow.py plan --environment dev --output-directory <approved-path>
 python scripts/terraform_workflow.py show-plan --environment dev
 python scripts/terraform_workflow.py apply --environment dev --confirm-environment dev
+python scripts/terraform_workflow.py deploy --environment dev --confirm-environment APPLY-DEV
 python scripts/terraform_workflow.py output --environment dev
 ```
 
 * `offline-check` runs bootstrap and application offline validation; no AWS credentials required.
-* `init`, `plan`, `apply`, and `output` require future AWS authentication and the runtime bucket/account variables.
+* `init`, `plan`, `apply`, `deploy`, and `output` require future AWS authentication and the runtime bucket/account variables.
 * `show-plan` validates a local saved plan and manifest without calling AWS.
+* `apply` is the existing local saved-plan contract. It is not the GitHub controlled deployment path.
+* `deploy` is the controlled regenerate/compare/apply contract used by the GitHub deploy workflow.
 
-The script verifies `artifacts/lambda/clouddoc-app.zip` and its SHA-256 checksum before `plan` and `apply`. It does not expose `destroy`, `force-unlock`, `-lock=false`, or `-auto-approve`. It supports two runtime modes: ambient when both authorization role ARNs are absent, and chained when both `CLOUDDOC_DEV_TERRAFORM_STATE_ROLE_ARN` and `CLOUDDOC_DEV_TERRAFORM_PLAN_ROLE_ARN` are present. Partial role configuration fails before Terraform execution.
+Environment variables:
+
+```text
+CLOUDDOC_TERRAFORM_STATE_BUCKET
+CLOUDDOC_EXPECTED_AWS_ACCOUNT_ID
+CLOUDDOC_DEV_TERRAFORM_STATE_ROLE_ARN
+CLOUDDOC_DEV_TERRAFORM_PLAN_ROLE_ARN
+CLOUDDOC_DEV_TERRAFORM_APPLY_ROLE_ARN
+```
+
+The script verifies `artifacts/lambda/clouddoc-app.zip` and its SHA-256 checksum before `plan`, `apply`, and `deploy`. It does not expose `destroy`, `force-unlock`, `-lock=false`, or `-auto-approve`.
+
+Deployment behavior:
+
+* deployment temporary files should use runner temp or an approved output directory;
+* a verified no-op succeeds without apply;
+* fingerprint mismatch fails closed and requires a new reviewed plan;
+* partial apply is a manual incident and must not be blindly rerun;
+* automatic rollback is intentionally not claimed;
+* convergence verification remains an operator responsibility after successful apply.
 
 ## Continuous Integration
 

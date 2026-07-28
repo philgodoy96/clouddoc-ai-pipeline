@@ -4,6 +4,11 @@
 
 Accepted
 
+Separate Terraform apply authorization now exists in repository source through
+ADR-028 and the controlled deployment implementation. The apply role remains
+unactivated in AWS. Plan and apply identities remain separate. Live proof
+remains pending.
+
 ## Date
 
 2026-07-28
@@ -34,8 +39,10 @@ Terraform planning requires access to two distinct security domains:
 1. The remote Terraform state and native S3 lock object.
 2. The AWS resources refreshed by the Terraform provider.
 
-A future Terraform apply will require a third and more privileged domain:
-resource mutation.
+Terraform apply requires a third and more privileged domain: resource mutation.
+That apply authorization now exists in source under a separate deployment
+identity and apply role. It remains unactivated, and live proof remains
+pending.
 
 The current S3 backend uses:
 
@@ -53,16 +60,14 @@ encryption:
     S3-managed AES256
 ```
 
-The application AWS provider currently uses ambient credentials and does not
-assume a dedicated plan role.
-
-The existing OIDC trust authorizes one reusable workflow. Slice 32 introduces
-a second exact reusable workflow for Terraform plan orchestration.
+The existing OIDC trust authorizes exact reusable workflows for identity proof
+and Terraform plan orchestration. Deployment uses a separate permissionless
+identity and is documented by ADR-028.
 
 ## Decision
 
 CloudDoc will separate authentication, state authorization, plan
-authorization, and future apply authorization.
+authorization, and apply authorization.
 
 ### Authentication role
 
@@ -101,6 +106,9 @@ This role will authorize only:
 It will not authorize deletion of the state object or inspection of
 application resources.
 
+In source, the state role trusts the plan identity and the deployment identity.
+That dual trust remains AWS-apply pending.
+
 ### Plan role
 
 The Terraform AWS provider will assume:
@@ -123,12 +131,13 @@ It will not receive:
 Actions that technically require `Resource = "*"` will be isolated and
 documented individually.
 
-### Future apply role
+### Apply role
 
-Terraform apply authorization will use a separate role and protected
-deployment workflow in a later slice.
+Terraform apply authorization uses a separate role and controlled deployment
+workflow. That separation now exists in source and is detailed by ADR-028.
 
-No plan credential will be promoted into deployment authorization.
+No plan credential is promoted into deployment authorization. The apply role
+remains unactivated in AWS, and live proof remains pending.
 
 ### Role-assumption chain
 
@@ -269,6 +278,10 @@ action at a time.
   separately from application infrastructure state.
 - Negative authorization checks use safe read denials and IAM policy
   simulation rather than intentionally mutating resources.
+- Separate apply authorization now exists in source under ADR-028.
+- The apply role remains unactivated in AWS.
+- Plan and apply identities remain separate.
+- Live proof remains pending.
 
 ## Alternatives Considered
 
@@ -349,26 +362,29 @@ bounded timeout.
 
 ### Implement apply authorization in the same slice
 
-Rejected.
+Rejected for the plan-authorization slice.
 
 Apply requires separate permissions, review gates, plan-integrity decisions,
-recovery procedures, and failure analysis.
+recovery procedures, and failure analysis. Those concerns are addressed by
+ADR-028 as a separate controlled-deployment decision. Apply authorization now
+exists in source and remains unactivated pending live proof.
 
 ## Security Invariants
 
 - The identity role has no attached or inline permission policy.
-- Only two exact reusable workflows may obtain the identity role.
-- Target roles trust only the exact identity-role ARN.
+- Only two exact reusable workflows may obtain the plan identity role.
+- Target plan and state roles trust only approved identity-role ARNs.
 - State access is restricted to the exact `dev` state and lock objects.
 - `s3:DeleteObject` is absent from the state object.
 - The state role cannot inspect application resources.
 - The plan role cannot access Terraform state.
 - The plan role cannot mutate application resources.
-- The workflow contains no apply command.
-- Plan files never leave the runner.
+- The plan workflow contains no apply command.
+- Binary plan files never leave the runner.
 - No long-lived AWS credential is stored in GitHub.
 - IAM expansion requires evidence from a failed real plan.
 - Account-level explicit denies remain authoritative.
+- Apply authorization remains a separate identity and role boundary.
 
 ## Validation
 
@@ -385,17 +401,23 @@ The decision is validated through:
 8. IAM policy simulation for selected mutation actions.
 9. Evidence that binary and JSON plan files are deleted.
 
+Live remote-plan proof remains pending.
+
 ## Follow-Up Decisions
 
-A future ADR must define:
+ADR-028 defines controlled single-operator Terraform deployment, including
+apply-role permissions, deploy workflow trust, plan attestation integrity, and
+deployment concurrency.
 
-- apply-role permissions;
-- protected deployment workflow;
-- review and approval gates;
-- plan-to-apply integrity;
-- deployment concurrency;
-- rollback and recovery;
-- production environment isolation.
+Remaining follow-up decisions may define:
+
+- production environment isolation;
+- team-based reviewers;
+- multi-party approval;
+- automatic rollback;
+- HCP Terraform;
+- persistent binary plans;
+- policy-as-code platforms.
 
 ## References
 
@@ -413,3 +435,7 @@ A future ADR must define:
   https://developer.hashicorp.com/terraform/cli/commands/plan
 - GitHub reusable-workflow OIDC:
   https://docs.github.com/actions/deployment/security-hardening-your-deployments/using-openid-connect-with-reusable-workflows
+- Terraform Deployment Authorization:
+  `../architecture/terraform-deployment-authorization.md`
+- ADR-028:
+  `ADR-028-controlled-single-operator-terraform-deployment.md`

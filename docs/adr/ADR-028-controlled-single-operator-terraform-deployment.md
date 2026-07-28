@@ -4,6 +4,21 @@
 
 Accepted
 
+## Implementation Status
+
+```text
+source implemented
+GitHub configuration pending
+AWS activation pending
+live proof pending
+```
+
+The decision is intentional and portfolio-defensible. The absence of an
+independent reviewer is an operating-model trade-off, not a project defect.
+
+Operational procedure:
+[Terraform Deploy Workflow Runbook](../operations/terraform-deploy-workflow.md)
+
 ## Date
 
 2026-07-28
@@ -503,15 +518,17 @@ Independent reviewers can be introduced later without redesigning AWS roles.
 
 ### Negative
 
-- The workflow cannot provide independent human approval.
+- The workflow does not provide independent human approval by design.
 - The operator both initiates and authorizes deployment.
-- Plan and deployment workflows require artifact transfer.
+- Plan and deployment workflows require artifact transfer of the value-free
+  attestation only.
 - The change-set fingerprint is not binary-plan identity.
 - IAM apply permissions require iterative live proof.
 - Some AWS mutation actions may require unscoped resources.
 - Terraform partial apply still requires manual incident handling.
 - Deployment logic and tests become more complex.
 - The deployment Environment must be configured after merge.
+- Automatic rollback is intentionally not claimed.
 
 ### Operational
 

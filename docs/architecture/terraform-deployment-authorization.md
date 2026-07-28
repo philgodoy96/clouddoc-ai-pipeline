@@ -2,11 +2,23 @@
 
 ## Status
 
-- **Decision state:** Approved
-- **Repository implementation:** Pending
-- **AWS activation:** Pending
-- **GitHub environment activation:** Pending
-- **Live deployment verification:** Pending
+```text
+Decision:
+    approved
+
+Source implementation:
+    implemented
+
+AWS activation:
+    pending
+
+GitHub environment activation:
+    pending
+
+Live deployment verification:
+    pending
+```
+
 - **Environment:** `dev`
 - **Operating model:** Single authorized operator
 - **Last updated:** 2026-07-28
@@ -24,19 +36,27 @@ The deployment path is intentionally designed for a single authorized operator.
 It does not simulate independent approval through an artificial second GitHub
 account.
 
+Operational procedure lives in
+[Terraform Deploy Workflow Runbook](../operations/terraform-deploy-workflow.md).
+
 ## Business Context
 
 CloudDoc already has a source implementation for:
 
 - GitHub OIDC workload authentication;
 - a permissionless GitHub identity role;
+- a permissionless GitHub deployment identity role;
 - exact Terraform state authorization;
 - read-only Terraform plan authorization;
+- dedicated Terraform apply authorization;
 - a manual remote Terraform plan workflow;
 - value-free Terraform plan summaries;
+- value-free plan attestation;
+- controlled deploy workflows;
 - temporary saved-plan cleanup.
 
-The next requirement is controlled infrastructure mutation.
+The next requirement after source merge is controlled infrastructure mutation
+activation and live operational proof.
 
 A deployment must:
 
@@ -117,13 +137,22 @@ The design is grounded in the current repository:
   `5m`
 - Existing plan concurrency:
   non-cancelling
+- Controlled deploy workflow source:
+  `.github/workflows/terraform-deploy.yml`
+  and `.github/workflows/reusable-terraform-deploy.yml`
 - Existing Terraform apply support:
-  local wrapper support exists, but controlled deployment remains operationally
-  deferred.
+  local wrapper `apply` remains the saved-plan contract;
+  controlled GitHub deployment uses the separate `deploy` contract
+- Source implementation status:
+  implemented
+- AWS and GitHub activation:
+  pending
+- Live deployment verification:
+  pending
 
 ## Goals
 
-The slice must:
+The slice has implemented in source:
 
 - add a dedicated permissionless GitHub deployment identity;
 - add a dedicated Terraform apply role;

@@ -17,13 +17,14 @@ The approved architecture is now implemented in repository source through:
 - authorization bootstrap in `infra/bootstrap/terraform-authorization/`;
 - application provider and backend role wiring in `infra/terraform/` and `scripts/terraform_workflow.py`;
 - sanitized plan-summary utility in `scripts/summarize_terraform_plan.py`;
+- value-free plan attestation utility in `scripts/terraform_plan_attestation.py`;
 - GitHub OIDC exact two-workflow allowlist source in `infra/bootstrap/github-oidc/`;
 - caller workflow in `.github/workflows/terraform-plan.yml`;
 - reusable workflow in `.github/workflows/reusable-terraform-plan.yml`;
-- offline and static tests covering IAM, workflow, and summary contracts;
+- offline and static tests covering IAM, workflow, summary, and attestation contracts;
 - operations runbook in [Terraform Plan Workflow Runbook](../operations/terraform-plan-workflow.md).
 
-These artifacts are implemented in source only. AWS activation and live operational proof remain pending. See [Terraform Authorization Bootstrap](../../infra/bootstrap/terraform-authorization/README.md) and [ADR-027](../adr/ADR-027-separate-terraform-state-plan-and-apply-authorization.md).
+These artifacts are implemented in source only. AWS activation and live operational proof remain pending. Controlled deployment regenerates rather than downloading a binary plan; see [Terraform Deployment Authorization](terraform-deployment-authorization.md), [Terraform Deploy Workflow Runbook](../operations/terraform-deploy-workflow.md), and [ADR-027](../adr/ADR-027-separate-terraform-state-plan-and-apply-authorization.md).
 
 ## Purpose
 
@@ -106,23 +107,27 @@ The slice must:
 
 This slice does not implement:
 
-- `terraform apply`;
-- a deployment role;
+- `terraform apply` in the plan workflow;
+- promotion of the plan identity into deployment authorization;
+- promotion of the plan role into mutation authorization;
 - production authorization;
 - pull-request AWS access;
 - feature-branch AWS access;
 - automatic IAM permission expansion;
-- plan artifact promotion;
-- persistent plan storage;
+- binary plan artifact upload;
+- full plan JSON artifact upload;
+- persistent binary plan storage;
 - cross-account deployment;
 - HCP Terraform;
 - AWS-managed `ReadOnlyAccess`;
 - administrator access;
-- static AWS credentials.
+- static AWS credentials;
+- automatic rollback.
 
-These capabilities are intentionally deferred because deployment
-authorization, approval gates, and plan-to-apply integrity have different
-risks and failure modes from plan-only access.
+Controlled deployment is a separate source-implemented boundary documented in
+[Terraform Deployment Authorization](terraform-deployment-authorization.md) and
+[ADR-028](../adr/ADR-028-controlled-single-operator-terraform-deployment.md).
+Live plan activation remains pending before that path may be proven.
 
 ## Actors
 
@@ -461,11 +466,14 @@ Properties:
 - permissions:
   - `id-token: write`
   - `contents: read`
+  - `actions: read` only where required for attestation publication support
 - runner: `ubuntu-latest`;
 - exact immutable action pins;
 - 900-second AWS sessions;
 - no static AWS credential secret;
-- no artifact upload;
+- value-free plan attestation upload only;
+- no binary plan artifact upload;
+- no full plan JSON artifact upload;
 - no apply command.
 
 ### Concurrency
@@ -497,7 +505,9 @@ Validate Terraform configuration
 Create speculative Terraform plan
 Render Terraform plan JSON
 Generate sanitized plan summary
+Generate value-free plan attestation
 Publish sanitized GitHub step summary
+Upload value-free plan attestation artifact
 Delete temporary plan and JSON files
 Verify temporary artifact cleanup
 ```
@@ -562,6 +572,7 @@ Expected files:
 ```text
 terraform.tfplan
 terraform-plan.json
+terraform-plan-attestation.json
 ```
 
 Terraform plan exit semantics are handled explicitly:
@@ -572,12 +583,19 @@ Terraform plan exit semantics are handled explicitly:
 
 A plan with changes is not treated as a workflow failure.
 
-The plan remains speculative. It is never used as a future apply artifact.
+The binary plan and full JSON remain temporary runner files. They are never
+uploaded. Controlled deployment regenerates a fresh plan rather than
+downloading a binary plan. The uploaded attestation is value-free and is not
+the local saved-plan manifest used by the wrapper `apply` command.
+
+Live plan activation remains pending.
 
 ## Plan Summary Contract
 
 `scripts/summarize_terraform_plan.py` converts Terraform JSON plan output into
 a deterministic, value-free summary.
+
+The human summary and machine attestation are both value-free.
 
 The summary may contain only:
 
@@ -612,6 +630,25 @@ The binary plan and JSON representation are treated as potentially sensitive
 because saved Terraform plans may contain full configuration and resource
 values even when terminal output redacts them.
 
+## Plan Attestation Contract
+
+`scripts/terraform_plan_attestation.py` publishes a value-free machine
+attestation for later controlled deployment comparison.
+
+The attestation:
+
+- is value-free;
+- carries the canonical value-free change-set fingerprint;
+- is not the local saved-plan manifest used by wrapper `apply`;
+- may be uploaded as a GitHub Actions artifact;
+- does not include binary plan bytes or full plan JSON.
+
+Binary plan files and full plan JSON remain temporary and are deleted before
+the job finishes. Controlled deployment regenerates a fresh plan and compares
+attestations rather than downloading a binary plan.
+
+The plan role remains read-only. Live plan activation remains pending.
+
 ## Cleanup Contract
 
 Cleanup runs even when plan or summary generation fails.
@@ -620,17 +657,19 @@ The workflow must:
 
 1. remove the binary plan;
 2. remove the JSON plan;
-3. verify that both files are absent;
+3. verify that temporary plan files are absent from the workspace;
 4. fail when cleanup verification fails.
 
-The files are never:
+The binary plan and full plan JSON are never:
 
 - committed;
 - cached;
 - uploaded;
 - copied to another job;
 - included in a release;
-- passed to a deployment workflow.
+- used as the GitHub deployment apply artifact.
+
+Only the value-free attestation artifact is uploaded for controlled deployment.
 
 ## Failure Modes
 
@@ -775,8 +814,10 @@ Tests must verify:
 - detailed exit-code handling;
 - runner-temporary plan location;
 - value-free summary;
+- value-free attestation upload;
 - cleanup on all paths;
-- no artifact upload;
+- no binary plan artifact upload;
+- no full plan JSON artifact upload;
 - no apply command;
 - concurrency without cancellation.
 
@@ -884,14 +925,23 @@ The slice is complete only when:
 - a real GitHub Actions Terraform plan completes against remote state;
 - the workflow handles both no-op and change-bearing plans;
 - the summary contains actions and counts only;
+- a value-free attestation is published;
 - binary and JSON plan files are deleted;
-- no plan artifact is uploaded;
-- no apply command exists;
+- no binary plan or full plan JSON artifact is uploaded;
+- no apply command exists in the plan workflow;
 - positive and negative authorization evidence is recorded;
 - architecture, ADR, operations, and contributor documentation are complete.
 
+Live plan activation and operational proof remain pending after source merge.
+
 ## References
 
+- Terraform Deployment Authorization:
+  `terraform-deployment-authorization.md`
+- Terraform Deploy Workflow Runbook:
+  `../operations/terraform-deploy-workflow.md`
+- Terraform Plan Workflow Runbook:
+  `../operations/terraform-plan-workflow.md`
 - AWS IAM policies and permissions:
   https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies.html
 - AWS STS `AssumeRole`:

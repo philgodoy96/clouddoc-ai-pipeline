@@ -15,6 +15,13 @@ application Terraform offline validation
 state-bootstrap Terraform offline validation
 GitHub OIDC bootstrap offline validation
 Terraform authorization bootstrap offline validation
+plan attestation tests
+deployment request validator tests
+deployment workflow contract tests
+apply authorization tests
+deployment execution tests
+artifact pin tests
+cleanup tests
 immutable action references
 Dependabot maintenance for GitHub Actions
 static workflow contract tests
@@ -22,7 +29,7 @@ manual AWS identity-check workflow
 reusable AWS identity workflow
 ```
 
-The validation workflows validate repository behavior.
+The validation workflows validate repository source contracts.
 
 They do not:
 
@@ -32,12 +39,15 @@ create the Terraform state bucket
 initialize a remote backend
 run Terraform plan against AWS
 run Terraform apply
+prove live AWS authorization
 publish Lambda deployment artifacts
 deploy Lambda functions
 configure GitHub branch protection
 configure GitHub Environments
 assume an AWS IAM role
 ```
+
+CI validates source contracts but does not prove live AWS authorization. Live proof is a post-merge operational step.
 
 A separate identity category exists in repository source:
 
@@ -46,8 +56,8 @@ AWS Identity Check
 Reusable AWS Identity
 ```
 
-Those identity workflows are manually initiated identity proofs. They are not required pull-request validation checks. They do not run on pull requests or pushes. They do not deploy. End-to-end OIDC verification against AWS is not yet claimed.
-Infrastructure quality remains an offline validation category with no AWS access. The manual Terraform plan workflow is a separate authenticated operational category: it runs only from `main`, uses the `dev` environment, requests temporary GitHub OIDC credentials, and produces a speculative plan only. It is not a pull-request CI gate.
+Those identity workflows are manually initiated identity proofs. They are not required pull-request validation checks. They do not run on pull requests or pushes. They do not deploy. End-to-end OIDC verification against AWS is not yet claimed for the extended plan and deploy trust.
+Infrastructure quality remains an offline validation category with no AWS access. The manual Terraform plan and deploy workflows are separate authenticated operational categories: they run only from `main`, request temporary GitHub OIDC credentials, and are not pull-request CI gates. Live plan activation and live deployment proof remain pending.
 
 
 ## Purpose
@@ -1173,10 +1183,18 @@ bootstrap Terraform offline CI
 immutable action SHA pins
 Dependabot for GitHub Actions
 workflow static contract tests
+plan attestation tests
+deployment request validator tests
+deployment workflow contract tests
+apply authorization tests
+deployment execution tests
+artifact pin tests
+cleanup tests
 read-only validation permissions
 checkout credential hardening
 manual AWS identity-check workflow source
 reusable AWS identity workflow source
+controlled plan and deploy workflow source
 ```
 
 ### Not yet configured or executed as project infrastructure
@@ -1185,40 +1203,34 @@ reusable AWS identity workflow source
 branch protection
 required status-check settings
 GitHub repository rulesets
-real OIDC bootstrap apply
-GitHub dev Environment
-repository variables
-end-to-end identity verification against AWS
-AWS deployment roles
-state authorization
+AWS apply of extended OIDC trust and deployment identity
+AWS apply of Terraform state, plan, and apply authorization roles
+GitHub repository variables for plan and deploy
+GitHub dev-deploy Environment
+live remote-state Terraform plan proof
+live controlled Terraform deployment proof
 remote Terraform plan in CI
 Terraform apply in CI
-GitHub Environment approvals
 Lambda artifact publication
 artifact signing
 release workflow
-deployment workflow
-rollback workflow
-drift workflow
 ```
 
 ## Intentionally Deferred
 
 ```text
-state access role
-deployment role
-plan identity
-apply identity
-artifact publication identity
-remote plan
+production authorization
+cross-account deployment
+team-based reviewers
+multi-party approval
+automatic rollback
+HCP Terraform
+persistent binary plans
+policy-as-code platforms
 pull-request plan comments
 saved-plan upload
-deployment artifact upload
-artifact signing
 SLSA provenance
-production approvals
 automatic apply
-automatic rollback
 scheduled drift detection
 dependency review action
 CodeQL
@@ -1229,34 +1241,28 @@ matrix Terraform version tests
 multi-platform Lambda package builds
 ```
 
-Each requires a distinct security or operational contract. Authentication implemented in repository source remains distinct from deployment authorization.
+Each requires a distinct security or operational contract. CI validates source contracts only. Live AWS authorization and deployment proof remain post-merge operational steps.
 
 ## Future Deployment Workflow Boundary
 
-A later authenticated deployment workflow may reuse:
+Controlled deploy workflow source now exists and remains separate from validation CI.
+
+A later live activation may reuse:
 
 ```text
 deterministic Lambda package contract
-Terraform environment files
-guarded Terraform workflow
-expected AWS account guard
-saved-plan manifest
-S3-native state locking
+immutable action pins
+OIDC claim preflight
+exact permissionless identity roles
+separate state, plan, and apply authorization roles
+value-free plan attestation
 ```
 
-It must add separate decisions for:
+It must not collapse into pull-request validation CI.
 
-```text
-least-privilege IAM beyond identity proof
-state object access
-lockfile access
-artifact publication
-environment approval
-plan review
-apply authorization
-deployment evidence
-rollback and recovery
-```
+Live proof remains a post-merge operational step after the plan path is proven.
+
+See [Terraform Deployment Authorization](terraform-deployment-authorization.md), [Terraform Deploy Workflow Runbook](../operations/terraform-deploy-workflow.md), and [ADR-028](../adr/ADR-028-controlled-single-operator-terraform-deployment.md).
 
 The validation workflow must not silently evolve into a deployment workflow. The identity verification workflow must not silently evolve into a deployment workflow.
 

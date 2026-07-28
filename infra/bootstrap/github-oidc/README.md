@@ -9,12 +9,13 @@ It creates:
 ```text
 GitHub Actions IAM OIDC provider
 permissionless development identity verification role
-strict AssumeRoleWithWebIdentity trust policy
+permissionless Terraform deployment identity role
+strict AssumeRoleWithWebIdentity trust policies
 ```
 
-It does not grant CloudDoc deployment permissions.
+It does not grant CloudDoc plan or deployment authorization permissions.
 
-The role can prove that the approved GitHub workflow has authenticated successfully, but it cannot read Terraform state, plan infrastructure, apply infrastructure, or manage application resources.
+The identity roles can prove that an approved GitHub workflow has authenticated successfully, but they cannot read Terraform state, plan infrastructure, apply infrastructure, or manage application resources. Downstream authorization roles remain owned by `../terraform-authorization/`.
 
 ## Ownership Boundary
 
@@ -23,7 +24,8 @@ This root owns only:
 ```text
 GitHub Actions IAM OIDC provider
 GitHub development identity verification role
-role trust policy
+GitHub Terraform deployment identity role
+role trust policies
 identity-bootstrap outputs
 ```
 
@@ -33,6 +35,8 @@ It does not own:
 Terraform state bucket
 application Terraform state
 state access policies
+plan authorization policies
+apply authorization policies
 deployment policies
 Lambda deployment
 DynamoDB access
@@ -59,7 +63,7 @@ Authorization
 
 This root implements authentication only.
 
-The role has:
+Both identity roles have:
 
 ```text
 no inline policies
@@ -68,7 +72,7 @@ no state permissions
 no application permissions
 ```
 
-Terraform plan authorization is now implemented as a separate authorization boundary in repository source. This root remains authentication only; the authorization roles are owned by `../terraform-authorization/README.md`, and the trust-source extension must still be applied in AWS after merge.
+Terraform state, plan, and apply authorization are implemented as a separate authorization boundary in repository source. This root remains authentication only; the authorization roles are owned by `../terraform-authorization/README.md`. Source is implemented; AWS apply of the extended trust and the deployment identity remains pending.
 
 ## Terraform Root
 
@@ -104,9 +108,91 @@ After the first successful apply:
 ```text
 aws_iam_openid_connect_provider.github_actions
 aws_iam_role.github_dev_identity
+aws_iam_role.github_dev_deploy_identity
 ```
 
 No permission policy resource is declared.
+
+## Identity Roles
+
+### Plan and identity verification role
+
+Default role name:
+
+```text
+clouddoc-dev-github-identity
+```
+
+Trusted reusable workflows:
+
+```text
+reusable-aws-identity.yml
+reusable-terraform-plan.yml
+```
+
+Trusted environment:
+
+```text
+dev
+```
+
+### Deployment identity role
+
+Default role name:
+
+```text
+clouddoc-dev-github-deploy-identity
+```
+
+Trusted reusable workflow:
+
+```text
+reusable-terraform-deploy.yml
+```
+
+Trusted environment:
+
+```text
+dev-deploy
+```
+
+Both roles share this contract:
+
+```text
+permissionless identity roles
+maximum session duration = 3600 seconds
+no inline policies
+no managed policies
+no permissions boundary in this slice
+exact eight-claim trust
+StringEquals only
+no wildcard
+```
+
+The deployment identity is intentionally separate from the plan identity so that plan workflows cannot assume the Terraform apply role. The existing identity role is therefore not reused for apply authorization.
+
+Workflow ownership:
+
+```text
+existing identity:
+    reusable-aws-identity.yml
+    reusable-terraform-plan.yml
+
+deployment identity:
+    reusable-terraform-deploy.yml
+```
+
+Environment separation:
+
+```text
+plan identity:
+    dev
+
+deployment identity:
+    dev-deploy
+```
+
+The identity verification and plan workflows request a 900-second session. The deployment identity remains source implemented; AWS apply is pending. Do not document the deployment identity as already present in AWS.
 
 ## OIDC Provider Contract
 
@@ -126,29 +212,9 @@ The Terraform resource does not pin a legacy GitHub certificate thumbprint.
 
 AWS validates public OIDC providers through its trusted CA library and can retrieve a thumbprint when required.
 
-## Identity Role
-
-Default role name:
-
-```text
-clouddoc-dev-github-identity
-```
-
-Role contract:
-
-```text
-permissionless verification role
-maximum session duration = 3600 seconds
-no inline policies
-no managed policies
-no permissions boundary in this slice
-```
-
-The future identity verification workflow will request a 900-second session.
-
 ## Trust Policy
 
-The role allows only:
+Both permissionless roles allow only:
 
 ```text
 sts:AssumeRoleWithWebIdentity
@@ -162,7 +228,7 @@ GitHub Actions IAM OIDC provider created by this root
 
 All conditions use exact `StringEquals` comparisons.
 
-Required token claims:
+Required token claims for both roles:
 
 ```text
 aud
@@ -185,16 +251,18 @@ AWS evaluates the environment-scoped subject through:
 token.actions.githubusercontent.com:sub
 ```
 
-The ID-qualified subject is constructed from reviewed Terraform variables:
+The ID-qualified subjects are constructed from reviewed Terraform variables.
 
-```text
-repo:${github_repository_owner}@${github_repository_owner_id}/${github_repository_name}@${github_repository_id}:environment:${github_environment}
-```
-
-Approved CloudDoc shape with placeholders:
+Plan identity subject shape:
 
 ```text
 repo:philgodoy96@<github_repository_owner_id>/clouddoc-ai-pipeline@<github_repository_id>:environment:dev
+```
+
+Deployment identity subject shape:
+
+```text
+repo:philgodoy96@<github_repository_owner_id>/clouddoc-ai-pipeline@<github_repository_id>:environment:dev-deploy
 ```
 
 The exact subject condition:
@@ -209,16 +277,24 @@ complements job_workflow_ref
 contains no wildcard
 ```
 
-`job_workflow_ref` remains ref-based and now trusts exactly two reusable workflows on `refs/heads/main`:
+`job_workflow_ref` remains ref-based.
+
+Plan identity trusts exactly two reusable workflows on `refs/heads/main`:
 
 ```text
 ...reusable-aws-identity.yml@refs/heads/main
 ...reusable-terraform-plan.yml@refs/heads/main
 ```
 
+Deployment identity trusts exactly one reusable workflow on `refs/heads/main`:
+
+```text
+...reusable-terraform-deploy.yml@refs/heads/main
+```
+
 `job_workflow_sha` is a separate GitHub claim and is intentionally not part of this trust contract.
 
-Default trusted values:
+Default trusted values for the plan identity:
 
 ```text
 aud
@@ -240,6 +316,32 @@ environment
 job_workflow_ref
     = philgodoy96/clouddoc-ai-pipeline/.github/workflows/
       reusable-aws-identity.yml@refs/heads/main
+      or
+      reusable-terraform-plan.yml@refs/heads/main
+```
+
+Default trusted values for the deployment identity:
+
+```text
+aud
+    = sts.amazonaws.com
+
+sub
+    = repo:philgodoy96@<github_repository_owner_id>/
+      clouddoc-ai-pipeline@<github_repository_id>:environment:dev-deploy
+
+repository
+    = philgodoy96/clouddoc-ai-pipeline
+
+ref
+    = refs/heads/main
+
+environment
+    = dev-deploy
+
+job_workflow_ref
+    = philgodoy96/clouddoc-ai-pipeline/.github/workflows/
+      reusable-terraform-deploy.yml@refs/heads/main
 ```
 
 The immutable numeric repository and owner IDs are required runtime inputs.
@@ -350,10 +452,13 @@ All preflight claims match but AWS denies assume-role
 ```text
 source trust correction implemented
 OIDC claim preflight implemented in the reusable workflow
-second exact reusable workflow trust entry implemented in source
+second exact reusable workflow trust entry for plan implemented in source
+deployment identity role implemented in source
 AWS trust extension not yet applied
+deployment identity not yet present in AWS
 Terraform plan federation not yet verified
-role remains permissionless
+controlled deploy federation not yet verified
+both roles remain permissionless
 ```
 
 ## Wildcard Boundary
@@ -403,16 +508,30 @@ Key workflow-ref inputs remain reviewed source contracts:
 github_identity_workflow_ref
 github_terraform_plan_workflow_ref
 github_trusted_workflow_refs
+github_terraform_deploy_workflow_ref
+github_deploy_environment
 ```
 
-Expected default values are the two exact reusable workflows pinned to `refs/heads/main`:
+Expected default values for the plan identity allowlist are the two exact reusable workflows pinned to `refs/heads/main`:
 
 ```text
 philgodoy96/clouddoc-ai-pipeline/.github/workflows/reusable-aws-identity.yml@refs/heads/main
 philgodoy96/clouddoc-ai-pipeline/.github/workflows/reusable-terraform-plan.yml@refs/heads/main
 ```
 
-The identity role remains permissionless. Do not add plan or state permissions here. Do not invent the IDs.
+Expected default value for the deployment identity is:
+
+```text
+philgodoy96/clouddoc-ai-pipeline/.github/workflows/reusable-terraform-deploy.yml@refs/heads/main
+```
+
+with environment:
+
+```text
+dev-deploy
+```
+
+Both identity roles remain permissionless. Do not add plan, state, or apply permissions here. Do not invent the IDs.
 
 ## Prerequisites for Offline Validation
 
@@ -428,8 +547,8 @@ AWS authentication is not required for formatting or static validation.
 ```text
 temporary human AWS authentication
 permission to create an IAM OIDC provider
-permission to create the IAM role
-permission to configure the role trust policy
+permission to create the IAM roles
+permission to configure the role trust policies
 confirmed target AWS account
 confirmed GitHub repository and owner IDs
 reviewed saved plan
@@ -438,6 +557,8 @@ reviewed saved plan
 Do not use root-user access keys.
 
 Do not place credentials in Terraform files.
+
+Post-merge bootstrap apply is required before repository variables can consume the new deployment-identity outputs. Source implementation does not mean the deployment identity already exists in AWS.
 
 ## Initialize Offline
 
@@ -505,8 +626,11 @@ The plan must contain only:
 
 ```text
 one GitHub IAM OIDC provider
-one permissionless identity role
-one exact trust policy that allows two reviewed reusable workflow refs on main
+one permissionless plan/identity role
+one permissionless deployment identity role
+exact trust policies using StringEquals only
+plan identity trust for two reviewed reusable workflow refs on main
+deployment identity trust for reusable-terraform-deploy.yml on main
 ```
 
 ## Apply
@@ -537,13 +661,18 @@ github_oidc_provider_arn
 github_dev_identity_role_name
 github_dev_identity_role_arn
 github_dev_identity_role_max_session_duration
+github_deploy_identity_role_name
+github_deploy_identity_role_arn
+github_deploy_identity_role_max_session_duration
 github_repository_identity
 github_identity_workflow_ref
-github_terraform_plan_workflow_ref
+github_deploy_environment
+github_terraform_deploy_workflow_ref
+github_deploy_trusted_repository_identity
 github_trusted_workflow_refs
 ```
 
-No credential or token is an output. The workflow-ref outputs should show exactly the two reviewed reusable workflows on `refs/heads/main`, not wildcard values or a single-workflow trust set.
+No credential or token is an output. `github_trusted_workflow_refs` should show exactly the two reviewed plan/identity reusable workflows on `refs/heads/main`. `github_terraform_deploy_workflow_ref` should show the exact deploy reusable workflow on `refs/heads/main`. Use the identity and deployment role ARN outputs when configuring repository variables after AWS apply.
 
 ## GitHub Configuration Boundary
 
@@ -551,9 +680,11 @@ After the root is applied, GitHub repository configuration will require:
 
 ```text
 GitHub Environment: dev
-repository or environment variable with the AWS account ID
-repository or environment variable with the identity role ARN
-main-only environment deployment branch rule
+GitHub Environment: dev-deploy
+repository variables with the AWS account ID
+repository variables with the plan identity role ARN
+repository variables with the deployment identity role ARN
+main-only environment deployment branch rules
 ```
 
 No AWS access key or secret key will be added to GitHub.
@@ -631,7 +762,9 @@ No AWS access keys are committed.
 
 The trust evaluates the exact ID-qualified subject.
 
-The subject is scoped to the dev environment.
+Plan identity subject is scoped to the dev environment.
+
+Deployment identity subject is scoped to the dev-deploy environment.
 
 The subject contains no wildcard.
 
@@ -641,9 +774,13 @@ The trust policy requires the exact repository name.
 
 The trust policy requires refs/heads/main.
 
-The trust policy requires the dev environment.
+Plan identity requires the dev environment.
 
-The trust policy requires exactly two reusable workflows on main.
+Deployment identity requires the dev-deploy environment.
+
+Plan identity requires exactly two reusable workflows on main.
+
+Deployment identity requires exactly one reusable deploy workflow on main.
 
 All trust conditions use StringEquals.
 
@@ -651,7 +788,7 @@ No wildcard claim is allowed.
 
 Only AssumeRoleWithWebIdentity is trusted.
 
-The role has no authorization policies.
+Both roles have no authorization policies.
 
 Local bootstrap state remains outside Git.
 ```
@@ -661,26 +798,28 @@ Local bootstrap state remains outside Git.
 ```text
 corrective AWS role trust apply
 AWS Identity Check re-verification
-Terraform state access policy
-Terraform plan policy
-Terraform apply policy
-application deployment policy
-IAM PassRole
-artifact publication
+AWS apply of the deployment identity
+Terraform plan federation verification
+controlled deploy federation verification
 staging identity
 production identity
 cross-account deployment
 permissions boundary
 CloudTrail alerting
+team-based reviewers
+multi-party approval
 ```
 
-These capabilities require separate implementation, review, and operational evidence.
+Authorization policies for state, plan, and apply remain owned by the separate Terraform authorization bootstrap. These capabilities require separate implementation, review, and operational evidence.
 
 ## Related Documentation
 
 - [Terraform State Bootstrap](../terraform-state/README.md)
 - [Terraform Authorization Bootstrap](../terraform-authorization/README.md)
 - [Terraform Plan Authorization](../../../docs/architecture/terraform-plan-authorization.md)
+- [Terraform Deployment Authorization](../../../docs/architecture/terraform-deployment-authorization.md)
 - [Terraform Plan Workflow Runbook](../../../docs/operations/terraform-plan-workflow.md)
+- [Terraform Deploy Workflow Runbook](../../../docs/operations/terraform-deploy-workflow.md)
 - [Terraform State and Environment Workflow](../../../docs/architecture/terraform-state-and-environment-workflow.md)
 - [Infrastructure CI Validation](../../../docs/architecture/infrastructure-ci-validation.md)
+- [ADR-028: Controlled Single-Operator Terraform Deployment](../../../docs/adr/ADR-028-controlled-single-operator-terraform-deployment.md)

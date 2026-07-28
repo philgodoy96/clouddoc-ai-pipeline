@@ -28,8 +28,14 @@ Relevant references include:
 * [Infrastructure CI Validation](docs/architecture/infrastructure-ci-validation.md)
 * [GitHub OIDC Trust Bootstrap](docs/architecture/github-oidc-trust-bootstrap.md)
 * [Terraform State and Environment Workflow](docs/architecture/terraform-state-and-environment-workflow.md)
+* [Terraform Plan Authorization](docs/architecture/terraform-plan-authorization.md)
+* [Terraform Deployment Authorization](docs/architecture/terraform-deployment-authorization.md)
+* [Terraform Plan Workflow Runbook](docs/operations/terraform-plan-workflow.md)
+* [Terraform Deploy Workflow Runbook](docs/operations/terraform-deploy-workflow.md)
 * [Lambda Runtime Infrastructure](docs/architecture/lambda-runtime-infrastructure.md)
 * [ADR-026: Separate OIDC Authentication from Deployment Authorization](docs/adr/ADR-026-separate-oidc-authentication-from-deployment-authorization.md)
+* [ADR-027: Separate Terraform State, Plan, and Apply Authorization](docs/adr/ADR-027-separate-terraform-state-plan-and-apply-authorization.md)
+* [ADR-028: Controlled Single-Operator Terraform Deployment](docs/adr/ADR-028-controlled-single-operator-terraform-deployment.md)
 
 Significant decisions are recorded under:
 
@@ -141,11 +147,43 @@ python -m pytest
 
 ## Terraform Workflow
 
-Infrastructure changes must preserve the guarded Terraform workflow documented in [Terraform State and Environment Workflow](docs/architecture/terraform-state-and-environment-workflow.md), [Terraform Plan Authorization](docs/architecture/terraform-plan-authorization.md), [Terraform Plan Workflow Runbook](docs/operations/terraform-plan-workflow.md), [ADR-025](docs/adr/ADR-025-use-s3-native-locking-and-explicit-environment-state.md), and [ADR-027](docs/adr/ADR-027-separate-terraform-state-plan-and-apply-authorization.md).
+Infrastructure changes must preserve the guarded Terraform workflow documented in [Terraform State and Environment Workflow](docs/architecture/terraform-state-and-environment-workflow.md), [Terraform Plan Authorization](docs/architecture/terraform-plan-authorization.md), [Terraform Deployment Authorization](docs/architecture/terraform-deployment-authorization.md), [Terraform Plan Workflow Runbook](docs/operations/terraform-plan-workflow.md), [Terraform Deploy Workflow Runbook](docs/operations/terraform-deploy-workflow.md), [ADR-025](docs/adr/ADR-025-use-s3-native-locking-and-explicit-environment-state.md), [ADR-027](docs/adr/ADR-027-separate-terraform-state-plan-and-apply-authorization.md), and [ADR-028](docs/adr/ADR-028-controlled-single-operator-terraform-deployment.md).
 
-Architecture review and ADR review must precede changes to Terraform state authorization, Terraform plan authorization, reusable-workflow trust, or future apply authorization.
+Architecture review and ADR review must precede changes to Terraform state authorization, Terraform plan authorization, Terraform apply authorization, reusable-workflow trust, deployment identity trust, or controlled deployment workflows. Prefer design-before-authorization-changes and small reviewed commits.
 
-Before opening or updating a pull request that touches Terraform, bootstrap, workflow contracts, or `scripts/terraform_workflow.py`, run:
+## Terraform Deployment Operator and Contributor Contract
+
+Controlled Terraform deployment uses a single authorized operator model. It is an intentional portfolio trade-off, not a defect caused by the absence of a second reviewer.
+
+Contributors and operators must:
+
+* design before authorization changes
+* keep authorization and workflow changes in small reviewed commits
+* avoid broad temporary IAM policies
+* avoid static AWS credentials
+* avoid direct Terraform apply from ad hoc workflows
+* avoid binary plan artifact upload
+* avoid full plan JSON artifact upload
+* require a new plan after fingerprint mismatch
+* require a new plan after partial apply
+* require explicit opt-in for destructive changes
+* expand authorization only from live `AccessDenied` evidence
+* distinguish source implementation, activation, and operational proof in documentation
+
+Expected validation categories for Terraform deployment-related changes:
+
+```text
+OIDC bootstrap tests
+authorization bootstrap tests
+attestation tests
+deployment request validation tests
+Terraform workflow tests
+workflow contract tests
+offline-check
+full pytest suite
+```
+
+Before opening or updating a pull request that touches Terraform, bootstrap, workflow contracts, attestation, deployment request validation, or `scripts/terraform_workflow.py`, run:
 
 ```powershell
 make check
@@ -154,9 +192,11 @@ python scripts/terraform_workflow.py offline-check
 python -m pytest -q
 ```
 
-For authenticated operations against AWS after the reviewed source changes are merged and activated, use the manual Terraform plan workflow documented in [Terraform Plan Workflow Runbook](docs/operations/terraform-plan-workflow.md) rather than direct AWS access from validation workflows. Contributors must not introduce static AWS credentials, direct AWS access from quality workflows, `terraform apply` into plan workflows, or saved-plan artifact upload.
+For authenticated operations against AWS after the reviewed source changes are merged and activated, use the manual Terraform plan and deploy workflows documented in the operations runbooks rather than direct AWS access from validation workflows. Contributors must not introduce static AWS credentials, direct AWS access from quality workflows, `terraform apply` into plan workflows, binary plan artifact upload, or full plan JSON artifact upload.
 
-Plan-policy expansion requires one concrete denied read action from provider refresh evidence. Do not shortcut least privilege with AWS-managed broad policies such as `ReadOnlyAccess`, `PowerUserAccess`, or `AdministratorAccess`.
+The local wrapper `apply` command remains the existing saved-plan contract. It is not the GitHub controlled deployment path. Controlled deployment uses the `deploy` command and the dedicated deploy workflows.
+
+Plan-policy or apply-policy expansion requires one concrete denied action from live evidence. Do not shortcut least privilege with AWS-managed broad policies such as `ReadOnlyAccess`, `PowerUserAccess`, or `AdministratorAccess`.
 
 New Terraform roots must join explicit offline validation, and workflow actions must remain pinned to immutable SHAs with same-line release comments. Documentation updates must clearly distinguish source implementation from AWS activation and live operational proof.
 
@@ -169,10 +209,11 @@ Never:
 * bypass locking (`-lock=false`, `force-unlock`, or equivalent)
 * use Terraform workspaces for environment selection
 * migrate state automatically
-* apply configuration directly without the saved-plan contract
+* apply configuration directly without the saved-plan or controlled-deploy contract
 * add static AWS credentials to GitHub configuration
-* run Terraform plan from a pull-request validation workflow
-* upload saved plan artifacts from a plan workflow
+* run Terraform plan or deploy from a pull-request validation workflow
+* upload binary plan or full plan JSON artifacts
+* claim source-only features as deployed, activated, or operationally proven
 
 ## GitHub OIDC and Identity Trust
 
@@ -182,8 +223,15 @@ Paths that trigger this review:
 
 ```text
 infra/bootstrap/github-oidc
+infra/bootstrap/terraform-authorization
 .github/workflows/aws-identity-check.yml
 .github/workflows/reusable-aws-identity.yml
+.github/workflows/terraform-plan.yml
+.github/workflows/reusable-terraform-plan.yml
+.github/workflows/terraform-deploy.yml
+.github/workflows/reusable-terraform-deploy.yml
+scripts/terraform_plan_attestation.py
+scripts/validate_terraform_deployment_request.py
 ```
 
 Reviewers must inspect:
@@ -202,6 +250,9 @@ action SHA
 workflow permissions
 checkout behavior
 AWS account validation
+deployment identity separation
+apply-role trust boundary
+attestation artifact contract
 ```
 
 Before opening or updating a pull request that touches those paths, run:
@@ -210,7 +261,13 @@ Before opening or updating a pull request that touches those paths, run:
 terraform -chdir=infra/bootstrap/github-oidc fmt -check -recursive
 terraform -chdir=infra/bootstrap/github-oidc validate
 terraform -chdir=infra/bootstrap/github-oidc test
+terraform -chdir=infra/bootstrap/terraform-authorization fmt -check -recursive
+terraform -chdir=infra/bootstrap/terraform-authorization validate
+terraform -chdir=infra/bootstrap/terraform-authorization test
 python -m pytest tests/unit/infrastructure/test_github_oidc_bootstrap.py -q
+python -m pytest tests/unit/infrastructure/test_terraform_authorization_bootstrap.py -q
+python -m pytest tests/unit/scripts/test_terraform_plan_attestation.py -q
+python -m pytest tests/unit/scripts/test_validate_terraform_deployment_request.py -q
 python -m pytest tests/unit/ci/test_github_actions_workflows.py -q
 ```
 
@@ -220,20 +277,25 @@ Identity contribution rules:
 Do not add AWS access keys to GitHub Secrets.
 Do not add OIDC permission to validation workflows.
 Do not add wildcard trust without an approved architecture decision.
-Do not attach application permissions to the verification role.
+Do not attach application permissions to verification or deployment identity roles.
 Do not add checkout to the identity proof without a reviewed need.
 Do not execute the real bootstrap from an unreviewed branch.
+Do not reuse the plan identity for apply authorization.
+Do not upload binary plans or full plan JSON.
 ```
 
-The identity workflows are implemented in repository source. They cannot succeed end-to-end until the OIDC bootstrap root is applied, the GitHub `dev` Environment exists, the repository variables exist, and the workflows are available on `main`. Do not claim AWS identity federation is active before that verification succeeds.
+The identity and deployment workflows are implemented in repository source. They cannot succeed end-to-end until the OIDC and authorization bootstrap roots are applied, the GitHub `dev` and `dev-deploy` Environments exist, the repository variables exist, and the workflows are available on `main`. Do not claim AWS identity federation, live plan, or live deployment is active before those verification steps succeed.
 
 Architecture references:
 
 * [GitHub OIDC Trust Bootstrap](docs/architecture/github-oidc-trust-bootstrap.md)
 * [Terraform Plan Authorization](docs/architecture/terraform-plan-authorization.md)
+* [Terraform Deployment Authorization](docs/architecture/terraform-deployment-authorization.md)
 * [Terraform Plan Workflow Runbook](docs/operations/terraform-plan-workflow.md)
+* [Terraform Deploy Workflow Runbook](docs/operations/terraform-deploy-workflow.md)
 * [ADR-026: Separate OIDC Authentication from Deployment Authorization](docs/adr/ADR-026-separate-oidc-authentication-from-deployment-authorization.md)
 * [ADR-027: Separate Terraform State, Plan, and Apply Authorization](docs/adr/ADR-027-separate-terraform-state-plan-and-apply-authorization.md)
+* [ADR-028: Controlled Single-Operator Terraform Deployment](docs/adr/ADR-028-controlled-single-operator-terraform-deployment.md)
 
 ## Continuous Integration
 

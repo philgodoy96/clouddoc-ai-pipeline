@@ -3,18 +3,21 @@
 ## Purpose
 
 This Terraform root provisions the AWS authorization boundary used by the
-CloudDoc `dev` Terraform plan workflow.
+CloudDoc `dev` Terraform plan and controlled deploy workflows.
 
-It owns two IAM roles:
+It owns three IAM roles:
 
 ```text
 clouddoc-dev-terraform-state
 clouddoc-dev-terraform-plan
+clouddoc-dev-terraform-apply
 ```
 
 The root does not own the GitHub OIDC provider, the permissionless GitHub
-identity role, the Terraform state bucket, the application infrastructure, or
-future deployment authorization.
+identity roles, the Terraform state bucket, or the application infrastructure.
+
+Source is implemented. AWS apply remains pending. Do not claim the initial
+apply action matrix is live-proven.
 
 ## Architecture
 
@@ -22,22 +25,34 @@ future deployment authorization.
 GitHub Actions
     |
     | GitHub OIDC
-    v
-clouddoc-dev-github-identity
-    |
-    | same-account sts:AssumeRole
     +-------------------------------+
     |                               |
     v                               v
-clouddoc-dev-terraform-state   clouddoc-dev-terraform-plan
+clouddoc-dev-github-identity   clouddoc-dev-github-deploy-identity
     |                               |
-    | exact S3 state access         | AWS provider refresh reads
-    | exact S3 lock access          | no state access
-    | no application reads          | no resource mutation
+    | same-account sts:AssumeRole   | same-account sts:AssumeRole
+    +---------------+               +---------------+
+    |               |               |               |
+    v               v               v               v
+state role     plan role      state role      apply role
 ```
 
-The GitHub identity role remains permissionless. The target-role trust policies
-name the exact identity-role ARN as their only AWS principal.
+Exact trust:
+
+```text
+state:
+    plan identity + deployment identity
+
+plan:
+    plan identity only
+
+apply:
+    deployment identity only
+```
+
+Both GitHub identity roles remain permissionless. The target-role trust
+policies name exact same-account identity-role ARNs as their only AWS
+principals.
 
 ## Ownership Boundary
 
@@ -45,6 +60,7 @@ This root owns:
 
 - the Terraform state-access IAM role;
 - the Terraform plan-only IAM role;
+- the Terraform apply IAM role;
 - the trust policy for each role;
 - the inline permission policy for each role;
 - non-sensitive operational outputs for role and state identifiers.
@@ -52,20 +68,18 @@ This root owns:
 This root does not own:
 
 - the GitHub OIDC provider;
-- the permissionless GitHub identity role;
+- the permissionless GitHub identity roles;
 - the S3 remote-state bucket;
 - the CloudDoc application Terraform root;
 - GitHub repository variables;
 - GitHub Environments;
-- the Terraform plan workflow;
-- a Terraform apply role;
-- deployment approval gates.
+- the Terraform plan or deploy workflows.
 
 Related roots:
 
 ```text
 infra/bootstrap/github-oidc/
-    GitHub OIDC provider and permissionless identity role
+    GitHub OIDC provider and permissionless identity roles
 
 infra/bootstrap/terraform-state/
     S3 remote-state bucket
@@ -86,9 +100,10 @@ It can be assumed only by:
 
 ```text
 clouddoc-dev-github-identity
+clouddoc-dev-github-deploy-identity
 ```
 
-The role is restricted to the committed `dev` state contract:
+State permissions remain exact and unchanged from the plan-only contract.
 
 ```text
 state object:
@@ -212,6 +227,51 @@ The policy is an initial least-privilege hypothesis. A real Terraform plan is
 the operational proof. Any missing permission must be justified by a concrete
 `AccessDenied` from provider refresh before the policy is expanded.
 
+## Apply Authorization Contract
+
+The apply role is:
+
+```text
+clouddoc-dev-terraform-apply
+```
+
+It can be assumed only by:
+
+```text
+clouddoc-dev-github-deploy-identity
+```
+
+It cannot be assumed by:
+
+```text
+clouddoc-dev-github-identity
+```
+
+The apply policy is service-specific. It receives:
+
+- explicit provider refresh reads required by the current Terraform root;
+- explicit control-plane mutations required by the current Terraform root;
+- exact `iam:PassRole` for the four CloudDoc Lambda execution roles;
+- `iam:PassedToService` restricted to `lambda.amazonaws.com`.
+
+It does not receive:
+
+- Terraform state access;
+- Lambda invocation;
+- application S3 object access;
+- DynamoDB item access;
+- SQS message access;
+- Bedrock invocation;
+- AWS-managed broad policies;
+- static credentials.
+
+The apply role has no state access. State and provider roles remain independent:
+plan uses state + plan roles; deploy uses state + apply roles.
+
+The initial apply action matrix is source-implemented only. Missing actions are
+added only from live `AccessDenied` evidence. Do not claim the matrix is
+live-proven.
+
 ## Prerequisites
 
 Required local tools:
@@ -225,9 +285,9 @@ PowerShell
 
 The operator must have temporary AWS credentials with permission to:
 
-- create and update the two IAM roles;
+- create and update the three IAM roles;
 - create and update their inline policies;
-- read the existing identity role;
+- read the existing identity and deployment identity roles;
 - call `sts:GetCallerIdentity`.
 
 Long-lived AWS access keys are not required and should not be used.
@@ -237,8 +297,16 @@ The following infrastructure must already exist:
 ```text
 GitHub OIDC provider
 clouddoc-dev-github-identity
+clouddoc-dev-github-deploy-identity
 CloudDoc Terraform state bucket
 ```
+
+Bootstrap activation order:
+
+1. apply GitHub OIDC bootstrap including the deployment identity;
+2. apply this authorization bootstrap for state, plan, and apply roles;
+3. configure GitHub repository variables from outputs;
+4. prove live Terraform plan before controlled deployment.
 
 ## Configuration
 
@@ -281,6 +349,9 @@ state key:
 
 identity role:
     clouddoc-dev-github-identity
+
+deployment identity role:
+    clouddoc-dev-github-deploy-identity
 ```
 
 Do not commit:
@@ -383,13 +454,13 @@ terraform `
 Expected initial resource shape:
 
 ```text
-2 IAM roles
-2 inline IAM role policies
-4 managed resources total
+3 IAM roles
+3 inline IAM role policies
+6 managed resources total
 ```
 
 No OIDC provider, identity role, managed IAM policy, policy attachment, or
-deployment role should appear.
+wildcard trust should appear.
 
 ## Verify the Saved Plan
 
@@ -446,7 +517,7 @@ terraform `
 Expected initial result:
 
 ```text
-Resources: 4 added, 0 changed, 0 destroyed.
+Resources: 6 added, 0 changed, 0 destroyed.
 ```
 
 A saved-plan apply does not prompt for interactive approval because the plan
@@ -462,7 +533,7 @@ terraform `
   output
 ```
 
-Verify both roles exist:
+Verify all three roles exist:
 
 ```powershell
 $StateRoleName = terraform `
@@ -476,6 +547,12 @@ $PlanRoleName = terraform `
   output `
   -raw `
   terraform_plan_role_name
+
+$ApplyRoleName = terraform `
+  -chdir=infra/bootstrap/terraform-authorization `
+  output `
+  -raw `
+  terraform_apply_role_name
 ```
 
 Inspect role metadata without exposing complete ARNs in shared logs:
@@ -486,6 +563,9 @@ aws iam get-role `
 
 aws iam get-role `
   --role-name $PlanRoleName
+
+aws iam get-role `
+  --role-name $ApplyRoleName
 ```
 
 Verify each role has exactly one inline policy:
@@ -496,6 +576,9 @@ aws iam list-role-policies `
 
 aws iam list-role-policies `
   --role-name $PlanRoleName
+
+aws iam list-role-policies `
+  --role-name $ApplyRoleName
 ```
 
 Verify no managed policy is attached:
@@ -506,6 +589,9 @@ aws iam list-attached-role-policies `
 
 aws iam list-attached-role-policies `
   --role-name $PlanRoleName
+
+aws iam list-attached-role-policies `
+  --role-name $ApplyRoleName
 ```
 
 Expected attached-policy count:
@@ -583,15 +669,29 @@ After the roles are provisioned, configure these repository variables:
 CLOUDDOC_TERRAFORM_STATE_BUCKET
 CLOUDDOC_DEV_TERRAFORM_STATE_ROLE_ARN
 CLOUDDOC_DEV_TERRAFORM_PLAN_ROLE_ARN
+CLOUDDOC_DEV_TERRAFORM_APPLY_ROLE_ARN
 ```
 
 These values are identifiers, not credentials.
 
-The repository already uses:
+Outputs required for GitHub variables also include the trusted identity ARNs:
+
+```text
+terraform_state_role_arn
+terraform_plan_role_arn
+terraform_apply_role_arn
+github_identity_role_arn
+github_deploy_identity_role_arn
+terraform_state_trusted_identity_role_arns
+terraform_apply_trusted_identity_role_arn
+```
+
+The repository already uses or will use:
 
 ```text
 CLOUDDOC_AWS_ACCOUNT_ID
 CLOUDDOC_DEV_IDENTITY_ROLE_ARN
+CLOUDDOC_DEV_DEPLOY_IDENTITY_ROLE_ARN
 ```
 
 Do not create:
@@ -608,6 +708,9 @@ The state key remains versioned in:
 ```text
 infra/terraform/environments/dev.s3.tfbackend
 ```
+
+Source implemented versus AWS apply pending remains the status for these roles
+until post-merge activation completes.
 
 ## Operational Verification
 
@@ -662,10 +765,12 @@ service-wide wildcard actions
 
 The slice must also prove that:
 
-- the identity role has no direct application or state permissions;
+- the identity roles have no direct application or state permissions;
 - the state role cannot inspect application resources;
 - the plan role cannot read or write Terraform state;
-- the plan role cannot mutate application resources.
+- the plan role cannot mutate application resources;
+- the apply role cannot access Terraform state;
+- the plan identity cannot assume the apply role.
 
 Use safe IAM policy simulation or read-only denied calls. Do not intentionally
 perform application mutations merely to prove denial.
@@ -747,29 +852,37 @@ operational activation.
 
 ## Security Invariants
 
-- The GitHub identity role remains permissionless.
-- Each target role trusts only the exact identity-role ARN.
+- The GitHub identity roles remain permissionless.
+- The state role trusts exactly the plan identity and deployment identity.
+- The plan role trusts only the plan identity.
+- The apply role trusts only the deployment identity.
 - No target role trusts GitHub OIDC directly.
 - The state role is restricted to the exact state and lock objects.
 - The state object cannot be deleted by the state role.
 - The plan role cannot access Terraform state.
 - The plan role contains no mutation permission.
+- The apply role has no state access.
+- PassRole is restricted to four exact Lambda execution roles and Lambda only.
 - No AWS-managed broad policy is attached.
 - No static AWS credential is stored in the repository or GitHub.
 - No customer-managed KMS permission is included.
 - Authorization expansion requires concrete evidence.
+- The initial apply action matrix is not claimed as live-proven.
 
 ## Intentionally Deferred
 
-The following are not owned by this bootstrap:
+The following are not owned by this bootstrap activation:
 
-- Terraform apply authorization;
-- deployment role;
 - production roles;
 - cross-account deployment;
-- protected deployment approvals;
-- plan artifact promotion;
+- team-based reviewers;
+- multi-party approval;
+- automatic rollback;
 - HCP Terraform;
+- persistent binary plans;
+- policy-as-code platforms;
 - policy generation from CloudTrail.
 
-These items require separate architecture and operational controls.
+These items require separate architecture and operational controls. Apply
+authorization now exists in source; AWS activation and live proof remain
+pending.

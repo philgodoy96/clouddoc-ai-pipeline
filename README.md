@@ -4,7 +4,41 @@ Production-minded AWS serverless document intelligence pipeline designed to inge
 
 ## Project Status
 
-CloudDoc AI Pipeline contains incrementally implemented application and infrastructure foundations in the repository. The project now also contains the source implementation for GitHub OIDC authentication, separate Terraform state and plan authorization, a manual Terraform plan workflow, and a sanitized Terraform plan summary path. AWS activation and live remote-plan proof for those Terraform operations remain pending.
+CloudDoc AI Pipeline contains incrementally implemented application and infrastructure foundations in the repository. Controlled Terraform plan and deployment authorization now exist as repository source. Live AWS activation, GitHub deployment configuration, and operational proof remain pending.
+
+### Status distinction
+
+```text
+OIDC identity proof:
+    operationally verified
+
+Terraform plan OIDC workflow trust:
+    source implemented, AWS apply pending
+
+Terraform state and plan authorization roles:
+    source implemented, AWS apply pending
+
+Live remote-state Terraform plan:
+    pending operational activation
+
+Deployment identity:
+    source implemented, AWS apply pending
+
+Terraform apply authorization:
+    source implemented, AWS apply pending
+
+Plan attestation:
+    source implemented, live artifact proof pending
+
+Controlled deploy workflow:
+    source implemented, GitHub configuration pending
+
+GitHub dev-deploy Environment:
+    pending
+
+Live Terraform deployment:
+    pending operational proof
+```
 
 ### Implemented and operationally verified
 
@@ -14,18 +48,46 @@ CloudDoc AI Pipeline contains incrementally implemented application and infrastr
 ### Implemented in source, activation pending
 
 * second exact GitHub OIDC reusable-workflow trust entry for `.github/workflows/reusable-terraform-plan.yml`
-* separate Terraform authorization bootstrap for `clouddoc-dev-terraform-state` and `clouddoc-dev-terraform-plan`
-* backend state-role wiring and provider plan-role wiring in `infra/terraform/` and `scripts/terraform_workflow.py`
-* manual Terraform plan workflow in `.github/workflows/terraform-plan.yml` and `.github/workflows/reusable-terraform-plan.yml`
-* sanitized plan summary generation in `scripts/summarize_terraform_plan.py`
-* no saved-plan retention beyond runner-temporary execution
+* permissionless deployment identity `clouddoc-dev-github-deploy-identity` for `.github/workflows/reusable-terraform-deploy.yml`
+* separate Terraform authorization bootstrap for state, plan, and apply roles
+* backend state-role wiring and mutually exclusive plan/apply provider-role wiring
+* manual Terraform plan workflow with sanitized summary and value-free plan attestation
+* controlled Terraform deploy workflow with regenerate/compare/apply execution
+* deployment request validation and exact plan-run binding
+* no binary plan or full plan JSON artifact upload
+
+### Controlled Terraform deployment
+
+The project uses a controlled single-operator Terraform deployment model. It does not simulate independent approval through an artificial second GitHub account. Controls include separate permissionless identities, separate authorization roles, manual plan and deploy phases, exact plan-run and commit validation, value-free plan attestation, explicit destructive-change authorization, non-cancelling deployment concurrency, and native S3 Terraform locking.
+
+Security boundaries:
+
+* the plan identity remains unable to deploy
+* the deployment identity is permissionless
+* the apply role is separate from state and plan roles
+* the deploy workflow uses a value-free attestation rather than a binary plan upload
+* binary plan files and full plan JSON are not uploaded
+* destructive changes are denied by default
+* a verified no-op succeeds without apply
+* automatic rollback is intentionally not claimed
+* live activation remains pending
+
+Design and operations:
+
+* [Terraform Deployment Authorization](docs/architecture/terraform-deployment-authorization.md)
+* [Terraform Deploy Workflow Runbook](docs/operations/terraform-deploy-workflow.md)
+* [ADR-028: Controlled Single-Operator Terraform Deployment](docs/adr/ADR-028-controlled-single-operator-terraform-deployment.md)
 
 ### Intentionally deferred
 
-* apply role
-* deployment workflow
 * production authorization
-* plan artifact promotion
+* cross-account deployment
+* team-based reviewers
+* multi-party approval
+* automatic rollback
+* HCP Terraform
+* persistent binary plans
+* policy-as-code platforms
 
 Foundations already implemented in the repository include:
 
@@ -75,9 +137,9 @@ Foundations already implemented in the repository include:
 * OIDC bootstrap tests
 * identity workflow contract tests
 
-Validation workflows are implemented in the repository. Deployment workflows are not. Branch protection is not claimed as configured.
+Validation workflows are implemented in the repository. Controlled plan and deploy workflow source exists; live plan activation, GitHub `dev-deploy` configuration, and live deployment proof remain pending. Branch protection is not claimed as configured.
 
-GitHub OIDC trust bootstrap, the permissionless identity role, the identity-check workflows, the Terraform authorization bootstrap, and the manual Terraform plan workflows are implemented in repository source. The previously completed GitHub OIDC identity proof is the completed operational checkpoint in this area. Extending that trust to the Terraform plan reusable workflow, provisioning `clouddoc-dev-terraform-state` and `clouddoc-dev-terraform-plan`, configuring the required Terraform plan repository variables, and proving a live remote Terraform plan remain post-merge activation work.
+GitHub OIDC trust bootstrap, both permissionless identity roles, identity-check workflows, Terraform authorization bootstrap (state, plan, and apply), manual Terraform plan workflows, value-free plan attestation, and controlled deploy workflows are implemented in repository source. The previously completed GitHub OIDC identity proof is the completed operational checkpoint. AWS apply of the extended trust and authorization roles, GitHub Environment and repository-variable configuration, live remote Terraform plan proof, and live controlled deployment proof remain post-merge activation work.
 
 Architecture and delivery foundations already defined include:
 
@@ -207,7 +269,7 @@ The repository declares the control plane, queues, event-source mappings, Lambda
 
 ### Remaining before validated v1
 
-* controlled deployment
+* live activation and operational proof of controlled Terraform deployment
 * real end-to-end AWS validation
 * real alarm validation
 * operator notification routing
@@ -282,8 +344,11 @@ Detailed principles are documented in:
 * [Infrastructure CI Validation](docs/architecture/infrastructure-ci-validation.md)
 * [GitHub OIDC Trust Bootstrap](docs/architecture/github-oidc-trust-bootstrap.md)
 * [Terraform Plan Authorization](docs/architecture/terraform-plan-authorization.md)
+* [Terraform Deployment Authorization](docs/architecture/terraform-deployment-authorization.md)
 * [ADR-027: Separate Terraform State, Plan, and Apply Authorization](docs/adr/ADR-027-separate-terraform-state-plan-and-apply-authorization.md)
+* [ADR-028: Controlled Single-Operator Terraform Deployment](docs/adr/ADR-028-controlled-single-operator-terraform-deployment.md)
 * [Terraform Plan Workflow Runbook](docs/operations/terraform-plan-workflow.md)
+* [Terraform Deploy Workflow Runbook](docs/operations/terraform-deploy-workflow.md)
 * [Terraform Authorization Bootstrap](infra/bootstrap/terraform-authorization/README.md)
 * [ADR-017: Package Python Lambdas as a Shared Deterministic ZIP](docs/adr/ADR-017-package-python-lambdas-as-a-shared-zip.md)
 * [ADR-023: Use Amazon Nova Micro through Bedrock Converse](docs/adr/ADR-023-use-amazon-nova-micro-through-bedrock-converse.md)
@@ -577,10 +642,11 @@ python scripts/terraform_workflow.py init --environment dev
 python scripts/terraform_workflow.py plan --environment dev
 python scripts/terraform_workflow.py show-plan --environment dev
 python scripts/terraform_workflow.py apply --environment dev --confirm-environment dev
+python scripts/terraform_workflow.py deploy --environment dev --confirm-environment APPLY-DEV
 python scripts/terraform_workflow.py output --environment dev
 ```
 
-`show-plan` validates a local saved plan and manifest under `artifacts/terraform/<environment>/`. Real remote backend initialization and AWS plan/apply remain pending.
+`show-plan` and local `apply` use the existing saved-plan contract under `artifacts/terraform/<environment>/`. `deploy` is the controlled regenerate/compare/apply contract used by the GitHub deploy path. Real remote backend initialization, live plan activation, and live controlled deployment remain pending.
 
 ## Packaging Contract
 
@@ -820,17 +886,12 @@ These decisions keep the first release focused on one complete, observable, reco
 Remaining deployment and operational follow-ups:
 
 * branch protection activation
-* real OIDC bootstrap apply
-* GitHub `dev` Environment
-* repository variables
-* end-to-end identity verification
-* state authorization
-* plan identity
-* apply identity
-* artifact publication identity
-* artifact publication
-* remote plan
-* controlled apply
+* AWS apply of extended OIDC trust and deployment identity
+* AWS apply of Terraform state, plan, and apply authorization roles
+* GitHub repository variables for plan and deploy
+* GitHub `dev-deploy` Environment
+* live remote-state Terraform plan proof
+* live controlled Terraform deployment proof
 * real AWS deployment validation
 * real state-bucket bootstrap in AWS
 * real remote backend initialization
@@ -840,11 +901,18 @@ Remaining deployment and operational follow-ups:
 * operator recovery tooling
 * SLOs
 * distributed tracing
-* operator runbooks
 * code signing
 * Lambda layers
 * container-image packaging
 * arm64
+* production authorization
+* cross-account deployment
+* team-based reviewers
+* multi-party approval
+* automatic rollback
+* HCP Terraform
+* persistent binary plans
+* policy-as-code platforms
 
 Branch protection should be configured after the validation workflows run successfully on `main`. It is not claimed as active.
 
@@ -872,6 +940,8 @@ Planned and recorded ADR topics include:
 * native AWS metrics and structured application logs
 * S3-native locking and explicit environment Terraform state
 * separate OIDC authentication from deployment authorization
+* separate Terraform state, plan, and apply authorization
+* controlled single-operator Terraform deployment
 
 ## Contributing
 
