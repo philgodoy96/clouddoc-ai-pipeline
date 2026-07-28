@@ -13,6 +13,7 @@ OIDC_BOOTSTRAP_ROOT = REPOSITORY_ROOT / "infra" / "bootstrap" / "github-oidc"
 
 EXPECTED_BOOTSTRAP_FILES = {
     ".terraform.lock.hcl",
+    "README.md",
     "data.tf",
     "locals.tf",
     "outputs.tf",
