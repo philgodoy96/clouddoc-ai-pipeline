@@ -79,10 +79,12 @@ locals {
     "arn:${data.aws_partition.current.partition}:lambda:${var.aws_region}:${var.aws_account_id}:function:${local.dead_letter_reconciler_function_name}",
   ]
 
-  # Event-source mapping UUIDs are assigned by AWS during create/refresh.
-  application_lambda_event_source_mapping_arn_prefix = (
-    "arn:${data.aws_partition.current.partition}:lambda:${var.aws_region}:${var.aws_account_id}:event-source-mapping/*"
-  )
+  # Event-source mapping create is constrained by lambda:FunctionArn to these
+  # SQS consumer functions only (processor and dead-letter reconciler).
+  application_lambda_event_source_mapping_function_arns = sort([
+    "arn:${data.aws_partition.current.partition}:lambda:${var.aws_region}:${var.aws_account_id}:function:${local.processor_function_name}",
+    "arn:${data.aws_partition.current.partition}:lambda:${var.aws_region}:${var.aws_account_id}:function:${local.dead_letter_reconciler_function_name}",
+  ])
 
   application_apigateway_apis_resource = (
     "arn:${data.aws_partition.current.partition}:apigateway:${var.aws_region}::/apis"
@@ -111,6 +113,10 @@ locals {
   # Tagged CreateApi authorizes against the URL-encoded API Gateway tag resource.
   application_apigateway_api_tag_resource = (
     "arn:${data.aws_partition.current.partition}:apigateway:${var.aws_region}::/tags/arn%3A${data.aws_partition.current.partition}%3Aapigateway%3A${var.aws_region}%3A%3A%2Fv2%2Fapis%2F*"
+  )
+  # Stage TagResource authorizes against the URL-encoded Stage tag resource.
+  application_apigateway_stage_tag_resource = (
+    "arn:${data.aws_partition.current.partition}:apigateway:${var.aws_region}::/tags/arn%3A${data.aws_partition.current.partition}%3Aapigateway%3A${var.aws_region}%3A%3A%2Fv2%2Fapis%2F*%2Fstages%2F*"
   )
 
   application_sqs_queue_arns = [

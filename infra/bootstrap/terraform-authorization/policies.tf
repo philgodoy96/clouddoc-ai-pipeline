@@ -45,6 +45,7 @@ data "aws_iam_policy_document" "terraform_apply_access" {
       local.application_apigateway_stages_resource,
       local.application_apigateway_stage_resource_prefix,
       local.application_apigateway_api_tag_resource,
+      local.application_apigateway_stage_tag_resource,
     ]
   }
 
@@ -278,6 +279,20 @@ data "aws_iam_policy_document" "terraform_apply_access" {
     ]
   }
 
+  # GetEventSourceMapping does not support resource-level restriction.
+  statement {
+    sid    = "ReadLambdaEventSourceMapping"
+    effect = "Allow"
+
+    actions = [
+      "lambda:GetEventSourceMapping",
+    ]
+
+    resources = [
+      "*",
+    ]
+  }
+
   statement {
     sid    = "ManageLambdaEventSourceMappings"
     effect = "Allow"
@@ -285,13 +300,19 @@ data "aws_iam_policy_document" "terraform_apply_access" {
     actions = [
       "lambda:CreateEventSourceMapping",
       "lambda:DeleteEventSourceMapping",
-      "lambda:GetEventSourceMapping",
       "lambda:UpdateEventSourceMapping",
     ]
 
     resources = [
-      local.application_lambda_event_source_mapping_arn_prefix,
+      "*",
     ]
+
+    condition {
+      test     = "ArnLike"
+      variable = "lambda:FunctionArn"
+
+      values = local.application_lambda_event_source_mapping_function_arns
+    }
   }
 
   statement {
