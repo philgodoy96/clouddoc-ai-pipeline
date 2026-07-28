@@ -49,7 +49,7 @@ data "aws_iam_policy_document" "terraform_apply_access" {
     ]
   }
 
-  # Tagged CreateStage also requires apigateway:PUT on the encoded Stage tag resource.
+  # Tagged CreateStage requires apigateway:PUT on both the raw Stages collection and the encoded Stage tag resource.
   statement {
     sid    = "CompleteTaggedApiGatewayV2StageCreation"
     effect = "Allow"
@@ -59,6 +59,7 @@ data "aws_iam_policy_document" "terraform_apply_access" {
     ]
 
     resources = [
+      local.application_apigateway_stages_resource,
       local.application_apigateway_stage_tag_resource,
     ]
   }
