@@ -1,18 +1,30 @@
-name: Reusable Terraform Plan
+name: Reusable Terraform Deploy
 
 on:
   workflow_call:
     inputs:
+      plan_run_id:
+        description: Successful Terraform Plan workflow run ID.
+        required: true
+        type: string
+      confirmation:
+        description: Exact APPLY-DEV confirmation string.
+        required: true
+        type: string
+      allow_destructive_changes:
+        description: Whether destructive delete or replacement actions are authorized.
+        required: true
+        type: boolean
       aws_account_id:
-        description: Expected AWS account ID for the Terraform plan session.
+        description: Expected AWS account ID for the deployment session.
         required: true
         type: string
       aws_region:
         description: AWS Region used by the CloudDoc dev environment.
         required: true
         type: string
-      identity_role_arn:
-        description: ARN of the permissionless CloudDoc GitHub identity role.
+      deploy_identity_role_arn:
+        description: ARN of the permissionless CloudDoc GitHub deploy identity role.
         required: true
         type: string
       state_bucket:
@@ -23,21 +35,22 @@ on:
         description: ARN of the CloudDoc dev Terraform state-access role.
         required: true
         type: string
-      plan_role_arn:
-        description: ARN of the CloudDoc dev Terraform plan-only role.
+      apply_role_arn:
+        description: ARN of the CloudDoc dev Terraform apply role.
         required: true
         type: string
 
 permissions:
+  actions: read
   contents: read
   id-token: write
 
 jobs:
-  plan-dev:
-    name: Plan dev infrastructure
+  deploy-dev:
+    name: Deploy dev infrastructure
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    environment: dev
+    timeout-minutes: 45
+    environment: dev-deploy
 
     steps:
       - name: Validate trusted workflow context
@@ -47,12 +60,15 @@ jobs:
           EXPECTED_REF: refs/heads/main
           EXPECTED_EVENT: workflow_dispatch
           EXPECTED_REGION: us-east-1
+          EXPECTED_CONFIRMATION: APPLY-DEV
           REQUESTED_ACCOUNT_ID: ${{ inputs.aws_account_id }}
           REQUESTED_REGION: ${{ inputs.aws_region }}
-          REQUESTED_IDENTITY_ROLE_ARN: ${{ inputs.identity_role_arn }}
+          REQUESTED_DEPLOY_IDENTITY_ROLE_ARN: ${{ inputs.deploy_identity_role_arn }}
           REQUESTED_STATE_BUCKET: ${{ inputs.state_bucket }}
           REQUESTED_STATE_ROLE_ARN: ${{ inputs.state_role_arn }}
-          REQUESTED_PLAN_ROLE_ARN: ${{ inputs.plan_role_arn }}
+          REQUESTED_APPLY_ROLE_ARN: ${{ inputs.apply_role_arn }}
+          REQUESTED_PLAN_RUN_ID: ${{ inputs.plan_run_id }}
+          REQUESTED_CONFIRMATION: ${{ inputs.confirmation }}
         run: |
           set -euo pipefail
 
@@ -62,12 +78,17 @@ jobs:
           fi
 
           if [[ "$GITHUB_REF" != "$EXPECTED_REF" ]]; then
-            echo "::error::Terraform plan must run from refs/heads/main."
+            echo "::error::Terraform deploy must run from refs/heads/main."
             exit 1
           fi
 
           if [[ "$GITHUB_EVENT_NAME" != "$EXPECTED_EVENT" ]]; then
-            echo "::error::Terraform plan must be started manually."
+            echo "::error::Terraform deploy must be started manually."
+            exit 1
+          fi
+
+          if ! [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::GITHUB_SHA must be a lowercase 40-character commit SHA."
             exit 1
           fi
 
@@ -77,17 +98,17 @@ jobs:
           fi
 
           if [[ "$REQUESTED_REGION" != "$EXPECTED_REGION" ]]; then
-            echo "::error::Terraform plan must use us-east-1."
+            echo "::error::Terraform deploy must use us-east-1."
             exit 1
           fi
 
-          expected_identity_role_arn="arn:aws:iam::${REQUESTED_ACCOUNT_ID}:role/clouddoc-dev-github-identity"
+          expected_deploy_identity_role_arn="arn:aws:iam::${REQUESTED_ACCOUNT_ID}:role/clouddoc-dev-github-deploy-identity"
           expected_state_role_arn="arn:aws:iam::${REQUESTED_ACCOUNT_ID}:role/clouddoc-dev-terraform-state"
-          expected_plan_role_arn="arn:aws:iam::${REQUESTED_ACCOUNT_ID}:role/clouddoc-dev-terraform-plan"
+          expected_apply_role_arn="arn:aws:iam::${REQUESTED_ACCOUNT_ID}:role/clouddoc-dev-terraform-apply"
           expected_state_bucket="clouddoc-${REQUESTED_ACCOUNT_ID}-terraform-state"
 
-          if [[ "$REQUESTED_IDENTITY_ROLE_ARN" != "$expected_identity_role_arn" ]]; then
-            echo "::error::The identity role does not match the approved account and role."
+          if [[ "$REQUESTED_DEPLOY_IDENTITY_ROLE_ARN" != "$expected_deploy_identity_role_arn" ]]; then
+            echo "::error::The deploy identity role does not match the approved account and role."
             exit 1
           fi
 
@@ -96,8 +117,8 @@ jobs:
             exit 1
           fi
 
-          if [[ "$REQUESTED_PLAN_ROLE_ARN" != "$expected_plan_role_arn" ]]; then
-            echo "::error::The Terraform plan role does not match the approved account and role."
+          if [[ "$REQUESTED_APPLY_ROLE_ARN" != "$expected_apply_role_arn" ]]; then
+            echo "::error::The Terraform apply role does not match the approved account and role."
             exit 1
           fi
 
@@ -105,6 +126,235 @@ jobs:
             echo "::error::The Terraform state bucket does not match the approved account boundary."
             exit 1
           fi
+
+          if ! [[ "$REQUESTED_PLAN_RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::plan_run_id must be a positive decimal integer."
+            exit 1
+          fi
+
+          if [[ "$REQUESTED_CONFIRMATION" != "$EXPECTED_CONFIRMATION" ]]; then
+            echo "::error::Deployment confirmation must be exactly APPLY-DEV."
+            exit 1
+          fi
+
+      - name: Check out repository for validation
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            requirements/lambda.lock.txt
+
+      - name: Install project
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+
+      - name: Create deployment temporary directory
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          DEPLOY_DIRECTORY="${RUNNER_TEMP}/clouddoc-terraform-deploy"
+          ATTESTATION_DIRECTORY="${DEPLOY_DIRECTORY}/attestation"
+          OUTPUT_DIRECTORY="${DEPLOY_DIRECTORY}/output"
+          VALIDATED_RUN_FILE="${DEPLOY_DIRECTORY}/validated-plan-run.env"
+
+          if [[ -e "$DEPLOY_DIRECTORY" ]]; then
+            echo "::error::Terraform deploy directory already exists."
+            exit 1
+          fi
+
+          mkdir -m 700 -p "$ATTESTATION_DIRECTORY" "$OUTPUT_DIRECTORY"
+
+          {
+            echo "DEPLOY_DIRECTORY=${DEPLOY_DIRECTORY}"
+            echo "ATTESTATION_DIRECTORY=${ATTESTATION_DIRECTORY}"
+            echo "OUTPUT_DIRECTORY=${OUTPUT_DIRECTORY}"
+            echo "VALIDATED_RUN_FILE=${VALIDATED_RUN_FILE}"
+            echo "PLAN_ATTESTATION=${ATTESTATION_DIRECTORY}/terraform-plan-attestation.json"
+          } >> "$GITHUB_ENV"
+
+      - name: Validate referenced Terraform Plan run
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          python scripts/validate_terraform_deployment_request.py \
+            --repository "${{ github.repository }}" \
+            --run-id "${{ inputs.plan_run_id }}" \
+            --expected-workflow-path ".github/workflows/terraform-plan.yml" \
+            --expected-ref "refs/heads/main" \
+            --expected-commit-sha "${{ github.sha }}" \
+            --expected-event "workflow_dispatch" \
+            --maximum-age-hours 24 \
+            > "$VALIDATED_RUN_FILE"
+
+          declare -A validated=()
+          while IFS= read -r line || [[ -n "$line" ]]; do
+            if [[ -z "$line" ]]; then
+              continue
+            fi
+            if [[ "$line" != PLAN_RUN_ID=* \
+              && "$line" != PLAN_COMMIT_SHA=* \
+              && "$line" != PLAN_CREATED_AT=* ]]; then
+              echo "::error::Unexpected deployment request validator output."
+              exit 1
+            fi
+            key="${line%%=*}"
+            value="${line#*=}"
+            if [[ -n "${validated[$key]+x}" ]]; then
+              echo "::error::Duplicate deployment request validator output key."
+              exit 1
+            fi
+            validated["$key"]="$value"
+          done < "$VALIDATED_RUN_FILE"
+
+          if [[ "${#validated[@]}" -ne 3 ]]; then
+            echo "::error::Deployment request validator output schema mismatch."
+            exit 1
+          fi
+
+          if [[ "${validated[PLAN_RUN_ID]}" != "${{ inputs.plan_run_id }}" ]]; then
+            echo "::error::Validated plan run ID mismatch."
+            exit 1
+          fi
+
+          if [[ "${validated[PLAN_COMMIT_SHA]}" != "$GITHUB_SHA" ]]; then
+            echo "::error::Validated plan commit SHA mismatch."
+            exit 1
+          fi
+
+          {
+            echo "VALIDATED_PLAN_RUN_ID=${validated[PLAN_RUN_ID]}"
+            echo "VALIDATED_PLAN_COMMIT_SHA=${validated[PLAN_COMMIT_SHA]}"
+            echo "VALIDATED_PLAN_CREATED_AT=${validated[PLAN_CREATED_AT]}"
+          } >> "$GITHUB_ENV"
+
+          {
+            echo
+            echo "Validated plan run ID: ${validated[PLAN_RUN_ID]}"
+            echo "Validated plan commit: ${validated[PLAN_COMMIT_SHA]}"
+            echo "Validated plan created at: ${validated[PLAN_CREATED_AT]}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Download plan attestation
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: clouddoc-terraform-plan-attestation
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.plan_run_id }}
+          path: ${{ env.ATTESTATION_DIRECTORY }}
+          digest-mismatch: error
+
+      - name: Require exact attestation file
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mapfile -t entries < <(find "$ATTESTATION_DIRECTORY" -mindepth 1 -maxdepth 1 | sort)
+
+          if [[ "${#entries[@]}" -ne 1 ]]; then
+            echo "::error::Attestation download must contain exactly one entry."
+            exit 1
+          fi
+
+          if [[ "${entries[0]}" != "$PLAN_ATTESTATION" ]]; then
+            echo "::error::Unexpected attestation filename."
+            exit 1
+          fi
+
+          if [[ -L "$PLAN_ATTESTATION" ]]; then
+            echo "::error::Attestation path must not be a symlink."
+            exit 1
+          fi
+
+          if [[ ! -f "$PLAN_ATTESTATION" ]]; then
+            echo "::error::Attestation path must be a regular file."
+            exit 1
+          fi
+
+      - name: Validate Terraform plan attestation
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python scripts/terraform_plan_attestation.py validate \
+            "$PLAN_ATTESTATION" \
+            --repository "${{ github.repository }}" \
+            --plan-run-id "${{ inputs.plan_run_id }}" \
+            --commit-sha "${{ github.sha }}" \
+            --environment dev
+
+      - name: Validate destructive-change authorization
+        shell: bash
+        env:
+          ALLOW_DESTRUCTIVE_CHANGES: ${{ inputs.allow_destructive_changes }}
+          EXPECTED_CONFIRMATION: APPLY-DEV
+          REQUESTED_CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$REQUESTED_CONFIRMATION" != "$EXPECTED_CONFIRMATION" ]]; then
+            echo "::error::Deployment confirmation must be exactly APPLY-DEV."
+            exit 1
+          fi
+
+          python - <<'PY'
+          import os
+          import sys
+          from pathlib import Path
+
+          sys.path.insert(0, "scripts")
+          import terraform_plan_attestation as plan_attestation
+
+          attestation = plan_attestation.read_attestation(
+              Path(os.environ["PLAN_ATTESTATION"])
+          )
+          allow_destructive = os.environ.get("ALLOW_DESTRUCTIVE_CHANGES") == "true"
+
+          if attestation.destructive_changes and not allow_destructive:
+              print(
+                  "::error::Destructive changes require allow_destructive_changes.",
+              )
+              raise SystemExit(1)
+
+          summary_path = os.environ["GITHUB_STEP_SUMMARY"]
+          fingerprint = attestation.change_set_fingerprint
+          prefix = fingerprint[:12]
+
+          with open(summary_path, "a", encoding="utf-8") as handle:
+              handle.write("\n")
+              handle.write("Reviewed action counts:\n")
+              for action, count in attestation.action_counts.items():
+                  handle.write(f"- {action}: {count}\n")
+              handle.write(
+                  f"No-op status: {'yes' if attestation.no_changes else 'no'}\n"
+              )
+              handle.write(
+                  "Destructive changes: "
+                  f"{'yes' if attestation.destructive_changes else 'no'}\n"
+              )
+              handle.write(
+                  "Destructive authorization: "
+                  f"{'granted' if allow_destructive else 'denied-by-default'}\n"
+              )
+              handle.write(f"Change-set fingerprint prefix: {prefix}\n")
+          PY
 
       - name: Validate GitHub OIDC token claims
         shell: bash
@@ -115,9 +365,9 @@ jobs:
           EXPECTED_REPOSITORY_OWNER: ${{ github.repository_owner }}
           EXPECTED_REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
           EXPECTED_REF: ${{ github.ref }}
-          EXPECTED_ENVIRONMENT: dev
+          EXPECTED_ENVIRONMENT: dev-deploy
           EXPECTED_JOB_WORKFLOW_REF: ${{ job.workflow_ref }}
-          CANONICAL_JOB_WORKFLOW_REF: philgodoy96/clouddoc-ai-pipeline/.github/workflows/reusable-terraform-plan.yml@refs/heads/main
+          CANONICAL_JOB_WORKFLOW_REF: philgodoy96/clouddoc-ai-pipeline/.github/workflows/reusable-terraform-deploy.yml@refs/heads/main
         run: |
           python - <<'PY'
           import base64
@@ -489,19 +739,18 @@ jobs:
       - name: Configure temporary AWS credentials
         uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
         with:
-          role-to-assume: ${{ inputs.identity_role_arn }}
+          role-to-assume: ${{ inputs.deploy_identity_role_arn }}
           aws-region: ${{ inputs.aws_region }}
           allowed-account-ids: ${{ inputs.aws_account_id }}
           role-duration-seconds: 900
-          role-session-name: clouddoc-plan-identity-${{ github.run_id }}
+          role-session-name: clouddoc-terraform-deploy-identity
           mask-aws-account-id: true
           unset-current-credentials: true
 
       - name: Verify assumed AWS identity
         shell: bash
         env:
-          EXPECTED_ROLE_NAME: clouddoc-dev-github-identity
-          EXPECTED_SESSION_NAME: clouddoc-plan-identity-${{ github.run_id }}
+          EXPECTED_ROLE_NAME: clouddoc-dev-github-deploy-identity
         run: |
           set -euo pipefail
 
@@ -511,14 +760,14 @@ jobs:
               --output text
           )"
 
-          expected_suffix=":assumed-role/${EXPECTED_ROLE_NAME}/${EXPECTED_SESSION_NAME}"
+          expected_fragment=":assumed-role/${EXPECTED_ROLE_NAME}/"
 
-          if [[ "$identity_arn" != *"$expected_suffix" ]]; then
-            echo "::error::The temporary AWS session does not match the approved identity role."
+          if [[ "$identity_arn" != *"$expected_fragment"* ]]; then
+            echo "::error::The temporary AWS session does not match the approved deploy identity role."
             exit 1
           fi
 
-          echo "AWS OIDC identity federation verified."
+          echo "AWS OIDC deploy identity federation verified."
 
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -539,29 +788,22 @@ jobs:
             exit 1
           fi
 
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "::error::Terraform deploy checkout must use refs/heads/main."
+            exit 1
+          fi
+
           if [[ -n "$(git status --porcelain)" ]]; then
             echo "::error::The checked-out repository is not clean."
             exit 1
           fi
 
+          if git ls-files | grep -E '(^|/)\.env$|(^|/)credentials\.json$|(^|/)aws/credentials$'; then
+            echo "::error::Tracked credential files are present in the repository checkout."
+            exit 1
+          fi
+
           echo "Repository checkout verified."
-
-      - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-          cache: pip
-          cache-dependency-path: |
-            pyproject.toml
-            requirements/lambda.lock.txt
-
-      - name: Install project
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          python -m pip install --upgrade pip
-          python -m pip install -e .
 
       - name: Set up Terraform
         uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
@@ -581,160 +823,36 @@ jobs:
           set -euo pipefail
           make lambda-package-check
 
-      - name: Create and summarize Terraform plan
+      - name: Run controlled Terraform deploy
         shell: bash
         env:
-          CLOUDDOC_TERRAFORM_STATE_BUCKET: ${{ inputs.state_bucket }}
           CLOUDDOC_EXPECTED_AWS_ACCOUNT_ID: ${{ inputs.aws_account_id }}
+          CLOUDDOC_TERRAFORM_STATE_BUCKET: ${{ inputs.state_bucket }}
           CLOUDDOC_DEV_TERRAFORM_STATE_ROLE_ARN: ${{ inputs.state_role_arn }}
-          CLOUDDOC_DEV_TERRAFORM_PLAN_ROLE_ARN: ${{ inputs.plan_role_arn }}
+          CLOUDDOC_DEV_TERRAFORM_APPLY_ROLE_ARN: ${{ inputs.apply_role_arn }}
           TF_DATA_DIR: ${{ github.workspace }}/infra/terraform/.terraform-data/dev
+          ALLOW_DESTRUCTIVE_CHANGES: ${{ inputs.allow_destructive_changes }}
         run: |
           set -euo pipefail
-
-          PLAN_DIRECTORY="${RUNNER_TEMP}/clouddoc-terraform-plan"
-          PLAN_FILE="${PLAN_DIRECTORY}/clouddoc.tfplan"
-          MANIFEST_FILE="${PLAN_DIRECTORY}/clouddoc.tfplan.json"
-          PLAN_JSON="${PLAN_DIRECTORY}/terraform-show.json"
-          PLAN_ATTESTATION="${PLAN_DIRECTORY}/terraform-plan-attestation.json"
-          SUMMARY_FILE="${PLAN_DIRECTORY}/terraform-plan-summary.md"
 
           cleanup() {
             original_status=$?
             cleanup_status=0
 
-            if ! rm -rf -- "$PLAN_DIRECTORY"; then
-              cleanup_status=1
-            fi
+            if [[ -n "${DEPLOY_DIRECTORY:-}" ]]; then
+              if ! rm -rf -- "$DEPLOY_DIRECTORY"; then
+                cleanup_status=1
+              fi
 
-            if [[ -e "$PLAN_DIRECTORY" ]]; then
-              cleanup_status=1
-            fi
-
-            trap - EXIT
-
-            if [[ "$cleanup_status" -ne 0 ]]; then
-              echo "::error::Terraform plan cleanup failed."
-              exit 1
-            fi
-
-            exit "$original_status"
-          }
-
-          trap cleanup EXIT
-
-          if [[ -e "$PLAN_DIRECTORY" ]]; then
-            echo "::error::Terraform plan directory already exists."
-            exit 1
-          fi
-
-          mkdir -m 700 -p "$PLAN_DIRECTORY"
-
-          python scripts/terraform_workflow.py plan \
-            --environment dev \
-            --output-directory "$PLAN_DIRECTORY"
-
-          if [[ ! -f "$PLAN_FILE" ]]; then
-            echo "::error::Terraform did not create the expected saved plan."
-            exit 1
-          fi
-
-          if [[ ! -f "$MANIFEST_FILE" ]]; then
-            echo "::error::Terraform did not create the expected plan manifest."
-            exit 1
-          fi
-
-          terraform \
-            -chdir=infra/terraform \
-            show \
-            -json \
-            "$PLAN_FILE" \
-            > "$PLAN_JSON"
-
-          if [[ ! -s "$PLAN_JSON" ]]; then
-            echo "::error::Terraform did not create the expected JSON plan."
-            exit 1
-          fi
-
-          python scripts/terraform_plan_attestation.py generate \
-            "$PLAN_JSON" \
-            --repository "${{ github.repository }}" \
-            --plan-run-id "${{ github.run_id }}" \
-            --commit-sha "${{ github.sha }}" \
-            --environment dev \
-            --output "$PLAN_ATTESTATION"
-
-          python scripts/terraform_plan_attestation.py validate \
-            "$PLAN_ATTESTATION" \
-            --repository "${{ github.repository }}" \
-            --plan-run-id "${{ github.run_id }}" \
-            --commit-sha "${{ github.sha }}" \
-            --environment dev
-
-          python scripts/summarize_terraform_plan.py \
-            "$PLAN_JSON" \
-            > "$SUMMARY_FILE"
-
-          cat -- "$SUMMARY_FILE" >> "$GITHUB_STEP_SUMMARY"
-
-          {
-            echo
-            echo "> Speculative plan only. No deployment command was executed, and no saved plan was retained."
-          } >> "$GITHUB_STEP_SUMMARY"
-
-          echo "PLAN_DIRECTORY=${PLAN_DIRECTORY}" >> "$GITHUB_ENV"
-          echo "PLAN_ATTESTATION=${PLAN_ATTESTATION}" >> "$GITHUB_ENV"
-
-          trap - EXIT
-
-          echo "Sanitized Terraform plan summary published."
-
-      - name: Upload plan attestation
-        id: upload-plan-attestation
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: clouddoc-terraform-plan-attestation
-          path: ${{ env.PLAN_ATTESTATION }}
-          retention-days: 1
-          if-no-files-found: error
-          include-hidden-files: false
-
-      - name: Record attestation artifact digest
-        if: ${{ steps.upload-plan-attestation.outputs.artifact-digest != '' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          {
-            echo
-            echo "Attestation artifact digest: ${{ steps.upload-plan-attestation.outputs.artifact-digest }}"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Clean up Terraform plan files
-        if: ${{ always() }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          PLAN_DIRECTORY="${RUNNER_TEMP}/clouddoc-terraform-plan"
-
-          cleanup() {
-            original_status=$?
-            cleanup_status=0
-
-            if [[ -e "$PLAN_DIRECTORY" ]]; then
-              if ! rm -rf -- "$PLAN_DIRECTORY"; then
+              if [[ -e "$DEPLOY_DIRECTORY" ]]; then
                 cleanup_status=1
               fi
             fi
 
-            if [[ -e "$PLAN_DIRECTORY" ]]; then
-              cleanup_status=1
-            fi
-
             trap - EXIT
 
             if [[ "$cleanup_status" -ne 0 ]]; then
-              echo "::error::Terraform plan cleanup failed."
+              echo "::error::Terraform deploy cleanup failed."
               exit 1
             fi
 
@@ -743,25 +861,75 @@ jobs:
 
           trap cleanup EXIT
 
-      - name: Verify Terraform plan cleanup
+          deploy_command=(python scripts/terraform_workflow.py deploy)
+          deploy_command+=(--environment dev)
+          deploy_command+=(--attestation "$PLAN_ATTESTATION")
+          deploy_command+=(--repository "${{ github.repository }}")
+          deploy_command+=(--plan-run-id "${{ inputs.plan_run_id }}")
+          deploy_command+=(--commit-sha "${{ github.sha }}")
+          deploy_command+=(--output-directory "$OUTPUT_DIRECTORY")
+
+          if [[ "$ALLOW_DESTRUCTIVE_CHANGES" == "true" ]]; then
+            deploy_command+=(--allow-destructive-changes)
+          fi
+
+          "${deploy_command[@]}"
+
+          {
+            echo
+            echo "Environment: dev"
+            echo "Validated plan run ID: ${VALIDATED_PLAN_RUN_ID}"
+            echo "Commit SHA: ${GITHUB_SHA}"
+            echo "Destructive authorization: ${ALLOW_DESTRUCTIVE_CHANGES}"
+            echo "Controlled Terraform deploy command completed."
+            echo "Temporary deployment artifacts will be removed."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Clean up Terraform deploy files
         if: ${{ always() }}
         shell: bash
         run: |
           set -euo pipefail
 
-          plan_directory="${RUNNER_TEMP}/clouddoc-terraform-plan"
+          DEPLOY_DIRECTORY="${RUNNER_TEMP}/clouddoc-terraform-deploy"
 
-          if [[ -e "$plan_directory" ]]; then
-            echo "::error::Temporary Terraform plan files remain on the runner."
+          cleanup() {
+            original_status=$?
+            cleanup_status=0
+
+            if [[ -e "$DEPLOY_DIRECTORY" ]]; then
+              if ! rm -rf -- "$DEPLOY_DIRECTORY"; then
+                cleanup_status=1
+              fi
+            fi
+
+            if [[ -e "$DEPLOY_DIRECTORY" ]]; then
+              cleanup_status=1
+            fi
+
+            trap - EXIT
+
+            if [[ "$cleanup_status" -ne 0 ]]; then
+              echo "::error::Terraform deploy cleanup failed."
+              exit 1
+            fi
+
+            exit "$original_status"
+          }
+
+          trap cleanup EXIT
+
+      - name: Verify Terraform deploy cleanup
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          deploy_directory="${RUNNER_TEMP}/clouddoc-terraform-deploy"
+
+          if [[ -e "$deploy_directory" ]]; then
+            echo "::error::Temporary Terraform deploy files remain on the runner."
             exit 1
           fi
 
-          if [[ -e "${{ github.workspace }}/clouddoc.tfplan" ]] \
-            || [[ -e "${{ github.workspace }}/clouddoc.tfplan.json" ]] \
-            || [[ -e "${{ github.workspace }}/terraform-show.json" ]] \
-            || [[ -e "${{ github.workspace }}/terraform-plan-attestation.json" ]]; then
-            echo "::error::Plan or attestation files remain under the repository workspace."
-            exit 1
-          fi
-
-          echo "Temporary Terraform plan cleanup verified."
+          echo "Temporary Terraform deploy cleanup verified."

@@ -16,6 +16,10 @@ PYTHON_WORKFLOW = WORKFLOWS_ROOT / "python-quality.yml"
 INFRASTRUCTURE_WORKFLOW = WORKFLOWS_ROOT / "infrastructure-quality.yml"
 AWS_IDENTITY_WORKFLOW = WORKFLOWS_ROOT / "aws-identity-check.yml"
 REUSABLE_AWS_IDENTITY_WORKFLOW = WORKFLOWS_ROOT / "reusable-aws-identity.yml"
+TERRAFORM_PLAN_WORKFLOW = WORKFLOWS_ROOT / "terraform-plan.yml"
+REUSABLE_TERRAFORM_PLAN_WORKFLOW = WORKFLOWS_ROOT / "reusable-terraform-plan.yml"
+TERRAFORM_DEPLOY_WORKFLOW = WORKFLOWS_ROOT / "terraform-deploy.yml"
+REUSABLE_TERRAFORM_DEPLOY_WORKFLOW = WORKFLOWS_ROOT / "reusable-terraform-deploy.yml"
 DEPENDABOT_CONFIG = GITHUB_ROOT / "dependabot.yml"
 
 VALIDATION_WORKFLOWS = (PYTHON_WORKFLOW, INFRASTRUCTURE_WORKFLOW)
@@ -28,10 +32,14 @@ LOCAL_REUSABLE_AWS_IDENTITY_USES = "uses: ./.github/workflows/reusable-aws-ident
 LOCAL_REUSABLE_TERRAFORM_PLAN_USES = (
     "uses: ./.github/workflows/reusable-terraform-plan.yml"
 )
+LOCAL_REUSABLE_TERRAFORM_DEPLOY_USES = (
+    "uses: ./.github/workflows/reusable-terraform-deploy.yml"
+)
 LOCAL_REUSABLE_WORKFLOW_USES = frozenset(
     {
         LOCAL_REUSABLE_AWS_IDENTITY_USES,
         LOCAL_REUSABLE_TERRAFORM_PLAN_USES,
+        LOCAL_REUSABLE_TERRAFORM_DEPLOY_USES,
     }
 )
 
@@ -52,13 +60,35 @@ EXPECTED_ACTIONS = {
         "e6de054238d6b7531b4efff3b6587d9aade6a06c",
         "v6.2.3",
     ),
+    "actions/upload-artifact": (
+        "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+        "v7.0.1",
+    ),
+    "actions/download-artifact": (
+        "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+        "v8.0.1",
+    ),
 }
 EXPECTED_ACTION_COUNTS = {
-    "actions/checkout": 4,
-    "actions/setup-python": 4,
-    "hashicorp/setup-terraform": 2,
-    "aws-actions/configure-aws-credentials": 2,
+    "actions/checkout": 6,
+    "actions/setup-python": 5,
+    "hashicorp/setup-terraform": 3,
+    "aws-actions/configure-aws-credentials": 3,
+    "actions/upload-artifact": 1,
+    "actions/download-artifact": 1,
 }
+EXPECTED_WORKFLOW_FILES = frozenset(
+    {
+        "python-quality.yml",
+        "infrastructure-quality.yml",
+        "aws-identity-check.yml",
+        "reusable-aws-identity.yml",
+        "terraform-plan.yml",
+        "reusable-terraform-plan.yml",
+        "terraform-deploy.yml",
+        "reusable-terraform-deploy.yml",
+    }
+)
 
 ACTION_REFERENCE_PATTERN = re.compile(
     r"^\s*uses:\s+"
@@ -129,7 +159,14 @@ def test_expected_ci_configuration_files_exist() -> None:
     assert INFRASTRUCTURE_WORKFLOW.is_file()
     assert AWS_IDENTITY_WORKFLOW.is_file()
     assert REUSABLE_AWS_IDENTITY_WORKFLOW.is_file()
+    assert TERRAFORM_PLAN_WORKFLOW.is_file()
+    assert REUSABLE_TERRAFORM_PLAN_WORKFLOW.is_file()
+    assert TERRAFORM_DEPLOY_WORKFLOW.is_file()
+    assert REUSABLE_TERRAFORM_DEPLOY_WORKFLOW.is_file()
     assert DEPENDABOT_CONFIG.is_file()
+    assert {
+        path.name for path in WORKFLOWS_ROOT.glob("*.yml")
+    } == EXPECTED_WORKFLOW_FILES
 
 
 @pytest.mark.parametrize(
@@ -330,7 +367,7 @@ def test_every_external_action_uses_an_approved_full_sha() -> None:
         for reference in action_references(source)
     ]
 
-    assert len(references) == 12
+    assert len(references) == 19
 
     for action, reference, comment in references:
         assert action in EXPECTED_ACTIONS
@@ -380,8 +417,8 @@ def test_every_checkout_disables_persisted_credentials() -> None:
     sources = workflow_sources()
     combined = "\n".join(sources.values())
 
-    assert combined.count("actions/checkout@") == 4
-    assert combined.count("persist-credentials: false") == 4
+    assert combined.count("actions/checkout@") == 6
+    assert combined.count("persist-credentials: false") == 6
 
 
 @pytest.mark.parametrize(
@@ -741,20 +778,17 @@ def test_workflows_forbid_static_aws_credentials() -> None:
         assert value not in combined
 
 
-def test_workflows_contain_no_deployment_or_state_mutation_commands() -> None:
-    """Workflows must never mutate remote infrastructure or publish releases."""
+def test_workflows_contain_no_direct_terraform_mutation_commands() -> None:
+    """Workflows must never invoke raw Terraform apply/destroy or unlock."""
     combined = "\n".join(workflow_sources().values())
     lowered = combined.lower()
 
     forbidden = (
-        "terraform apply",
         "terraform destroy",
         "force-unlock",
         "migrate-state",
         "-lock=false",
         "-auto-approve",
-        "actions/upload-artifact",
-        "actions/download-artifact",
         "gh release",
         "aws s3",
     )
@@ -762,13 +796,76 @@ def test_workflows_contain_no_deployment_or_state_mutation_commands() -> None:
     for value in forbidden:
         assert value not in lowered
 
-    # Speculative plans must go through the reviewed wrapper, not a raw CLI.
+    # Speculative plans and controlled deploys must go through the reviewed wrapper.
     assert re.search(r"(?m)^\s*terraform\s+plan\b", combined) is None
+    assert re.search(r"(?m)^\s*terraform\s+apply\b", combined) is None
     assert "python scripts/terraform_workflow.py plan" in combined
+    assert "python scripts/terraform_workflow.py deploy" in combined
+    assert "python scripts/terraform_workflow.py apply" not in combined
+
+
+def test_artifact_transfer_is_limited_to_value_free_plan_attestation() -> None:
+    """Only the value-free plan attestation may cross workflow runs."""
+    plan = read_text(REUSABLE_TERRAFORM_PLAN_WORKFLOW)
+    deploy = read_text(REUSABLE_TERRAFORM_DEPLOY_WORKFLOW)
+    combined = "\n".join(workflow_sources().values())
+
+    assert plan.count("actions/upload-artifact@") == 1
+    assert deploy.count("actions/download-artifact@") == 1
+    assert combined.count("actions/upload-artifact@") == 1
+    assert combined.count("actions/download-artifact@") == 1
+
+    assert "name: clouddoc-terraform-plan-attestation" in plan
+    assert "path: ${{ env.PLAN_ATTESTATION }}" in plan
+    assert "retention-days: 1" in plan
+    assert "if-no-files-found: error" in plan
+    assert "include-hidden-files: false" in plan
+
+    assert "name: clouddoc-terraform-plan-attestation" in deploy
+    assert "digest-mismatch: error" in deploy
+    assert "digest-mismatch: ignore" not in combined
+    assert "digest-mismatch: warn" not in combined
+    assert "merge-multiple:" not in combined
+    assert re.search(r"(?m)^\s*pattern:\s*", combined) is None
+
+    forbidden_upload_paths = (
+        "clouddoc.tfplan",
+        "terraform-show.json",
+        "clouddoc.tfplan.json",
+    )
+    upload_block = plan[
+        plan.index("id: upload-plan-attestation") : plan.index(
+            "name: Record attestation artifact digest"
+        )
+    ]
+    for value in forbidden_upload_paths:
+        assert value not in upload_block
+    assert "path: ${{ env.PLAN_DIRECTORY }}" not in upload_block
+    assert "path: ${{ runner.temp }}" not in upload_block
+
+
+def test_workflows_forbid_binary_plan_and_state_artifact_publication() -> None:
+    """Binary plans, full JSON, and state must never become artifacts."""
+    combined = "\n".join(workflow_sources().values())
+
+    assert "actions/upload-artifact@" in combined
+    upload_sections = [
+        line.strip()
+        for line in combined.splitlines()
+        if "path:" in line
+        and (
+            "clouddoc.tfplan" in line
+            or "terraform-show.json" in line
+            or "tfstate" in line
+        )
+    ]
+    assert upload_sections == []
+    assert "skip-decompress" not in combined
+    assert "repository: ${{ vars." not in combined
 
 
 def test_only_reusable_identity_uses_the_dev_environment() -> None:
-    """Exactly one GitHub Environment reference must exist, on the reusable job."""
+    """Identity verification retains its dedicated reusable-job environment."""
     reusable = read_text(REUSABLE_AWS_IDENTITY_WORKFLOW)
     caller = read_text(AWS_IDENTITY_WORKFLOW)
     reusable_job = extract_job_block(reusable, "verify-identity")
@@ -780,12 +877,279 @@ def test_only_reusable_identity_uses_the_dev_environment() -> None:
     assert "environment: " not in read_text(AWS_IDENTITY_WORKFLOW)
 
 
-def test_workflows_use_no_artifact_transfer_action() -> None:
-    """Validation jobs must remain independent and publication-free."""
-    combined = "\n".join(workflow_sources().values())
+def test_reusable_terraform_plan_remains_workflow_call_only() -> None:
+    """The plan reusable workflow must stay callable and never standalone."""
+    triggers = extract_top_level_block(
+        read_text(REUSABLE_TERRAFORM_PLAN_WORKFLOW),
+        "on",
+    )
 
-    assert "actions/upload-artifact" not in combined
-    assert "actions/download-artifact" not in combined
+    assert "workflow_call:" in triggers
+    assert "workflow_dispatch:" not in triggers
+    assert "pull_request:" not in triggers
+    assert "push:" not in triggers
+
+
+def test_reusable_terraform_plan_publishes_value_free_attestation_only() -> None:
+    """Plan must generate, validate, upload, and clean the attestation artifact."""
+    source = read_text(REUSABLE_TERRAFORM_PLAN_WORKFLOW)
+    job = extract_job_block(source, "plan-dev")
+
+    assert "environment: dev" in job
+    assert "terraform_plan_attestation.py generate" in source
+    assert "terraform_plan_attestation.py validate" in source
+    assert "show" in source
+    assert "-json" in source
+    assert source.index("PLAN_JSON=") < source.index(
+        "terraform_plan_attestation.py generate"
+    )
+    assert source.index("terraform_plan_attestation.py generate") < source.index(
+        "terraform_plan_attestation.py validate"
+    )
+    assert source.index("terraform_plan_attestation.py validate") < source.index(
+        "summarize_terraform_plan.py"
+    )
+    assert source.index("summarize_terraform_plan.py") < source.index(
+        "id: upload-plan-attestation"
+    )
+    assert "PLAN_ATTESTATION=" in source
+    assert "terraform-plan-attestation.json" in source
+    assert (
+        "uses: actions/upload-artifact@"
+        "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1"
+    ) in source
+    assert "name: clouddoc-terraform-plan-attestation" in source
+    assert "path: ${{ env.PLAN_ATTESTATION }}" in source
+    assert "retention-days: 1" in source
+    assert "if-no-files-found: error" in source
+    assert "include-hidden-files: false" in source
+    assert "path: ${{ env.PLAN_JSON }}" not in source
+    assert "path: ${{ env.PLAN_FILE }}" not in source
+    assert "Clean up Terraform plan files" in source
+    assert "Verify Terraform plan cleanup" in source
+    assert "if: ${{ always() }}" in source
+    assert "summarize_terraform_plan.py" in source
+    assert (
+        "> Speculative plan only. No deployment command was executed, "
+        "and no saved plan was retained."
+    ) in source
+
+
+def test_terraform_deploy_caller_is_manual_only_with_exact_inputs() -> None:
+    """The deploy caller accepts only the three reviewed manual inputs."""
+    source = read_text(TERRAFORM_DEPLOY_WORKFLOW)
+    triggers = extract_top_level_block(source, "on")
+    permissions = extract_top_level_block(source, "permissions")
+    concurrency = extract_top_level_block(source, "concurrency")
+    job = extract_job_block(source, "deploy-dev")
+
+    assert source.startswith("name: Terraform Deploy\n")
+    assert "workflow_dispatch:" in triggers
+    assert "pull_request:" not in triggers
+    assert "push:" not in triggers
+    assert "workflow_call:" not in triggers
+    assert "schedule:" not in triggers
+
+    assert triggers.count("plan_run_id:") == 1
+    assert triggers.count("confirmation:") == 1
+    assert triggers.count("allow_destructive_changes:") == 1
+    assert "type: string" in triggers
+    assert "type: boolean" in triggers
+    assert "default: false" in triggers
+    assert "expected_commit_sha" not in triggers
+    assert "environment selector" not in triggers
+
+    assert permissions.strip() == (
+        "permissions:\n  actions: read\n  contents: read\n  id-token: write"
+    )
+    assert concurrency.strip() == (
+        "concurrency:\n"
+        "  group: clouddoc-terraform-deploy-dev\n"
+        "  cancel-in-progress: false"
+    )
+
+    assert LOCAL_REUSABLE_TERRAFORM_DEPLOY_USES in job
+    assert source.count("uses: ./.github/workflows/") == 1
+    assert "plan_run_id: ${{ inputs.plan_run_id }}" in job
+    assert "confirmation: ${{ inputs.confirmation }}" in job
+    assert ("allow_destructive_changes: ${{ inputs.allow_destructive_changes }}") in job
+    assert "aws_account_id: ${{ vars.CLOUDDOC_AWS_ACCOUNT_ID }}" in job
+    assert "aws_region: us-east-1" in job
+    assert (
+        "deploy_identity_role_arn: ${{ vars.CLOUDDOC_DEV_DEPLOY_IDENTITY_ROLE_ARN }}"
+    ) in job
+    assert "state_bucket: ${{ vars.CLOUDDOC_TERRAFORM_STATE_BUCKET }}" in job
+    assert ("state_role_arn: ${{ vars.CLOUDDOC_DEV_TERRAFORM_STATE_ROLE_ARN }}") in job
+    assert ("apply_role_arn: ${{ vars.CLOUDDOC_DEV_TERRAFORM_APPLY_ROLE_ARN }}") in job
+    assert (
+        "permissions:\n      actions: read\n      contents: read\n      id-token: write"
+    ) in job
+    assert "runs-on:" not in job
+    assert "steps:" not in job
+    assert "environment:" not in job
+    assert "secrets: inherit" not in source
+    assert "shell:" not in job
+
+
+def test_reusable_terraform_deploy_interface_and_environment() -> None:
+    """The reusable deploy workflow exposes the exact reviewed call contract."""
+    source = read_text(REUSABLE_TERRAFORM_DEPLOY_WORKFLOW)
+    triggers = extract_top_level_block(source, "on")
+    permissions = extract_top_level_block(source, "permissions")
+    job = extract_job_block(source, "deploy-dev")
+
+    assert source.startswith("name: Reusable Terraform Deploy\n")
+    assert "workflow_call:" in triggers
+    assert "workflow_dispatch:" not in triggers
+    assert "secrets:" not in triggers
+
+    for input_name in (
+        "plan_run_id",
+        "confirmation",
+        "allow_destructive_changes",
+        "aws_account_id",
+        "aws_region",
+        "deploy_identity_role_arn",
+        "state_bucket",
+        "state_role_arn",
+        "apply_role_arn",
+    ):
+        assert f"{input_name}:" in triggers
+
+    assert triggers.count("required: true") == 9
+    assert permissions.strip() == (
+        "permissions:\n  actions: read\n  contents: read\n  id-token: write"
+    )
+    assert source.count("\n  deploy-dev:\n") == 1
+    assert "environment: dev-deploy" in job
+    assert "runs-on: ubuntu-latest" in job
+    assert "timeout-minutes: 45" in job
+    assert "concurrency:" not in job
+
+
+def test_reusable_terraform_deploy_security_ordering() -> None:
+    """Request, artifact, destructive, and OIDC checks must precede AWS auth."""
+    source = read_text(REUSABLE_TERRAFORM_DEPLOY_WORKFLOW)
+
+    context_step = "name: Validate trusted workflow context"
+    plan_run_step = "name: Validate referenced Terraform Plan run"
+    download_step = "name: Download plan attestation"
+    attestation_step = "name: Validate Terraform plan attestation"
+    destructive_step = "name: Validate destructive-change authorization"
+    oidc_step = "name: Validate GitHub OIDC token claims"
+    credentials_step = "name: Configure temporary AWS credentials"
+    identity_step = "name: Verify assumed AWS identity"
+    checkout_step = "name: Check out repository\n"
+    deploy_step = "name: Run controlled Terraform deploy"
+
+    assert source.index(context_step) < source.index(plan_run_step)
+    assert source.index(plan_run_step) < source.index(download_step)
+    assert source.index(download_step) < source.index(attestation_step)
+    assert source.index(attestation_step) < source.index(destructive_step)
+    assert source.index(destructive_step) < source.index(oidc_step)
+    assert source.index(oidc_step) < source.index(credentials_step)
+    assert source.index(credentials_step) < source.index(identity_step)
+    assert source.index(identity_step) < source.index(checkout_step)
+    assert source.index(checkout_step) < source.index(deploy_step)
+    assert source.index(plan_run_step) < source.index(credentials_step)
+    assert source.index(download_step) < source.index(credentials_step)
+    assert source.index(attestation_step) < source.index(credentials_step)
+    assert source.index(destructive_step) < source.index(credentials_step)
+
+
+def test_reusable_terraform_deploy_oidc_and_identity_contract() -> None:
+    """Deploy OIDC must enforce eight claims and the permissionless deploy role."""
+    source = read_text(REUSABLE_TERRAFORM_DEPLOY_WORKFLOW)
+
+    claim_names = (
+        "aud",
+        "sub",
+        "repository",
+        "repository_id",
+        "repository_owner_id",
+        "ref",
+        "environment",
+        "job_workflow_ref",
+    )
+    for claim_name in claim_names:
+        assert f'"{claim_name}":' in source
+
+    assert source.count('"aud":') >= 1
+    assert (
+        "CANONICAL_JOB_WORKFLOW_REF: philgodoy96/clouddoc-ai-pipeline/"
+        ".github/workflows/reusable-terraform-deploy.yml@refs/heads/main"
+    ) in source
+    assert "EXPECTED_ENVIRONMENT: dev-deploy" in source
+    assert "EXPECTED_ROLE_NAME: clouddoc-dev-github-deploy-identity" in source
+    assert "role-session-name: clouddoc-terraform-deploy-identity" in source
+    assert "role-duration-seconds: 900" in source
+    assert "clouddoc-dev-terraform-state" in source
+    assert "clouddoc-dev-terraform-apply" in source
+    assert "CLOUDDOC_DEV_TERRAFORM_PLAN_ROLE_ARN" not in source
+    assert "TF_VAR_terraform_plan_role_arn" not in source
+
+
+def test_reusable_terraform_deploy_toolchain_and_invocation() -> None:
+    """Deploy must rebuild Lambda and invoke only the controlled wrapper."""
+    source = read_text(REUSABLE_TERRAFORM_DEPLOY_WORKFLOW)
+
+    assert 'python-version: "3.12"' in source
+    assert 'terraform_version: "1.15.8"' in source
+    assert "terraform_wrapper: false" in source
+    assert "make lambda-package" in source
+    assert "make lambda-package-check" in source
+    assert "python scripts/terraform_workflow.py deploy" in source
+    assert "terraform_workflow.py apply" not in source
+    assert re.search(r"(?m)^\s*terraform\s+(plan|apply)\b", source) is None
+    assert "--allow-destructive-changes" in source
+    assert 'ALLOW_DESTRUCTIVE_CHANGES" == "true"' in source
+    assert "clouddoc-terraform-deploy" in source
+    assert "$OUTPUT_DIRECTORY" in source
+    assert "actions/upload-artifact" not in source
+    assert "aws-access-key-id" not in source
+    assert "secrets.AWS_ACCESS_KEY_ID" not in source
+    assert "trap cleanup EXIT" in source
+    assert "Verify Terraform deploy cleanup" in source
+    assert "if: ${{ always() }}" in source
+    assert (
+        "uses: actions/download-artifact@"
+        "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1"
+    ) in source
+    assert "digest-mismatch: error" in source
+    assert "validate_terraform_deployment_request.py" in source
+    assert "ref: ${{ github.sha }}" in source
+    assert "persist-credentials: false" in source
+
+
+def test_reusable_terraform_deploy_does_not_consume_binary_plan_artifacts() -> None:
+    """Deployment regenerates plans and never downloads binary or full JSON plans."""
+    source = read_text(REUSABLE_TERRAFORM_DEPLOY_WORKFLOW)
+    download_block = source[
+        source.index("name: Download plan attestation") : source.index(
+            "name: Require exact attestation file"
+        )
+    ]
+
+    assert "clouddoc-terraform-plan-attestation" in download_block
+    assert "clouddoc.tfplan" not in download_block
+    assert "terraform-show.json" not in download_block
+    assert "pattern:" not in download_block
+    assert "merge-multiple:" not in download_block
+
+
+def test_artifact_action_pins_are_exact() -> None:
+    """Upload and download artifact actions must use the approved immutable pins."""
+    plan = read_text(REUSABLE_TERRAFORM_PLAN_WORKFLOW)
+    deploy = read_text(REUSABLE_TERRAFORM_DEPLOY_WORKFLOW)
+
+    assert (
+        "uses: actions/upload-artifact@"
+        "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1"
+    ) in plan
+    assert (
+        "uses: actions/download-artifact@"
+        "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1"
+    ) in deploy
 
 
 def test_dependabot_updates_only_github_actions_weekly() -> None:
