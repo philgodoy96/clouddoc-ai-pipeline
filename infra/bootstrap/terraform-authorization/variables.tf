@@ -87,3 +87,18 @@ variable "github_identity_role_name" {
     error_message = "github_identity_role_name must remain clouddoc-dev-github-identity."
   }
 }
+
+variable "github_deploy_identity_role_name" {
+  description = "Exact name of the permissionless GitHub OIDC deployment identity role allowed to assume the state and apply roles."
+  type        = string
+  default     = "clouddoc-dev-github-deploy-identity"
+  nullable    = false
+
+  validation {
+    condition = (
+      var.github_deploy_identity_role_name ==
+      "${var.project_name}-${var.environment}-github-deploy-identity"
+    )
+    error_message = "github_deploy_identity_role_name must equal <project_name>-<environment>-github-deploy-identity."
+  }
+}

@@ -28,9 +28,44 @@ output "terraform_plan_role_max_session_duration" {
   value       = aws_iam_role.terraform_plan.max_session_duration
 }
 
+output "terraform_apply_role_name" {
+  description = "Canonical name of the CloudDoc development Terraform apply authorization role."
+  value       = aws_iam_role.terraform_apply.name
+}
+
+output "terraform_apply_role_arn" {
+  description = "ARN of the CloudDoc development Terraform apply authorization role assumed only by the deployment identity."
+  value       = aws_iam_role.terraform_apply.arn
+}
+
+output "terraform_apply_role_max_session_duration" {
+  description = "Maximum session duration configured on the Terraform apply authorization role."
+  value       = aws_iam_role.terraform_apply.max_session_duration
+}
+
 output "github_identity_role_arn" {
   description = "Exact same-account GitHub identity role ARN trusted by the state and plan roles."
   value       = local.github_identity_role_arn
+}
+
+output "github_deploy_identity_role_arn" {
+  description = "Exact same-account GitHub deployment identity role ARN trusted only by the state and apply roles."
+  value       = local.github_deploy_identity_role_arn
+}
+
+output "terraform_state_trusted_identity_role_arns" {
+  description = "Exact two-principal allowlist trusted by the Terraform state role: the plan identity and deployment identity only."
+  value       = local.terraform_state_trusted_identity_role_arns
+}
+
+output "terraform_apply_trusted_identity_role_arn" {
+  description = "Exact deployment identity ARN trusted by the Terraform apply role, which excludes the plan identity and direct OIDC trust."
+  value       = local.github_deploy_identity_role_arn
+}
+
+output "lambda_execution_role_arns" {
+  description = "Exact Lambda execution-role ARNs that the apply role may manage and pass only to the Lambda service."
+  value       = local.lambda_execution_role_arns
 }
 
 output "terraform_state_bucket_name" {
