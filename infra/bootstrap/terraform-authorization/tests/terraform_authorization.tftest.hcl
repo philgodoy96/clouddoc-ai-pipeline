@@ -329,6 +329,30 @@ run "plan_read_only_boundary_contract" {
 
   assert {
     condition = (
+      toset([
+        for statement in data.aws_iam_policy_document.terraform_plan_access.statement :
+        statement.sid
+        ]) == toset([
+        "ReadApiGatewayV2ControlPlane",
+        "ReadCloudWatchAlarms",
+        "ReadCloudWatchDashboard",
+        "DescribeCloudWatchLogGroups",
+        "ReadCloudWatchLogGroupTags",
+        "ReadDynamoDBTableMetadata",
+        "ReadApplicationIamRoles",
+        "ReadLambdaFunctionMetadata",
+        "ReadLambdaEventSourceMappings",
+        "ReadLambdaEventSourceMappingTags",
+        "ReadDocumentsBucketConfiguration",
+        "ReadApplicationSqsQueueMetadata",
+        "ReadCallerIdentity",
+      ])
+    )
+    error_message = "The plan policy must keep the reviewed service-specific statement set."
+  }
+
+  assert {
+    condition = (
       length([
         for action in flatten([
           for statement in data.aws_iam_policy_document.terraform_plan_access.statement :
@@ -575,6 +599,129 @@ run "plan_read_only_boundary_contract" {
     )
     error_message = "Plan ReadLambdaEventSourceMappings must use GetEventSourceMapping on * only, remaining mutation-free, state-free, invocation-free, and data-plane-free."
   }
+
+  assert {
+    condition = (
+      local.application_lambda_event_source_mapping_arn_prefix ==
+      "arn:aws:lambda:us-east-1:123456789012:event-source-mapping:*" &&
+      strcontains(local.application_lambda_event_source_mapping_arn_prefix, ":123456789012:") &&
+      strcontains(local.application_lambda_event_source_mapping_arn_prefix, ":us-east-1:") &&
+      endswith(local.application_lambda_event_source_mapping_arn_prefix, ":event-source-mapping:*") &&
+      local.application_lambda_event_source_mapping_arn_prefix != "*" &&
+      !strcontains(local.application_lambda_event_source_mapping_arn_prefix, ":function:") &&
+      !strcontains(local.application_lambda_event_source_mapping_arn_prefix, ":sqs:")
+    )
+    error_message = "Event-source mapping ARN prefix must be account- and region-scoped with only a UUID wildcard."
+  }
+
+  assert {
+    condition = (
+      toset(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_plan_access.statement :
+          statement
+          if statement.sid == "ReadLambdaEventSourceMappingTags"
+        ]).actions
+      ) == toset(["lambda:ListTags"]) &&
+      toset(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_plan_access.statement :
+          statement
+          if statement.sid == "ReadLambdaEventSourceMappingTags"
+        ]).resources
+      ) == toset([local.application_lambda_event_source_mapping_arn_prefix]) &&
+      length(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_plan_access.statement :
+          statement
+          if statement.sid == "ReadLambdaEventSourceMappingTags"
+        ]).condition
+      ) == 0 &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_plan_access.statement :
+          statement
+          if statement.sid == "ReadLambdaEventSourceMappingTags"
+        ]).resources,
+        "*",
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_plan_access.statement :
+          statement
+          if statement.sid == "ReadLambdaEventSourceMappingTags"
+        ]).actions,
+        "lambda:TagResource",
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_plan_access.statement :
+          statement
+          if statement.sid == "ReadLambdaEventSourceMappingTags"
+        ]).actions,
+        "lambda:UntagResource",
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_plan_access.statement :
+          statement
+          if statement.sid == "ReadLambdaEventSourceMappingTags"
+        ]).actions,
+        "lambda:CreateEventSourceMapping",
+      ) &&
+      alltrue([
+        for resource in one([
+          for statement in data.aws_iam_policy_document.terraform_plan_access.statement :
+          statement
+          if statement.sid == "ReadLambdaEventSourceMappingTags"
+        ]).resources :
+        !strcontains(resource, ":function:") && !strcontains(resource, ":sqs:")
+      ]) &&
+      length([
+        for action in flatten([
+          for statement in data.aws_iam_policy_document.terraform_plan_access.statement :
+          statement.actions
+        ]) : action
+        if can(regex(
+          ":(Create|Update|Delete|Put|Set|Tag|Untag|Invoke|Send|Start|Stop|PassRole|Attach|Detach|Add|Remove|Publish|Purge|Redrive)",
+          action,
+        ))
+      ]) == 0 &&
+      length([
+        for resource in flatten([
+          for statement in data.aws_iam_policy_document.terraform_plan_access.statement :
+          statement.resources
+        ]) : resource
+        if(
+          strcontains(resource, "terraform.tfstate") ||
+          strcontains(resource, "clouddoc-123456789012-terraform-state") ||
+          endswith(resource, ".tflock")
+        )
+      ]) == 0 &&
+      length([
+        for action in flatten([
+          for statement in data.aws_iam_policy_document.terraform_plan_access.statement :
+          statement.actions
+        ]) : action
+        if(
+          startswith(action, "lambda:Invoke") ||
+          startswith(action, "sqs:Receive") ||
+          startswith(action, "sqs:Send") ||
+          startswith(action, "sqs:DeleteMessage") ||
+          startswith(action, "sqs:ChangeMessage") ||
+          startswith(action, "sqs:Purge") ||
+          startswith(action, "dynamodb:GetItem") ||
+          startswith(action, "dynamodb:Query") ||
+          startswith(action, "dynamodb:Scan") ||
+          startswith(action, "dynamodb:BatchGet") ||
+          action == "s3:GetObject" ||
+          action == "s3:PutObject" ||
+          action == "s3:DeleteObject"
+        )
+      ]) == 0
+    )
+    error_message = "Plan ReadLambdaEventSourceMappingTags must use only ListTags on the mapping ARN prefix, remaining mutation-free, state-free, and invocation-free."
+  }
 }
 
 run "apply_boundary_contract" {
@@ -588,6 +735,7 @@ run "apply_boundary_contract" {
         ]) == toset([
         "ReadCallerIdentity",
         "ManageApiGatewayV2ControlPlane",
+        "CompleteTaggedApiGatewayV2StageCreation",
         "DescribeCloudWatchAlarmMetrics",
         "ManageCloudWatchAlarms",
         "ListCloudWatchDashboards",
@@ -604,6 +752,7 @@ run "apply_boundary_contract" {
         "ListLambdaEventSourceMappings",
         "ReadLambdaEventSourceMapping",
         "ManageLambdaEventSourceMappings",
+        "ManageLambdaEventSourceMappingTags",
         "ReadDocumentsBucketConfiguration",
         "ManageDocumentsBucketControlPlane",
         "ManageApplicationSqsQueues",
@@ -979,9 +1128,99 @@ run "apply_boundary_contract" {
           if statement.sid == "ManageApiGatewayV2ControlPlane"
         ]).actions,
         "execute-api:Invoke",
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageApiGatewayV2ControlPlane"
+        ]).actions,
+        "apigateway:PUT",
       )
     )
     error_message = "ManageApiGatewayV2ControlPlane must keep the four HTTP actions, normal API scopes, and both encoded API/Stage tag resources, without unrestricted * or generic /tags/*."
+  }
+
+  assert {
+    condition = (
+      toset(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "CompleteTaggedApiGatewayV2StageCreation"
+        ]).actions
+      ) == toset(["apigateway:PUT"]) &&
+      toset(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "CompleteTaggedApiGatewayV2StageCreation"
+        ]).resources
+      ) == toset([local.application_apigateway_stage_tag_resource]) &&
+      length(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "CompleteTaggedApiGatewayV2StageCreation"
+        ]).condition
+      ) == 0 &&
+      length(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "CompleteTaggedApiGatewayV2StageCreation"
+        ]).resources
+      ) == 1 &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "CompleteTaggedApiGatewayV2StageCreation"
+        ]).resources,
+        local.application_apigateway_api_tag_resource,
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "CompleteTaggedApiGatewayV2StageCreation"
+        ]).resources,
+        "arn:aws:apigateway:us-east-1::/tags/*",
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "CompleteTaggedApiGatewayV2StageCreation"
+        ]).resources,
+        "arn:aws:apigateway:us-east-1::/apis/*/stages",
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "CompleteTaggedApiGatewayV2StageCreation"
+        ]).resources,
+        "arn:aws:apigateway:us-east-1::/apis/*/stages/*",
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "CompleteTaggedApiGatewayV2StageCreation"
+        ]).resources,
+        "*",
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "CompleteTaggedApiGatewayV2StageCreation"
+        ]).actions,
+        "execute-api:Invoke",
+      )
+    )
+    error_message = "CompleteTaggedApiGatewayV2StageCreation must grant only apigateway:PUT on the encoded Stage tag resource."
   }
 
   assert {
@@ -1152,9 +1391,114 @@ run "apply_boundary_contract" {
           if statement.sid == "ManageLambdaEventSourceMappings"
         ]).condition).values,
         "arn:aws:lambda:us-east-1:123456789012:function:clouddoc-dev-get-job",
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageLambdaEventSourceMappings"
+        ]).actions,
+        "lambda:ListTags",
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageLambdaEventSourceMappings"
+        ]).actions,
+        "lambda:TagResource",
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageLambdaEventSourceMappings"
+        ]).actions,
+        "lambda:UntagResource",
       )
     )
     error_message = "ManageLambdaEventSourceMappings must mutate only via Create/Delete/Update on * with ArnLike lambda:FunctionArn limited to the two consumer functions."
+  }
+
+  assert {
+    condition = (
+      local.application_lambda_event_source_mapping_arn_prefix ==
+      "arn:aws:lambda:us-east-1:123456789012:event-source-mapping:*" &&
+      toset(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageLambdaEventSourceMappingTags"
+        ]).actions
+        ) == toset([
+          "lambda:ListTags",
+          "lambda:TagResource",
+          "lambda:UntagResource",
+      ]) &&
+      toset(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageLambdaEventSourceMappingTags"
+        ]).resources
+      ) == toset([local.application_lambda_event_source_mapping_arn_prefix]) &&
+      length(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageLambdaEventSourceMappingTags"
+        ]).condition
+      ) == 0 &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageLambdaEventSourceMappingTags"
+        ]).actions,
+        "lambda:GetEventSourceMapping",
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageLambdaEventSourceMappingTags"
+        ]).actions,
+        "lambda:CreateEventSourceMapping",
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageLambdaEventSourceMappingTags"
+        ]).actions,
+        "lambda:UpdateEventSourceMapping",
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageLambdaEventSourceMappingTags"
+        ]).actions,
+        "lambda:DeleteEventSourceMapping",
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageLambdaEventSourceMappingTags"
+        ]).resources,
+        "*",
+      ) &&
+      alltrue([
+        for resource in one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageLambdaEventSourceMappingTags"
+        ]).resources :
+        !strcontains(resource, ":function:") && !strcontains(resource, ":sqs:")
+      ])
+    )
+    error_message = "ManageLambdaEventSourceMappingTags must use only ListTags/Tag/Untag on the mapping ARN prefix with no conditions."
   }
 }
 
