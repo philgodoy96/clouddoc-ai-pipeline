@@ -12,14 +12,23 @@ import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Final
+from typing import Final, Literal
+
+_SCRIPTS_ROOT = Path(__file__).resolve().parent
+if str(_SCRIPTS_ROOT) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_ROOT))
+
+import terraform_plan_attestation as plan_attestation  # noqa: E402
+from terraform_plan_attestation import PlanAttestationError  # noqa: E402
 
 SUPPORTED_ENVIRONMENTS: Final = ("dev", "staging", "prod")
 STATE_BUCKET_ENV: Final = "CLOUDDOC_TERRAFORM_STATE_BUCKET"
 EXPECTED_ACCOUNT_ENV: Final = "CLOUDDOC_EXPECTED_AWS_ACCOUNT_ID"
 STATE_ROLE_ENV: Final = "CLOUDDOC_DEV_TERRAFORM_STATE_ROLE_ARN"
 PLAN_ROLE_ENV: Final = "CLOUDDOC_DEV_TERRAFORM_PLAN_ROLE_ARN"
+APPLY_ROLE_ENV: Final = "CLOUDDOC_DEV_TERRAFORM_APPLY_ROLE_ARN"
 PLAN_ROLE_TF_VAR: Final = "TF_VAR_terraform_plan_role_arn"
+APPLY_ROLE_TF_VAR: Final = "TF_VAR_terraform_apply_role_arn"
 TERRAFORM_BINARY_ENV: Final = "CLOUDDOC_TERRAFORM_BINARY"
 LOCK_TIMEOUT: Final = "5m"
 ROLE_SESSION_DURATION: Final = "15m"
@@ -27,8 +36,28 @@ STATE_ROLE_SESSION_NAME: Final = "clouddoc-terraform-state"
 PLAN_ROLE_SESSION_NAME: Final = "clouddoc-terraform-plan"
 STATE_ROLE_NAME: Final = "clouddoc-dev-terraform-state"
 PLAN_ROLE_NAME: Final = "clouddoc-dev-terraform-plan"
+APPLY_ROLE_NAME: Final = "clouddoc-dev-terraform-apply"
+APPLY_ROLE_SESSION_NAME: Final = "clouddoc-terraform-apply"
 PLAN_FILENAME: Final = "clouddoc.tfplan"
 MANIFEST_FILENAME: Final = "clouddoc.tfplan.json"
+DEPLOY_PLAN_FILENAME: Final = "clouddoc-deploy.tfplan"
+DEPLOY_PLAN_JSON_FILENAME: Final = "clouddoc-deploy.tfplan.json"
+DEPLOY_SHOW_JSON_FILENAME: Final = "terraform-deploy-show.json"
+DEPLOY_ATTESTATION_FILENAME: Final = "terraform-deploy-attestation.json"
+POST_APPLY_PLAN_FILENAME: Final = "clouddoc-post-apply.tfplan"
+FORBIDDEN_LOCAL_APPLY_PLAN_NAMES: Final = frozenset(
+    {
+        "terraform-plan-attestation.json",
+        "terraform-deploy-attestation.json",
+        "terraform-show.json",
+    }
+)
+REPOSITORY_PATTERN: Final = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}/"
+    r"[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$"
+)
+PLAN_RUN_ID_PATTERN: Final = re.compile(r"^[1-9][0-9]*$")
+COMMIT_SHA_PATTERN: Final = re.compile(r"^[0-9a-f]{40}$")
 BACKEND_OVERRIDE_FILENAME: Final = "backend-override.tfbackend"
 
 OFFLINE_TERRAFORM_ROOTS: Final[tuple[str, ...]] = (
@@ -242,14 +271,25 @@ class RemoteInputs:
     expected_account_id: str
     state_role_arn: str | None
     plan_role_arn: str | None
+    apply_role_arn: str | None
 
     @property
     def uses_chained_roles(self) -> bool:
-        """Return whether backend and provider role assumption is active."""
+        """Return whether backend and plan provider role assumption is active."""
         return self.state_role_arn is not None and self.plan_role_arn is not None
 
+    @property
+    def uses_chained_deploy_roles(self) -> bool:
+        """Return whether backend and apply provider role assumption is active."""
+        return self.state_role_arn is not None and self.apply_role_arn is not None
+
     @classmethod
-    def load(cls, environ: Mapping[str, str]) -> RemoteInputs:
+    def load(
+        cls,
+        environ: Mapping[str, str],
+        *,
+        authorization: Literal["plan", "deploy", "apply"] = "plan",
+    ) -> RemoteInputs:
         """Load runtime inputs from environment variables."""
         bucket = environ.get(STATE_BUCKET_ENV, "").strip()
         account_id = environ.get(EXPECTED_ACCOUNT_ENV, "").strip()
@@ -273,16 +313,68 @@ class RemoteInputs:
                 f"{EXPECTED_ACCOUNT_ENV} must contain exactly 12 digits."
             )
 
-        state_role_arn, plan_role_arn = load_paired_role_arns(
+        state_role_arn = _optional_role_env_value(
             environ,
-            expected_account_id=account_id,
+            STATE_ROLE_ENV,
+            role_label="state role",
         )
+        plan_role_arn = _optional_role_env_value(
+            environ,
+            PLAN_ROLE_ENV,
+            role_label="plan role",
+        )
+        apply_role_arn = _optional_role_env_value(
+            environ,
+            APPLY_ROLE_ENV,
+            role_label="apply role",
+        )
+
+        if (
+            state_role_arn is not None
+            and plan_role_arn is not None
+            and apply_role_arn is not None
+        ):
+            raise WorkflowError(
+                "Invalid authorization roles: conflicting role configuration."
+            )
+
+        if authorization == "plan":
+            if apply_role_arn is not None:
+                raise WorkflowError("Plan command rejects apply role configuration.")
+            state_role_arn, plan_role_arn = finalize_paired_plan_roles(
+                state_role_arn,
+                plan_role_arn,
+                expected_account_id=account_id,
+            )
+            apply_role_arn = None
+        elif authorization == "deploy":
+            if plan_role_arn is not None:
+                raise WorkflowError("Deploy command rejects plan role configuration.")
+            state_role_arn, apply_role_arn = finalize_paired_apply_roles(
+                state_role_arn,
+                apply_role_arn,
+                expected_account_id=account_id,
+            )
+            plan_role_arn = None
+        else:
+            if apply_role_arn is not None:
+                raise WorkflowError(
+                    "Controlled deployment requires the deploy command when apply "
+                    "authorization is configured."
+                )
+            state_role_arn, plan_role_arn = finalize_paired_plan_roles(
+                state_role_arn,
+                plan_role_arn,
+                expected_account_id=account_id,
+            )
+            apply_role_arn = None
 
         return cls(
             state_bucket=bucket,
             expected_account_id=account_id,
             state_role_arn=state_role_arn,
             plan_role_arn=plan_role_arn,
+            apply_role_arn=apply_role_arn,
         )
 
 
@@ -536,23 +628,13 @@ def validate_authorization_role_arn(
     return role_arn
 
 
-def load_paired_role_arns(
-    environ: Mapping[str, str],
+def finalize_paired_plan_roles(
+    state_role_arn: str | None,
+    plan_role_arn: str | None,
     *,
     expected_account_id: str,
 ) -> tuple[str | None, str | None]:
-    """Load ambient or chained role ARNs with paired-role validation."""
-    state_role_arn = _optional_role_env_value(
-        environ,
-        STATE_ROLE_ENV,
-        role_label="state role",
-    )
-    plan_role_arn = _optional_role_env_value(
-        environ,
-        PLAN_ROLE_ENV,
-        role_label="plan role",
-    )
-
+    """Validate ambient or chained plan-role authorization."""
     if state_role_arn is None and plan_role_arn is None:
         return None, None
 
@@ -582,6 +664,67 @@ def load_paired_role_arns(
         raise WorkflowError("Invalid authorization roles: account mismatch.")
 
     return validated_state, validated_plan
+
+
+def finalize_paired_apply_roles(
+    state_role_arn: str | None,
+    apply_role_arn: str | None,
+    *,
+    expected_account_id: str,
+) -> tuple[str | None, str | None]:
+    """Validate ambient or chained apply-role deployment authorization."""
+    if state_role_arn is None and apply_role_arn is None:
+        return None, None
+
+    if state_role_arn is None or apply_role_arn is None:
+        raise WorkflowError("Invalid authorization roles: missing paired role.")
+
+    validated_state = validate_authorization_role_arn(
+        state_role_arn,
+        role_label="state role",
+        expected_role_name=STATE_ROLE_NAME,
+        expected_account_id=expected_account_id,
+    )
+    validated_apply = validate_authorization_role_arn(
+        apply_role_arn,
+        role_label="apply role",
+        expected_role_name=APPLY_ROLE_NAME,
+        expected_account_id=expected_account_id,
+    )
+
+    state_account = IAM_ROLE_ARN_PATTERN.fullmatch(validated_state)
+    apply_account = IAM_ROLE_ARN_PATTERN.fullmatch(validated_apply)
+    if (
+        state_account is None
+        or apply_account is None
+        or state_account.group("account") != apply_account.group("account")
+    ):
+        raise WorkflowError("Invalid authorization roles: account mismatch.")
+
+    return validated_state, validated_apply
+
+
+def load_paired_role_arns(
+    environ: Mapping[str, str],
+    *,
+    expected_account_id: str,
+) -> tuple[str | None, str | None]:
+    """Load ambient or chained plan role ARNs with paired-role validation."""
+    state_role_arn = _optional_role_env_value(
+        environ,
+        STATE_ROLE_ENV,
+        role_label="state role",
+    )
+    plan_role_arn = _optional_role_env_value(
+        environ,
+        PLAN_ROLE_ENV,
+        role_label="plan role",
+    )
+    return finalize_paired_plan_roles(
+        state_role_arn,
+        plan_role_arn,
+        expected_account_id=expected_account_id,
+    )
 
 
 def env_get_ci(environment: Mapping[str, str], name: str) -> str | None:
@@ -624,6 +767,31 @@ def apply_plan_role_tf_var(
 
     env_pop_ci(child_environment, PLAN_ROLE_TF_VAR)
     child_environment[PLAN_ROLE_TF_VAR] = plan_role_arn
+
+
+def apply_apply_role_tf_var(
+    child_environment: dict[str, str],
+    apply_role_arn: str | None,
+) -> None:
+    """Map the apply role into TF_VAR_* with conflict detection."""
+    existing = env_get_ci(child_environment, APPLY_ROLE_TF_VAR)
+
+    if apply_role_arn is None:
+        if existing is not None and existing != "":
+            raise WorkflowError(
+                "Invalid apply role: ambient mode rejects a pre-existing "
+                f"{APPLY_ROLE_TF_VAR} value."
+            )
+        env_pop_ci(child_environment, APPLY_ROLE_TF_VAR)
+        return
+
+    if existing is not None and existing != apply_role_arn:
+        raise WorkflowError(
+            f"Invalid apply role: conflicting pre-existing {APPLY_ROLE_TF_VAR} value."
+        )
+
+    env_pop_ci(child_environment, APPLY_ROLE_TF_VAR)
+    child_environment[APPLY_ROLE_TF_VAR] = apply_role_arn
 
 
 def write_backend_override(
@@ -686,7 +854,12 @@ def resolve_plan_output_directory(
     if output_directory is None:
         resolved = paths.plan_dir(environment)
     else:
-        resolved = Path(output_directory).expanduser().resolve()
+        candidate = Path(output_directory).expanduser()
+        if ".." in candidate.parts:
+            raise WorkflowError(
+                "Output directory must not contain parent path traversal."
+            )
+        resolved = candidate.resolve()
         if resolved.exists() and resolved.is_file():
             raise WorkflowError(
                 "Plan output directory must not point to an existing regular file: "
@@ -701,6 +874,192 @@ def resolve_plan_output_directory(
         ) from error
 
     return resolved
+
+
+def ensure_output_file_path(output_directory: Path, filename: str) -> Path:
+    """Resolve one output file path and reject directory escape."""
+    root = output_directory.resolve()
+    target = (root / filename).resolve()
+    if not target.is_relative_to(root):
+        raise WorkflowError(
+            f"Deployment output path escapes the output directory: {filename}."
+        )
+    return target
+
+
+def resolve_attestation_path(path: str | Path) -> Path:
+    """Resolve one caller-owned attestation file path."""
+    candidate = Path(path).expanduser()
+    if ".." in candidate.parts:
+        raise WorkflowError("Attestation path must not contain parent path traversal.")
+    resolved = candidate.resolve()
+    if resolved.is_dir():
+        raise WorkflowError("Attestation path must be a regular file.")
+    return resolved
+
+
+def validate_repository(repository: str) -> None:
+    """Require one owner/repository deployment binding."""
+    if REPOSITORY_PATTERN.fullmatch(repository) is None:
+        raise WorkflowError("Invalid repository identifier.")
+
+
+def validate_plan_run_id(plan_run_id: str) -> None:
+    """Require one positive decimal GitHub run ID."""
+    if PLAN_RUN_ID_PATTERN.fullmatch(plan_run_id) is None:
+        raise WorkflowError("Invalid plan run ID.")
+
+
+def validate_commit_sha(commit_sha: str) -> None:
+    """Require one lowercase 40-character commit SHA."""
+    if COMMIT_SHA_PATTERN.fullmatch(commit_sha) is None:
+        raise WorkflowError("Invalid commit SHA.")
+
+
+def attestation_error_to_workflow(error: PlanAttestationError) -> WorkflowError:
+    """Map attestation validation failures to workflow errors."""
+    return WorkflowError(str(error))
+
+
+def load_reviewed_attestation(
+    path: Path,
+    *,
+    repository: str,
+    plan_run_id: str,
+    commit_sha: str,
+    environment: str,
+    allow_destructive_changes: bool,
+) -> plan_attestation.TerraformPlanAttestation:
+    """Validate one reviewed attestation before any Terraform subprocess."""
+    try:
+        reviewed = plan_attestation.read_attestation(path)
+        plan_attestation.validate_attestation_context(
+            reviewed,
+            repository=repository,
+            plan_run_id=plan_run_id,
+            commit_sha=commit_sha,
+            environment=environment,
+        )
+    except PlanAttestationError as error:
+        raise attestation_error_to_workflow(error) from error
+
+    if reviewed.destructive_changes and not allow_destructive_changes:
+        raise WorkflowError("Destructive changes require --allow-destructive-changes.")
+
+    return reviewed
+
+
+def compare_deployment_attestations(
+    reviewed: plan_attestation.TerraformPlanAttestation,
+    regenerated: plan_attestation.TerraformPlanAttestation,
+) -> None:
+    """Require matching reviewed and regenerated deployment attestations."""
+    comparisons = (
+        ("schema_version", reviewed.schema_version, regenerated.schema_version),
+        ("repository", reviewed.repository, regenerated.repository),
+        ("plan_run_id", reviewed.plan_run_id, regenerated.plan_run_id),
+        ("commit_sha", reviewed.commit_sha, regenerated.commit_sha),
+        ("environment", reviewed.environment, regenerated.environment),
+        (
+            "change_set_fingerprint",
+            reviewed.change_set_fingerprint,
+            regenerated.change_set_fingerprint,
+        ),
+        ("no_changes", reviewed.no_changes, regenerated.no_changes),
+        (
+            "destructive_changes",
+            reviewed.destructive_changes,
+            regenerated.destructive_changes,
+        ),
+        (
+            "action_counts",
+            dict(reviewed.action_counts),
+            dict(regenerated.action_counts),
+        ),
+        ("resource_changes", reviewed.resource_changes, regenerated.resource_changes),
+    )
+    for field, expected, actual in comparisons:
+        if expected != actual:
+            raise WorkflowError(f"Deployment attestation mismatch for {field}.")
+
+    try:
+        plan_attestation.require_matching_change_sets(reviewed, regenerated)
+    except PlanAttestationError as error:
+        raise attestation_error_to_workflow(error) from error
+
+
+def validate_local_apply_plan_path(plan_file: Path) -> None:
+    """Reject attestation files, directories, and other non-plan inputs."""
+    if plan_file.is_dir():
+        raise WorkflowError("Saved plan path must be a regular file.")
+    if not plan_file.is_file():
+        raise WorkflowError(f"Saved plan not found: {plan_file}")
+    if plan_file.name in FORBIDDEN_LOCAL_APPLY_PLAN_NAMES:
+        raise WorkflowError("Saved plan path is not a valid Terraform plan file.")
+    if plan_file.name != PLAN_FILENAME:
+        raise WorkflowError("Saved plan path is not a valid Terraform plan file.")
+
+
+def run_terraform_show_json(
+    *,
+    binary: str,
+    paths: WorkflowPaths,
+    environment: str,
+    repository_root: Path,
+    expected_account_id: str,
+    plan_role_arn: str | None,
+    apply_role_arn: str | None,
+    plan_file: Path,
+    output_path: Path,
+) -> None:
+    """Render one saved plan as JSON inside the deployment output directory."""
+    data_dir = paths.data_dir(environment)
+    if plan_role_arn is not None and apply_role_arn is not None:
+        raise WorkflowError(
+            "Invalid provider role configuration: plan and apply roles are exclusive."
+        )
+
+    child_environment = os.environ.copy()
+    child_environment["TF_DATA_DIR"] = str(data_dir.resolve())
+    child_environment["TF_IN_AUTOMATION"] = "1"
+    env_pop_ci(child_environment, "TF_VAR_expected_aws_account_id")
+    child_environment["TF_VAR_expected_aws_account_id"] = expected_account_id
+    apply_plan_role_tf_var(child_environment, plan_role_arn)
+    apply_apply_role_tf_var(child_environment, apply_role_arn)
+
+    command = [
+        binary,
+        f"-chdir={paths.terraform_root}",
+        "show",
+        "-json",
+        plan_file.as_posix(),
+    ]
+
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=repository_root,
+            env=child_environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError as error:
+        raise WorkflowError(f"Terraform executable not found: {binary!r}.") from error
+    except OSError as error:
+        raise WorkflowError(f"Could not execute Terraform: {binary!r}.") from error
+
+    if completed.returncode != 0:
+        raise WorkflowError(
+            f"Terraform show failed with exit code {completed.returncode}."
+        )
+
+    try:
+        output_path.write_text(completed.stdout, encoding="utf-8", newline="\n")
+    except OSError as error:
+        raise WorkflowError(
+            f"Could not write deployment plan JSON: {output_path}"
+        ) from error
 
 
 def sha256_file(path: Path) -> str:
@@ -797,9 +1156,15 @@ def run_terraform(
     arguments: Sequence[str],
     expected_account_id: str | None = None,
     plan_role_arn: str | None = None,
+    apply_role_arn: str | None = None,
     accepted_codes: frozenset[int] = frozenset({0}),
 ) -> int:
     """Run Terraform without shell interpolation."""
+    if plan_role_arn is not None and apply_role_arn is not None:
+        raise WorkflowError(
+            "Invalid provider role configuration: plan and apply roles are exclusive."
+        )
+
     data_dir.mkdir(parents=True, exist_ok=True)
     child_environment = os.environ.copy()
     child_environment["TF_DATA_DIR"] = str(data_dir.resolve())
@@ -812,6 +1177,7 @@ def run_terraform(
         child_environment["TF_VAR_expected_aws_account_id"] = expected_account_id
 
     apply_plan_role_tf_var(child_environment, plan_role_arn)
+    apply_apply_role_tf_var(child_environment, apply_role_arn)
 
     command = [binary, f"-chdir={root}", *arguments]
 
@@ -869,12 +1235,23 @@ def print_remote_summary(
     )
 
 
+def provider_roles_for_mode(
+    inputs: RemoteInputs,
+    mode: Literal["plan", "deploy"],
+) -> tuple[str | None, str | None]:
+    """Return exclusive plan or apply provider roles for one workflow mode."""
+    if mode == "plan":
+        return inputs.plan_role_arn, None
+    return None, inputs.apply_role_arn
+
+
 def initialize_backend(
     *,
     binary: str,
     paths: WorkflowPaths,
     config: EnvironmentConfig,
     inputs: RemoteInputs,
+    provider_mode: Literal["plan", "deploy"] = "plan",
 ) -> None:
     """Initialize one explicit remote backend."""
     require_no_local_state(paths)
@@ -902,6 +1279,8 @@ def initialize_backend(
         state_role_arn=inputs.state_role_arn,
     )
 
+    plan_role_arn, apply_role_arn = provider_roles_for_mode(inputs, provider_mode)
+
     try:
         run_terraform(
             binary=binary,
@@ -909,7 +1288,8 @@ def initialize_backend(
             repository_root=paths.repository_root,
             data_dir=paths.data_dir(config.environment),
             expected_account_id=inputs.expected_account_id,
-            plan_role_arn=inputs.plan_role_arn,
+            plan_role_arn=plan_role_arn,
+            apply_role_arn=apply_role_arn,
             arguments=[
                 "init",
                 "-input=false",
@@ -1203,7 +1583,7 @@ def command_apply(
         )
 
     config = EnvironmentConfig.load(paths, environment)
-    inputs = RemoteInputs.load(environ)
+    inputs = RemoteInputs.load(environ, authorization="apply")
 
     verify_lambda_artifact(paths)
     validate_plan_binding(paths=paths, config=config, inputs=inputs)
@@ -1212,9 +1592,11 @@ def command_apply(
         paths=paths,
         config=config,
         inputs=inputs,
+        provider_mode="plan",
     )
 
     plan_file = paths.plan_file(environment)
+    validate_local_apply_plan_path(plan_file)
     print("Applying reviewed plan: " + display_path(plan_file, paths.repository_root))
 
     run_terraform(
@@ -1232,6 +1614,193 @@ def command_apply(
         ],
     )
     print("Terraform apply completed successfully.")
+
+
+def command_deploy(
+    *,
+    binary: str,
+    paths: WorkflowPaths,
+    environment: str,
+    environ: Mapping[str, str],
+    attestation_path: str | Path,
+    repository: str,
+    plan_run_id: str,
+    commit_sha: str,
+    output_directory: str | Path | None = None,
+    allow_destructive_changes: bool = False,
+) -> None:
+    """Run controlled deployment from one reviewed attestation."""
+    validate_environment(environment)
+    validate_repository(repository)
+    validate_plan_run_id(plan_run_id)
+    validate_commit_sha(commit_sha)
+
+    attestation_file = resolve_attestation_path(attestation_path)
+    if not attestation_file.is_file():
+        raise WorkflowError("Attestation path must be a regular file.")
+
+    reviewed = load_reviewed_attestation(
+        attestation_file,
+        repository=repository,
+        plan_run_id=plan_run_id,
+        commit_sha=commit_sha,
+        environment=environment,
+        allow_destructive_changes=allow_destructive_changes,
+    )
+
+    config = EnvironmentConfig.load(paths, environment)
+    inputs = RemoteInputs.load(environ, authorization="deploy")
+
+    verify_lambda_artifact(paths)
+    output_dir = resolve_plan_output_directory(paths, environment, output_directory)
+
+    deploy_plan = ensure_output_file_path(output_dir, DEPLOY_PLAN_FILENAME)
+    deploy_plan_json = ensure_output_file_path(output_dir, DEPLOY_PLAN_JSON_FILENAME)
+    deploy_show_json = ensure_output_file_path(output_dir, DEPLOY_SHOW_JSON_FILENAME)
+    deploy_attestation_path = ensure_output_file_path(
+        output_dir,
+        DEPLOY_ATTESTATION_FILENAME,
+    )
+    post_apply_plan = ensure_output_file_path(output_dir, POST_APPLY_PLAN_FILENAME)
+
+    for artifact in (
+        deploy_plan,
+        deploy_plan_json,
+        deploy_show_json,
+        deploy_attestation_path,
+        post_apply_plan,
+    ):
+        artifact.unlink(missing_ok=True)
+
+    initialize_backend(
+        binary=binary,
+        paths=paths,
+        config=config,
+        inputs=inputs,
+        provider_mode="deploy",
+    )
+
+    plan_role_arn, apply_role_arn = provider_roles_for_mode(inputs, "deploy")
+
+    run_terraform(
+        binary=binary,
+        root=paths.terraform_root,
+        repository_root=paths.repository_root,
+        data_dir=paths.data_dir(environment),
+        expected_account_id=inputs.expected_account_id,
+        plan_role_arn=plan_role_arn,
+        apply_role_arn=apply_role_arn,
+        accepted_codes=frozenset({0, 2}),
+        arguments=[
+            "plan",
+            "-input=false",
+            f"-lock-timeout={LOCK_TIMEOUT}",
+            "-detailed-exitcode",
+            f"-var-file={config.tfvars_file}",
+            f"-out={deploy_plan}",
+        ],
+    )
+
+    if not deploy_plan.is_file():
+        raise WorkflowError(
+            f"Terraform did not create the regenerated deployment plan: {deploy_plan}"
+        )
+
+    run_terraform_show_json(
+        binary=binary,
+        paths=paths,
+        environment=environment,
+        repository_root=paths.repository_root,
+        expected_account_id=inputs.expected_account_id,
+        plan_role_arn=plan_role_arn,
+        apply_role_arn=apply_role_arn,
+        plan_file=deploy_plan,
+        output_path=deploy_show_json,
+    )
+
+    try:
+        deploy_plan_json.write_text(
+            deploy_show_json.read_text(encoding="utf-8"),
+            encoding="utf-8",
+            newline="\n",
+        )
+    except OSError as error:
+        raise WorkflowError(
+            f"Could not write deployment plan JSON: {deploy_plan_json}"
+        ) from error
+
+    try:
+        plan_document = plan_attestation.load_json_object(
+            deploy_show_json,
+            description="deployment plan JSON",
+        )
+        regenerated = plan_attestation.build_attestation(
+            plan_document,
+            repository=repository,
+            plan_run_id=plan_run_id,
+            commit_sha=commit_sha,
+            environment=environment,
+        )
+        plan_attestation.write_attestation(deploy_attestation_path, regenerated)
+    except PlanAttestationError as error:
+        raise attestation_error_to_workflow(error) from error
+
+    compare_deployment_attestations(reviewed, regenerated)
+
+    if reviewed.no_changes and regenerated.no_changes:
+        print(f"Verified no-op deployment for environment {environment}.")
+        return
+
+    try:
+        run_terraform(
+            binary=binary,
+            root=paths.terraform_root,
+            repository_root=paths.repository_root,
+            data_dir=paths.data_dir(environment),
+            expected_account_id=inputs.expected_account_id,
+            plan_role_arn=plan_role_arn,
+            apply_role_arn=apply_role_arn,
+            arguments=[
+                "apply",
+                "-input=false",
+                f"-lock-timeout={LOCK_TIMEOUT}",
+                deploy_plan.as_posix(),
+            ],
+        )
+    except WorkflowError as error:
+        raise WorkflowError(
+            "Terraform apply failed; infrastructure may be partially changed. "
+            "Create a new reviewed plan before retry."
+        ) from error
+
+    print("Terraform apply completed successfully.")
+
+    convergence_exit_code = run_terraform(
+        binary=binary,
+        root=paths.terraform_root,
+        repository_root=paths.repository_root,
+        data_dir=paths.data_dir(environment),
+        expected_account_id=inputs.expected_account_id,
+        plan_role_arn=plan_role_arn,
+        apply_role_arn=apply_role_arn,
+        accepted_codes=frozenset({0, 2}),
+        arguments=[
+            "plan",
+            "-input=false",
+            f"-lock-timeout={LOCK_TIMEOUT}",
+            "-detailed-exitcode",
+            f"-var-file={config.tfvars_file}",
+            f"-out={post_apply_plan}",
+        ],
+    )
+
+    if convergence_exit_code == 2:
+        raise WorkflowError(
+            "Post-apply convergence check detected remaining changes. "
+            "Create a new reviewed plan before retry."
+        )
+
+    print("Post-apply convergence verified.")
 
 
 def command_output(
@@ -1325,6 +1894,52 @@ def create_parser() -> argparse.ArgumentParser:
         choices=SUPPORTED_ENVIRONMENTS,
     )
 
+    deploy_command = subparsers.add_parser(
+        "deploy",
+        help="Run controlled deployment from one reviewed attestation.",
+    )
+    deploy_command.add_argument(
+        "--environment",
+        required=True,
+        choices=SUPPORTED_ENVIRONMENTS,
+    )
+    deploy_command.add_argument(
+        "--attestation",
+        required=True,
+        help="Path to the reviewed value-free attestation JSON file.",
+    )
+    deploy_command.add_argument(
+        "--repository",
+        required=True,
+        help="Exact owner/repository identifier for the deployment.",
+    )
+    deploy_command.add_argument(
+        "--plan-run-id",
+        required=True,
+        dest="plan_run_id",
+        help="Positive decimal GitHub Actions run ID for the reviewed plan.",
+    )
+    deploy_command.add_argument(
+        "--commit-sha",
+        required=True,
+        dest="commit_sha",
+        help="Lowercase 40-character commit SHA for the reviewed plan.",
+    )
+    deploy_command.add_argument(
+        "--output-directory",
+        default=None,
+        help=(
+            "Optional directory for deployment artifacts. "
+            "Defaults to artifacts/terraform/<environment>/."
+        ),
+    )
+    deploy_command.add_argument(
+        "--allow-destructive-changes",
+        action="store_true",
+        default=False,
+        help="Authorize deployment when the reviewed attestation is destructive.",
+    )
+
     return parser
 
 
@@ -1371,6 +1986,19 @@ def main(
                 environment=arguments.environment,
                 confirmation=arguments.confirm_environment,
                 environ=current_environment,
+            )
+        elif arguments.command == "deploy":
+            command_deploy(
+                binary=binary,
+                paths=paths,
+                environment=arguments.environment,
+                environ=current_environment,
+                attestation_path=arguments.attestation,
+                repository=arguments.repository,
+                plan_run_id=arguments.plan_run_id,
+                commit_sha=arguments.commit_sha,
+                output_directory=arguments.output_directory,
+                allow_destructive_changes=arguments.allow_destructive_changes,
             )
         elif arguments.command == "output":
             command_output(

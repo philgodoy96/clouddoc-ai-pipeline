@@ -389,6 +389,7 @@ def test_remote_inputs_load_valid_values() -> None:
     assert inputs.expected_account_id == "123456789012"
     assert inputs.state_role_arn is None
     assert inputs.plan_role_arn is None
+    assert inputs.apply_role_arn is None
     assert inputs.uses_chained_roles is False
 
 
@@ -987,6 +988,7 @@ def test_cli_exposes_only_approved_commands() -> None:
         "plan",
         "show-plan",
         "apply",
+        "deploy",
         "output",
     }
 
@@ -1054,12 +1056,14 @@ ACCOUNT_ID = "123456789012"
 OTHER_ACCOUNT_ID = "999999999999"
 VALID_STATE_ROLE = f"arn:aws:iam::{ACCOUNT_ID}:role/{workflow.STATE_ROLE_NAME}"
 VALID_PLAN_ROLE = f"arn:aws:iam::{ACCOUNT_ID}:role/{workflow.PLAN_ROLE_NAME}"
+VALID_APPLY_ROLE = f"arn:aws:iam::{ACCOUNT_ID}:role/{workflow.APPLY_ROLE_NAME}"
 
 
 def role_environment(
     *,
     state_role: str | None = VALID_STATE_ROLE,
     plan_role: str | None = VALID_PLAN_ROLE,
+    apply_role: str | None = None,
     account_id: str = ACCOUNT_ID,
     bucket: str | None = None,
 ) -> dict[str, str]:
@@ -1072,7 +1076,24 @@ def role_environment(
         environ[workflow.STATE_ROLE_ENV] = state_role
     if plan_role is not None:
         environ[workflow.PLAN_ROLE_ENV] = plan_role
+    if apply_role is not None:
+        environ[workflow.APPLY_ROLE_ENV] = apply_role
     return environ
+
+
+def deploy_role_environment(
+    *,
+    state_role: str | None = VALID_STATE_ROLE,
+    apply_role: str | None = VALID_APPLY_ROLE,
+    account_id: str = ACCOUNT_ID,
+) -> dict[str, str]:
+    """Build deploy authorization inputs with optional chained apply roles."""
+    return role_environment(
+        state_role=state_role,
+        plan_role=None,
+        apply_role=apply_role,
+        account_id=account_id,
+    )
 
 
 def test_remote_inputs_load_chained_roles() -> None:
@@ -1551,3 +1572,832 @@ def test_command_plan_writes_artifacts_to_requested_output_directory(
     manifest = workflow.PlanManifest.read(manifest_file)
     assert manifest.plan_file == str(plan_file.resolve())
     assert manifest.plan_sha256 == hashlib.sha256(b"generated-plan").hexdigest()
+
+
+ATTESTATION_PATH = REPOSITORY_ROOT / "scripts" / "terraform_plan_attestation.py"
+DEPLOY_REPOSITORY = "philgodoy96/clouddoc-ai-pipeline"
+DEPLOY_PLAN_RUN_ID = "123456789"
+DEPLOY_COMMIT_SHA = "a" * 40
+
+
+def load_attestation_module() -> ModuleType:
+    """Load the attestation module for deployment fixtures."""
+
+    spec = importlib.util.spec_from_file_location(
+        "clouddoc_terraform_plan_attestation_workflow_tests",
+        ATTESTATION_PATH,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Could not load attestation module: {ATTESTATION_PATH}")
+
+    sys.path.insert(0, str(REPOSITORY_ROOT / "scripts"))
+    try:
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+    finally:
+        sys.path.pop(0)
+    return module
+
+
+plan_attestation = load_attestation_module()
+
+
+def _plan_document(*resource_changes: object) -> dict[str, object]:
+    return {
+        "format_version": "1.2",
+        "resource_changes": list(resource_changes),
+    }
+
+
+def _resource_change(
+    address: str = "aws_s3_bucket.documents",
+    *,
+    actions: list[str] | None = None,
+) -> dict[str, object]:
+    return {
+        "address": address,
+        "mode": "managed",
+        "type": "aws_s3_bucket",
+        "name": "documents",
+        "provider_name": "registry.terraform.io/hashicorp/aws",
+        "change": {
+            "actions": ["create"] if actions is None else actions,
+            "replace_paths": [],
+            "before": {"secret": "hidden"},
+            "after": {"secret": "hidden"},
+        },
+    }
+
+
+def build_attestation_fixture(document: dict[str, object]) -> Any:
+    """Build one valid attestation using the repository module."""
+
+    return plan_attestation.build_attestation(
+        document,
+        repository=DEPLOY_REPOSITORY,
+        plan_run_id=DEPLOY_PLAN_RUN_ID,
+        commit_sha=DEPLOY_COMMIT_SHA,
+        environment="dev",
+    )
+
+
+def write_attestation_fixture(path: Path, document: dict[str, object]) -> Any:
+    """Write one reviewed attestation fixture to disk."""
+
+    built = build_attestation_fixture(document)
+    plan_attestation.write_attestation(path, built)
+    return built
+
+
+TERRAFORM_VARIABLES_SOURCE = (
+    REPOSITORY_ROOT / "infra" / "terraform" / "variables.tf"
+).read_text(encoding="utf-8")
+TERRAFORM_PROVIDERS_SOURCE = (
+    REPOSITORY_ROOT / "infra" / "terraform" / "providers.tf"
+).read_text(encoding="utf-8")
+
+
+def test_terraform_apply_role_variable_contract() -> None:
+    """Terraform root must expose nullable plan and apply provider role variables."""
+
+    assert 'variable "terraform_apply_role_arn"' in TERRAFORM_VARIABLES_SOURCE
+    assert 'variable "terraform_plan_role_arn"' in TERRAFORM_VARIABLES_SOURCE
+
+
+def test_terraform_provider_role_selection_contract() -> None:
+    """Provider must use one exclusive assume-role block and exact session names."""
+
+    assert "effective_provider_role_arn" in TERRAFORM_PROVIDERS_SOURCE
+    assert TERRAFORM_PROVIDERS_SOURCE.count('dynamic "assume_role"') == 1
+    assert '"clouddoc-terraform-plan"' in TERRAFORM_PROVIDERS_SOURCE
+    assert '"clouddoc-terraform-apply"' in TERRAFORM_PROVIDERS_SOURCE
+    assert (
+        "terraform_apply_role_arn and terraform_plan_role_arn cannot both be set"
+        in TERRAFORM_VARIABLES_SOURCE
+    )
+
+
+@pytest.mark.parametrize(
+    ("apply_role", "message"),
+    [
+        (
+            f"arn:aws:iam::{OTHER_ACCOUNT_ID}:role/{workflow.APPLY_ROLE_NAME}",
+            "account mismatch",
+        ),
+        (
+            f"arn:aws:iam::{ACCOUNT_ID}:role/other-apply-role",
+            "apply role",
+        ),
+        (
+            f"arn:aws:iam::{ACCOUNT_ID}:role/path/{workflow.APPLY_ROLE_NAME}",
+            "apply role",
+        ),
+        (
+            (
+                f"arn:aws:sts::{ACCOUNT_ID}:assumed-role/"
+                f"{workflow.APPLY_ROLE_NAME}/session"
+            ),
+            "apply role",
+        ),
+        (f"arn:aws:iam::{ACCOUNT_ID}:role/{workflow.APPLY_ROLE_NAME} ", "apply role"),
+    ],
+)
+def test_deploy_authorization_rejects_invalid_apply_roles(
+    apply_role: str,
+    message: str,
+) -> None:
+    """Apply-role ARNs must match the deployment contract."""
+
+    environ = deploy_role_environment(apply_role=apply_role)
+
+    with pytest.raises(workflow.WorkflowError, match=message):
+        workflow.RemoteInputs.load(environ, authorization="deploy")
+
+
+def test_deploy_authorization_rejects_empty_apply_role() -> None:
+    """Empty apply-role values must be rejected."""
+
+    environ = deploy_role_environment()
+    environ[workflow.APPLY_ROLE_ENV] = ""
+
+    with pytest.raises(workflow.WorkflowError, match="apply role"):
+        workflow.RemoteInputs.load(environ, authorization="deploy")
+
+
+def test_run_terraform_rejects_conflicting_apply_role_tf_var(
+    paths: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Conflicting apply-role TF_VAR values must fail before Terraform."""
+
+    monkeypatch.setenv(
+        workflow.APPLY_ROLE_TF_VAR,
+        f"arn:aws:iam::{ACCOUNT_ID}:role/other-apply-role",
+    )
+
+    with pytest.raises(workflow.WorkflowError, match="conflicting"):
+        workflow.run_terraform(
+            binary="terraform",
+            root=paths.terraform_root,
+            repository_root=paths.repository_root,
+            data_dir=paths.data_dir("dev"),
+            arguments=["validate"],
+            expected_account_id=ACCOUNT_ID,
+            apply_role_arn=VALID_APPLY_ROLE,
+        )
+
+
+@pytest.mark.parametrize(
+    ("authorization", "environ", "message"),
+    [
+        (
+            "plan",
+            role_environment(
+                apply_role=VALID_APPLY_ROLE, plan_role=None, state_role=None
+            ),
+            "apply role",
+        ),
+        ("deploy", role_environment(), "plan role"),
+        (
+            "deploy",
+            role_environment(
+                state_role=VALID_STATE_ROLE,
+                plan_role=None,
+                apply_role=None,
+            ),
+            "missing paired",
+        ),
+        (
+            "deploy",
+            deploy_role_environment(state_role=VALID_STATE_ROLE, apply_role=None),
+            "missing paired",
+        ),
+        (
+            "deploy",
+            role_environment(
+                plan_role=VALID_PLAN_ROLE,
+                apply_role=VALID_APPLY_ROLE,
+                state_role=VALID_STATE_ROLE,
+            ),
+            "conflicting",
+        ),
+        ("apply", deploy_role_environment(), "deploy command"),
+    ],
+)
+def test_role_mode_matrix_rejects_invalid_combinations(
+    authorization: str,
+    environ: dict[str, str],
+    message: str,
+) -> None:
+    """Plan, deploy, and apply commands must enforce distinct role modes."""
+
+    with pytest.raises(workflow.WorkflowError, match=message):
+        workflow.RemoteInputs.load(environ, authorization=authorization)
+
+
+def test_plan_ambient_mode_succeeds() -> None:
+    """Plan authorization accepts bucket and account only."""
+
+    inputs = workflow.RemoteInputs.load(remote_environment(), authorization="plan")
+
+    assert inputs.plan_role_arn is None
+    assert inputs.apply_role_arn is None
+
+
+def test_plan_chained_mode_requires_state_and_plan_only() -> None:
+    """Chained plan mode requires paired state and plan roles."""
+
+    inputs = workflow.RemoteInputs.load(role_environment(), authorization="plan")
+
+    assert inputs.uses_chained_roles is True
+    assert inputs.apply_role_arn is None
+
+
+def test_deploy_ambient_mode_succeeds() -> None:
+    """Deploy authorization accepts ambient configuration."""
+
+    inputs = workflow.RemoteInputs.load(remote_environment(), authorization="deploy")
+
+    assert inputs.apply_role_arn is None
+    assert inputs.plan_role_arn is None
+
+
+def test_deploy_chained_mode_requires_state_and_apply_only() -> None:
+    """Chained deploy mode requires paired state and apply roles."""
+
+    inputs = workflow.RemoteInputs.load(
+        deploy_role_environment(),
+        authorization="deploy",
+    )
+
+    assert inputs.uses_chained_deploy_roles is True
+    assert inputs.plan_role_arn is None
+
+
+def test_offline_check_does_not_require_roles(
+    paths: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Offline check remains ambient and unchanged."""
+
+    monkeypatch.setattr(workflow, "run_terraform", lambda **kwargs: 0)
+    workflow.command_offline_check(binary="terraform", paths=paths)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"repository": "bad repo"}, "repository"),
+        ({"plan_run_id": "0"}, "plan run"),
+        ({"commit_sha": "ABC"}, "commit SHA"),
+        ({"environment": "qa"}, "Unsupported environment"),
+    ],
+)
+def test_deploy_argument_validation_rejects_invalid_metadata(
+    paths: Any,
+    tmp_path: Path,
+    kwargs: dict[str, str],
+    message: str,
+) -> None:
+    """Deploy metadata arguments must be validated before Terraform."""
+
+    attestation = tmp_path / "attestation.json"
+    write_attestation_fixture(attestation, _plan_document())
+
+    call_kwargs: dict[str, Any] = {
+        "binary": "terraform",
+        "paths": paths,
+        "environment": "dev",
+        "environ": remote_environment(),
+        "attestation_path": attestation,
+        "repository": DEPLOY_REPOSITORY,
+        "plan_run_id": DEPLOY_PLAN_RUN_ID,
+        "commit_sha": DEPLOY_COMMIT_SHA,
+    }
+    call_kwargs.update(kwargs)
+
+    with pytest.raises(workflow.WorkflowError, match=message):
+        workflow.command_deploy(**call_kwargs)
+
+
+def test_deploy_rejects_missing_attestation_argument(paths: Any) -> None:
+    """Deploy requires an attestation file path."""
+
+    with pytest.raises(workflow.WorkflowError, match="regular file"):
+        workflow.command_deploy(
+            binary="terraform",
+            paths=paths,
+            environment="dev",
+            environ=remote_environment(),
+            attestation_path=Path("missing-attestation.json"),
+            repository=DEPLOY_REPOSITORY,
+            plan_run_id=DEPLOY_PLAN_RUN_ID,
+            commit_sha=DEPLOY_COMMIT_SHA,
+        )
+
+
+def test_deploy_rejects_attestation_directory(
+    paths: Any,
+    tmp_path: Path,
+) -> None:
+    """Attestation paths must not be directories."""
+
+    directory = tmp_path / "attestation-dir"
+    directory.mkdir()
+
+    with pytest.raises(workflow.WorkflowError, match="regular file"):
+        workflow.command_deploy(
+            binary="terraform",
+            paths=paths,
+            environment="dev",
+            environ=remote_environment(),
+            attestation_path=directory,
+            repository=DEPLOY_REPOSITORY,
+            plan_run_id=DEPLOY_PLAN_RUN_ID,
+            commit_sha=DEPLOY_COMMIT_SHA,
+        )
+
+
+def test_deploy_rejects_output_directory_traversal(paths: Any) -> None:
+    """Output directories must not traverse parents."""
+
+    with pytest.raises(workflow.WorkflowError, match="traversal"):
+        workflow.resolve_plan_output_directory(paths, "dev", "../escape-output")
+
+
+def test_deploy_validates_attestation_before_terraform(
+    paths: Any,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A valid attestation must pass before any Terraform subprocess."""
+
+    write_environment(paths)
+    attestation = tmp_path / "attestation.json"
+    write_attestation_fixture(attestation, _plan_document())
+    called = False
+
+    def fail_if_called(**kwargs: Any) -> int:
+        nonlocal called
+        called = True
+        return 0
+
+    monkeypatch.setattr(workflow, "initialize_backend", fail_if_called)
+
+    with pytest.raises(workflow.WorkflowError, match="Lambda artifact"):
+        workflow.command_deploy(
+            binary="terraform",
+            paths=paths,
+            environment="dev",
+            environ=remote_environment(),
+            attestation_path=attestation,
+            repository=DEPLOY_REPOSITORY,
+            plan_run_id=DEPLOY_PLAN_RUN_ID,
+            commit_sha=DEPLOY_COMMIT_SHA,
+        )
+
+    assert called is False
+
+
+def test_deploy_context_mismatch_fails_before_subprocess(
+    paths: Any,
+    tmp_path: Path,
+) -> None:
+    """Attestation context mismatches must fail before Terraform."""
+
+    attestation = tmp_path / "attestation.json"
+    write_attestation_fixture(attestation, _plan_document())
+
+    with pytest.raises(workflow.WorkflowError, match="context"):
+        workflow.load_reviewed_attestation(
+            attestation,
+            repository=DEPLOY_REPOSITORY,
+            plan_run_id="987654321",
+            commit_sha=DEPLOY_COMMIT_SHA,
+            environment="dev",
+            allow_destructive_changes=False,
+        )
+
+
+def test_deploy_tampered_fingerprint_fails_before_subprocess(
+    tmp_path: Path,
+) -> None:
+    """Tampered attestations must fail before Terraform."""
+
+    attestation = tmp_path / "attestation.json"
+    write_attestation_fixture(attestation, _plan_document())
+    payload = json.loads(attestation.read_text(encoding="utf-8"))
+    payload["change_set_fingerprint"] = "f" * 64
+    attestation.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+    with pytest.raises(workflow.WorkflowError, match="fingerprint"):
+        workflow.load_reviewed_attestation(
+            attestation,
+            repository=DEPLOY_REPOSITORY,
+            plan_run_id=DEPLOY_PLAN_RUN_ID,
+            commit_sha=DEPLOY_COMMIT_SHA,
+            environment="dev",
+            allow_destructive_changes=False,
+        )
+
+
+def test_deploy_unknown_attestation_field_fails_before_subprocess(
+    tmp_path: Path,
+) -> None:
+    """Unknown attestation fields must fail before Terraform."""
+
+    attestation = tmp_path / "attestation.json"
+    built = build_attestation_fixture(_plan_document())
+    payload = built.to_mapping()
+    payload["unexpected"] = True
+    attestation.write_text(
+        json.dumps(payload, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(workflow.WorkflowError):
+        workflow.load_reviewed_attestation(
+            attestation,
+            repository=DEPLOY_REPOSITORY,
+            plan_run_id=DEPLOY_PLAN_RUN_ID,
+            commit_sha=DEPLOY_COMMIT_SHA,
+            environment="dev",
+            allow_destructive_changes=False,
+        )
+
+
+def test_deploy_destructive_attestation_requires_opt_in(tmp_path: Path) -> None:
+    """Destructive attestations require explicit authorization."""
+
+    attestation = tmp_path / "attestation.json"
+    write_attestation_fixture(
+        attestation,
+        _plan_document(_resource_change(actions=["delete"])),
+    )
+
+    with pytest.raises(workflow.WorkflowError, match="Destructive changes"):
+        workflow.load_reviewed_attestation(
+            attestation,
+            repository=DEPLOY_REPOSITORY,
+            plan_run_id=DEPLOY_PLAN_RUN_ID,
+            commit_sha=DEPLOY_COMMIT_SHA,
+            environment="dev",
+            allow_destructive_changes=False,
+        )
+
+
+def test_deploy_failure_output_does_not_leak_sensitive_values(
+    tmp_path: Path,
+) -> None:
+    """Attestation failures must not echo resource addresses or sentinel values."""
+
+    attestation = tmp_path / "attestation.json"
+    write_attestation_fixture(
+        attestation,
+        _plan_document(_resource_change(address="aws_s3_bucket.secret-bucket")),
+    )
+    payload = json.loads(attestation.read_text(encoding="utf-8"))
+    payload["change_set_fingerprint"] = "f" * 64
+    attestation.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+    with pytest.raises(workflow.WorkflowError) as raised:
+        workflow.load_reviewed_attestation(
+            attestation,
+            repository=DEPLOY_REPOSITORY,
+            plan_run_id=DEPLOY_PLAN_RUN_ID,
+            commit_sha=DEPLOY_COMMIT_SHA,
+            environment="dev",
+            allow_destructive_changes=False,
+        )
+
+    error_text = str(raised.value)
+    assert "aws_s3_bucket.secret-bucket" not in error_text
+    assert "hidden" not in error_text
+
+
+@pytest.fixture
+def deploy_harness(
+    paths: Any,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> dict[str, Any]:
+    """Prepare one deploy harness with mocked Terraform phases."""
+
+    write_environment(paths)
+    write_valid_lambda_artifact(paths)
+    attestation = tmp_path / "reviewed-attestation.json"
+    write_attestation_fixture(attestation, _plan_document(_resource_change()))
+    output_directory = tmp_path / "deploy-output"
+    calls: list[dict[str, Any]] = []
+
+    monkeypatch.setattr(workflow, "initialize_backend", lambda **kwargs: None)
+
+    def fake_show_json(**kwargs: Any) -> None:
+        kwargs["output_path"].write_text(
+            json.dumps(_plan_document(_resource_change())),
+            encoding="utf-8",
+        )
+        calls.append({"phase": "show"})
+
+    monkeypatch.setattr(workflow, "run_terraform_show_json", fake_show_json)
+
+    def fake_run_terraform(**kwargs: Any) -> int:
+        arguments = list(kwargs["arguments"])
+        phase = arguments[0]
+        if phase == "plan":
+            output_argument = next(
+                argument for argument in arguments if argument.startswith("-out=")
+            )
+            Path(output_argument.removeprefix("-out=")).write_bytes(b"deploy-plan")
+            if output_argument.endswith(workflow.POST_APPLY_PLAN_FILENAME):
+                return 0
+            return 2
+        if phase == "apply":
+            calls.append({"phase": "apply", "arguments": arguments})
+            return 0
+        calls.append({"phase": phase, "arguments": arguments})
+        return 0
+
+    monkeypatch.setattr(workflow, "run_terraform", fake_run_terraform)
+
+    return {
+        "paths": paths,
+        "attestation": attestation,
+        "output_directory": output_directory,
+        "calls": calls,
+    }
+
+
+def test_deploy_plan_uses_apply_role_provider_env(
+    deploy_harness: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regenerated plans must publish the apply provider role."""
+
+    captured: list[dict[str, Any]] = []
+
+    def capture_run(**kwargs: Any) -> int:
+        captured.append(kwargs)
+        arguments = kwargs["arguments"]
+        if arguments[0] == "plan":
+            output_argument = next(
+                argument for argument in arguments if argument.startswith("-out=")
+            )
+            Path(output_argument.removeprefix("-out=")).write_bytes(b"deploy-plan")
+            if output_argument.endswith(workflow.POST_APPLY_PLAN_FILENAME):
+                return 0
+            return 2
+        if arguments[0] == "apply":
+            return 0
+        return 0
+
+    monkeypatch.setattr(workflow, "run_terraform", capture_run)
+    monkeypatch.setattr(
+        workflow,
+        "run_terraform_show_json",
+        lambda **kwargs: kwargs["output_path"].write_text(
+            json.dumps(_plan_document(_resource_change())),
+            encoding="utf-8",
+        ),
+    )
+
+    workflow.command_deploy(
+        binary="terraform",
+        paths=deploy_harness["paths"],
+        environment="dev",
+        environ=deploy_role_environment(),
+        attestation_path=deploy_harness["attestation"],
+        repository=DEPLOY_REPOSITORY,
+        plan_run_id=DEPLOY_PLAN_RUN_ID,
+        commit_sha=DEPLOY_COMMIT_SHA,
+        output_directory=deploy_harness["output_directory"],
+    )
+
+    plan_calls = [call for call in captured if call["arguments"][0] == "plan"]
+    assert plan_calls[0]["apply_role_arn"] == VALID_APPLY_ROLE
+    assert plan_calls[0]["plan_role_arn"] is None
+
+
+def test_deploy_lifecycle_applies_exact_regenerated_plan(
+    deploy_harness: dict[str, Any],
+) -> None:
+    """Deploy must apply only the regenerated plan file."""
+
+    workflow.command_deploy(
+        binary="terraform",
+        paths=deploy_harness["paths"],
+        environment="dev",
+        environ=remote_environment(),
+        attestation_path=deploy_harness["attestation"],
+        repository=DEPLOY_REPOSITORY,
+        plan_run_id=DEPLOY_PLAN_RUN_ID,
+        commit_sha=DEPLOY_COMMIT_SHA,
+        output_directory=deploy_harness["output_directory"],
+    )
+
+    apply_calls = [
+        call for call in deploy_harness["calls"] if call.get("phase") == "apply"
+    ]
+    assert len(apply_calls) == 1
+    regenerated_plan = (
+        deploy_harness["output_directory"] / workflow.DEPLOY_PLAN_FILENAME
+    ).as_posix()
+    assert apply_calls[0]["arguments"][-1] == regenerated_plan
+
+
+def test_deploy_noop_skips_apply_and_convergence(
+    paths: Any,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Matching no-op attestations must not run apply or convergence plans."""
+
+    write_environment(paths)
+    write_valid_lambda_artifact(paths)
+    attestation = tmp_path / "attestation.json"
+    write_attestation_fixture(attestation, _plan_document())
+    output_directory = tmp_path / "deploy-output"
+    calls: list[str] = []
+
+    monkeypatch.setattr(workflow, "initialize_backend", lambda **kwargs: None)
+    monkeypatch.setattr(
+        workflow,
+        "run_terraform_show_json",
+        lambda **kwargs: kwargs["output_path"].write_text(
+            json.dumps(_plan_document()),
+            encoding="utf-8",
+        ),
+    )
+
+    def fake_run_terraform(**kwargs: Any) -> int:
+        calls.append(kwargs["arguments"][0])
+        if kwargs["arguments"][0] == "plan":
+            output_argument = next(
+                argument
+                for argument in kwargs["arguments"]
+                if argument.startswith("-out=")
+            )
+            Path(output_argument.removeprefix("-out=")).write_bytes(b"deploy-plan")
+            return 0
+        return 0
+
+    monkeypatch.setattr(workflow, "run_terraform", fake_run_terraform)
+
+    workflow.command_deploy(
+        binary="terraform",
+        paths=paths,
+        environment="dev",
+        environ=remote_environment(),
+        attestation_path=attestation,
+        repository=DEPLOY_REPOSITORY,
+        plan_run_id=DEPLOY_PLAN_RUN_ID,
+        commit_sha=DEPLOY_COMMIT_SHA,
+        output_directory=output_directory,
+    )
+
+    assert calls == ["plan"]
+
+
+def test_deploy_fingerprint_mismatch_fails_before_apply(
+    paths: Any,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fingerprint mismatches must fail before apply."""
+
+    write_environment(paths)
+    write_valid_lambda_artifact(paths)
+    attestation = tmp_path / "attestation.json"
+    write_attestation_fixture(attestation, _plan_document())
+    output_directory = tmp_path / "deploy-output"
+    apply_called = False
+
+    monkeypatch.setattr(workflow, "initialize_backend", lambda **kwargs: None)
+    monkeypatch.setattr(
+        workflow,
+        "run_terraform_show_json",
+        lambda **kwargs: kwargs["output_path"].write_text(
+            json.dumps(_plan_document(_resource_change(actions=["update"]))),
+            encoding="utf-8",
+        ),
+    )
+
+    def fake_run_terraform(**kwargs: Any) -> int:
+        nonlocal apply_called
+        if kwargs["arguments"][0] == "apply":
+            apply_called = True
+        if kwargs["arguments"][0] == "plan":
+            output_argument = next(
+                argument
+                for argument in kwargs["arguments"]
+                if argument.startswith("-out=")
+            )
+            Path(output_argument.removeprefix("-out=")).write_bytes(b"deploy-plan")
+            return 2
+        return 0
+
+    monkeypatch.setattr(workflow, "run_terraform", fake_run_terraform)
+
+    with pytest.raises(workflow.WorkflowError, match="mismatch"):
+        workflow.command_deploy(
+            binary="terraform",
+            paths=paths,
+            environment="dev",
+            environ=remote_environment(),
+            attestation_path=attestation,
+            repository=DEPLOY_REPOSITORY,
+            plan_run_id=DEPLOY_PLAN_RUN_ID,
+            commit_sha=DEPLOY_COMMIT_SHA,
+            output_directory=output_directory,
+        )
+
+    assert apply_called is False
+
+
+def test_deploy_nonzero_apply_propagates_partial_apply_warning(
+    deploy_harness: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Nonzero apply failures must explain possible partial apply."""
+
+    def failing_apply(**kwargs: Any) -> int:
+        if kwargs["arguments"][0] == "apply":
+            raise workflow.WorkflowError("Terraform apply failed with exit code 1.")
+        output_argument = next(
+            argument for argument in kwargs["arguments"] if argument.startswith("-out=")
+        )
+        Path(output_argument.removeprefix("-out=")).write_bytes(b"deploy-plan")
+        return 2
+
+    monkeypatch.setattr(workflow, "run_terraform", failing_apply)
+
+    with pytest.raises(workflow.WorkflowError, match="partially changed"):
+        workflow.command_deploy(
+            binary="terraform",
+            paths=deploy_harness["paths"],
+            environment="dev",
+            environ=remote_environment(),
+            attestation_path=deploy_harness["attestation"],
+            repository=DEPLOY_REPOSITORY,
+            plan_run_id=DEPLOY_PLAN_RUN_ID,
+            commit_sha=DEPLOY_COMMIT_SHA,
+            output_directory=deploy_harness["output_directory"],
+        )
+
+
+def test_deploy_convergence_exit_two_fails(
+    deploy_harness: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Convergence exit code 2 must fail without a second apply."""
+
+    apply_count = 0
+
+    def fake_run_terraform(**kwargs: Any) -> int:
+        nonlocal apply_count
+        arguments = kwargs["arguments"]
+        if arguments[0] == "apply":
+            apply_count += 1
+            return 0
+        if arguments[0] == "plan":
+            output_argument = next(
+                argument for argument in arguments if argument.startswith("-out=")
+            )
+            Path(output_argument.removeprefix("-out=")).write_bytes(b"deploy-plan")
+            if output_argument.endswith(workflow.POST_APPLY_PLAN_FILENAME):
+                return 2
+            return 2
+        return 0
+
+    monkeypatch.setattr(workflow, "run_terraform", fake_run_terraform)
+
+    with pytest.raises(workflow.WorkflowError, match="convergence"):
+        workflow.command_deploy(
+            binary="terraform",
+            paths=deploy_harness["paths"],
+            environment="dev",
+            environ=remote_environment(),
+            attestation_path=deploy_harness["attestation"],
+            repository=DEPLOY_REPOSITORY,
+            plan_run_id=DEPLOY_PLAN_RUN_ID,
+            commit_sha=DEPLOY_COMMIT_SHA,
+            output_directory=deploy_harness["output_directory"],
+        )
+
+    assert apply_count == 1
+
+
+def test_local_apply_rejects_attestation_paths(tmp_path: Path) -> None:
+    """Local apply must reject attestation and directory inputs."""
+
+    forbidden = tmp_path / "terraform-plan-attestation.json"
+    forbidden.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(workflow.WorkflowError, match="valid Terraform plan"):
+        workflow.validate_local_apply_plan_path(forbidden)
+
+    directory = tmp_path / "plan-directory"
+    directory.mkdir()
+    with pytest.raises(workflow.WorkflowError, match="regular file"):
+        workflow.validate_local_apply_plan_path(directory)
