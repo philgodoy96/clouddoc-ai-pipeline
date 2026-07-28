@@ -1276,6 +1276,212 @@ run "apply_boundary_contract" {
 
   assert {
     condition = (
+      toset(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageLambdaPermissions"
+        ]).actions
+        ) == toset([
+          "lambda:AddPermission",
+          "lambda:GetPolicy",
+          "lambda:RemovePermission",
+      ]) &&
+      toset(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageLambdaPermissions"
+        ]).resources
+      ) == toset(local.application_lambda_function_arns) &&
+      contains(
+        local.application_lambda_function_arns,
+        "arn:aws:lambda:us-east-1:123456789012:function:clouddoc-dev-create-job",
+      ) &&
+      contains(
+        local.application_lambda_function_arns,
+        "arn:aws:lambda:us-east-1:123456789012:function:clouddoc-dev-get-job",
+      ) &&
+      length(local.application_lambda_function_arns) == 4 &&
+      !contains(
+        flatten([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement.actions
+        ]),
+        "lambda:InvokeFunction",
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageLambdaPermissions"
+        ]).resources,
+        "*",
+      )
+    )
+    error_message = "ManageLambdaPermissions must grant Add/Get/Remove on the four application function ARNs, including create-job and get-job, without InvokeFunction."
+  }
+
+  assert {
+    condition = (
+      toset(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ListCloudWatchDashboards"
+        ]).actions
+      ) == toset(["cloudwatch:ListDashboards"]) &&
+      toset(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ListCloudWatchDashboards"
+        ]).resources
+      ) == toset(["*"]) &&
+      length(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ListCloudWatchDashboards"
+        ]).condition
+      ) == 0 &&
+      toset(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageCloudWatchDashboard"
+        ]).actions
+        ) == toset([
+          "cloudwatch:DeleteDashboards",
+          "cloudwatch:GetDashboard",
+          "cloudwatch:PutDashboard",
+      ]) &&
+      toset(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageCloudWatchDashboard"
+        ]).resources
+      ) == toset([local.operations_dashboard_arn]) &&
+      local.operations_dashboard_arn ==
+      "arn:aws:cloudwatch::123456789012:dashboard/clouddoc-dev-operations" &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageCloudWatchDashboard"
+        ]).actions,
+        "cloudwatch:ListTagsForResource",
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageCloudWatchDashboard"
+        ]).actions,
+        "cloudwatch:TagResource",
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageCloudWatchDashboard"
+        ]).actions,
+        "cloudwatch:UntagResource",
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageCloudWatchDashboard"
+        ]).resources,
+        "*",
+      )
+    )
+    error_message = "Dashboard lifecycle must list on *, manage Get/Put/Delete on the exact operations dashboard ARN, and omit tagging."
+  }
+
+  assert {
+    condition = (
+      toset(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "DescribeCloudWatchAlarmMetrics"
+        ]).actions
+      ) == toset(["cloudwatch:DescribeAlarmsForMetric"]) &&
+      toset(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "DescribeCloudWatchAlarmMetrics"
+        ]).resources
+      ) == toset(["*"]) &&
+      length(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "DescribeCloudWatchAlarmMetrics"
+        ]).condition
+      ) == 0 &&
+      toset(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageCloudWatchAlarms"
+        ]).actions
+        ) == toset([
+          "cloudwatch:DeleteAlarms",
+          "cloudwatch:DescribeAlarms",
+          "cloudwatch:ListTagsForResource",
+          "cloudwatch:PutMetricAlarm",
+          "cloudwatch:TagResource",
+          "cloudwatch:UntagResource",
+      ]) &&
+      toset(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageCloudWatchAlarms"
+        ]).resources
+      ) == toset([local.application_alarm_arn_prefix]) &&
+      local.application_alarm_arn_prefix ==
+      "arn:aws:cloudwatch:us-east-1:123456789012:alarm:clouddoc-dev-*" &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageCloudWatchAlarms"
+        ]).resources,
+        "*",
+      ) &&
+      !contains(
+        flatten([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement.actions
+        ]),
+        "cloudwatch:SetAlarmState",
+      ) &&
+      !contains(
+        flatten([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement.actions
+        ]),
+        "cloudwatch:EnableAlarmActions",
+      ) &&
+      !contains(
+        flatten([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement.actions
+        ]),
+        "cloudwatch:DisableAlarmActions",
+      )
+    )
+    error_message = "Alarm lifecycle must isolate DescribeAlarmsForMetric on *, manage alarm CRUD/tagging on the application alarm ARN prefix, and omit alarm-action controls."
+  }
+
+  assert {
+    condition = (
       length(local.application_lambda_event_source_mapping_function_arns) == 2 &&
       toset(local.application_lambda_event_source_mapping_function_arns) == toset([
         "arn:aws:lambda:us-east-1:123456789012:function:clouddoc-dev-process-document",
