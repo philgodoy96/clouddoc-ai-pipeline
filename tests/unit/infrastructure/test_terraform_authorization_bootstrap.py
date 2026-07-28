@@ -549,8 +549,8 @@ def test_apply_policy_uses_valid_s3_lifecycle_and_put_control_plane_actions() ->
     }.issubset(actions)
 
 
-def test_application_log_group_arns_use_create_log_group_resource_shape() -> None:
-    """Log-group ARNs must end with :* for CreateLogGroup authorization."""
+def test_application_log_group_arns_remain_bare_tagging_form() -> None:
+    """Tagging ARNs must be bare log-group names without a trailing :*."""
     locals_source = read_bootstrap_file("locals.tf")
     match = re.search(
         r"application_log_group_arns\s*=\s*\[(.*?)\]",
@@ -562,12 +562,58 @@ def test_application_log_group_arns_use_create_log_group_resource_shape() -> Non
     arn_entries = re.findall(r'"([^"]+)"', list_body)
 
     assert len(arn_entries) == 5
-    assert all(entry.endswith(":*") for entry in arn_entries)
-    assert "local.control_plane_api_access_log_group_name" in list_body
+    assert all(not entry.endswith(":*") for entry in arn_entries)
+    assert all(":log-group:" in entry for entry in arn_entries)
     assert sum("/aws/lambda/" in entry for entry in arn_entries) == 4
+    assert "local.control_plane_api_access_log_group_name" in list_body
     assert (
         'control_plane_api_access_log_group_name = "/aws/apigateway/' in locals_source
     )
+
+
+def test_application_log_group_management_arns_derive_suffixed_form() -> None:
+    """Management ARNs must append :* from the bare tagging local only."""
+    locals_source = read_bootstrap_file("locals.tf")
+    apply_block = extract_policy_document_block("terraform_apply_access")
+    plan_block = extract_policy_document_block("terraform_plan_access")
+
+    assert "application_log_group_management_arns" in locals_source
+    assert re.search(
+        r"application_log_group_management_arns\s*=\s*\[\s*"
+        r"for\s+arn\s+in\s+local\.application_log_group_arns\s*:\s*"
+        r'"\$\{arn\}:\*"\s*\]',
+        locals_source,
+        flags=re.DOTALL,
+    )
+    assert '"*"' not in re.search(
+        r"application_log_group_management_arns\s*=\s*\[.*?\]",
+        locals_source,
+        flags=re.DOTALL,
+    ).group(0)
+
+    plan_tags = re.search(
+        r'sid\s*=\s*"ReadCloudWatchLogGroupTags".*?(?=sid\s*=|\Z)',
+        plan_block,
+        flags=re.DOTALL,
+    )
+    assert plan_tags is not None
+    plan_tags_body = plan_tags.group(0)
+    assert '"logs:ListTagsForResource"' in plan_tags_body
+    assert "resources = local.application_log_group_arns" in plan_tags_body
+    assert "application_log_group_management_arns" not in plan_tags_body
+    assert quoted_actions(plan_tags_body) == {"logs:ListTagsForResource"}
+    assert 'resources = ["*"]' not in plan_tags_body
+
+    manage_logs = re.search(
+        r'sid\s*=\s*"ManageCloudWatchLogGroups".*?(?=sid\s*=|\Z)',
+        apply_block,
+        flags=re.DOTALL,
+    )
+    assert manage_logs is not None
+    manage_logs_body = manage_logs.group(0)
+    assert "resources = local.application_log_group_management_arns" in manage_logs_body
+    assert "resources = local.application_log_group_arns" not in manage_logs_body
+    assert 'resources = ["*"]' not in manage_logs_body
 
 
 def test_apply_policy_includes_encoded_api_gateway_tag_resource() -> None:

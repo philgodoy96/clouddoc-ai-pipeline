@@ -119,12 +119,18 @@ locals {
     "arn:${data.aws_partition.current.partition}:sqs:${var.aws_region}:${var.aws_account_id}:${local.reconciliation_failures_queue_name}",
   ]
 
+  # Bare log-group ARNs for logs:ListTagsForResource (Plan tagging).
   application_log_group_arns = [
-    "arn:${data.aws_partition.current.partition}:logs:${var.aws_region}:${var.aws_account_id}:log-group:/aws/lambda/${local.create_job_function_name}:*",
-    "arn:${data.aws_partition.current.partition}:logs:${var.aws_region}:${var.aws_account_id}:log-group:/aws/lambda/${local.get_job_function_name}:*",
-    "arn:${data.aws_partition.current.partition}:logs:${var.aws_region}:${var.aws_account_id}:log-group:/aws/lambda/${local.processor_function_name}:*",
-    "arn:${data.aws_partition.current.partition}:logs:${var.aws_region}:${var.aws_account_id}:log-group:/aws/lambda/${local.dead_letter_reconciler_function_name}:*",
-    "arn:${data.aws_partition.current.partition}:logs:${var.aws_region}:${var.aws_account_id}:log-group:${local.control_plane_api_access_log_group_name}:*",
+    "arn:${data.aws_partition.current.partition}:logs:${var.aws_region}:${var.aws_account_id}:log-group:/aws/lambda/${local.create_job_function_name}",
+    "arn:${data.aws_partition.current.partition}:logs:${var.aws_region}:${var.aws_account_id}:log-group:/aws/lambda/${local.get_job_function_name}",
+    "arn:${data.aws_partition.current.partition}:logs:${var.aws_region}:${var.aws_account_id}:log-group:/aws/lambda/${local.processor_function_name}",
+    "arn:${data.aws_partition.current.partition}:logs:${var.aws_region}:${var.aws_account_id}:log-group:/aws/lambda/${local.dead_letter_reconciler_function_name}",
+    "arn:${data.aws_partition.current.partition}:logs:${var.aws_region}:${var.aws_account_id}:log-group:${local.control_plane_api_access_log_group_name}",
+  ]
+
+  # Management form (trailing :*) for CreateLogGroup and related Apply actions.
+  application_log_group_management_arns = [
+    for arn in local.application_log_group_arns : "${arn}:*"
   ]
 
   application_alarm_arn_prefix = (
