@@ -134,7 +134,7 @@ data "aws_iam_policy_document" "terraform_apply_access" {
       "logs:UntagResource",
     ]
 
-    resources = local.application_log_group_arns
+    resources = local.application_log_group_management_arns
   }
 
   statement {
