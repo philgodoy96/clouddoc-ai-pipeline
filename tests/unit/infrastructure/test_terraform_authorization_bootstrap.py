@@ -788,8 +788,10 @@ def test_encoded_api_gateway_stage_tag_resource_is_exact() -> None:
     assert "execute-api:Invoke" not in quoted_actions(api_gateway_body)
 
 
-def test_complete_tagged_api_gateway_stage_creation_uses_put_on_stage_tag() -> None:
-    """Tagged CreateStage requires dedicated PUT on the encoded Stage tag resource."""
+def test_complete_tagged_api_gateway_stage_creation_uses_put_on_stages_and_tag() -> (
+    None
+):
+    """Tagged CreateStage needs PUT on Stages collection and Stage tag."""
     apply_block = extract_policy_document_block("terraform_apply_access")
     put_body = re.search(
         r'sid\s*=\s*"CompleteTaggedApiGatewayV2StageCreation".*?(?=sid\s*=|\Z)',
@@ -814,15 +816,25 @@ def test_complete_tagged_api_gateway_stage_creation_uses_put_on_stage_tag() -> N
         "apigateway:PATCH",
         "apigateway:POST",
     }
+    assert "local.application_apigateway_stages_resource" in put_statement
     assert "local.application_apigateway_stage_tag_resource" in put_statement
     assert "local.application_apigateway_api_tag_resource" not in put_statement
     assert "/tags/*" not in put_statement
-    assert "application_apigateway_stages_resource" not in put_statement
     assert "application_apigateway_stage_resource_prefix" not in put_statement
     assert re.search(r'resources\s*=\s*\[\s*"\*"\s*,?\s*\]', put_statement) is None
     assert "execute-api:Invoke" not in quoted_actions(put_statement)
     assert "condition" not in put_statement
-    assert len(re.findall(r"local\.application_apigateway_\w+", put_statement)) == 1
+    assert len(re.findall(r"local\.application_apigateway_\w+", put_statement)) == 2
+    resources_match = re.search(
+        r"resources\s*=\s*\[(.*?)\]",
+        put_statement,
+        flags=re.DOTALL,
+    )
+    assert resources_match is not None
+    resources_body = resources_match.group(1)
+    assert resources_body.index(
+        "application_apigateway_stages_resource"
+    ) < resources_body.index("application_apigateway_stage_tag_resource")
 
 
 def test_event_source_mapping_function_arns_are_exactly_two_consumers() -> None:

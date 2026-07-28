@@ -1156,7 +1156,10 @@ run "apply_boundary_contract" {
           statement
           if statement.sid == "CompleteTaggedApiGatewayV2StageCreation"
         ]).resources
-      ) == toset([local.application_apigateway_stage_tag_resource]) &&
+        ) == toset([
+          local.application_apigateway_stages_resource,
+          local.application_apigateway_stage_tag_resource,
+      ]) &&
       length(
         one([
           for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
@@ -1170,7 +1173,31 @@ run "apply_boundary_contract" {
           statement
           if statement.sid == "CompleteTaggedApiGatewayV2StageCreation"
         ]).resources
-      ) == 1 &&
+      ) == 2 &&
+      contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "CompleteTaggedApiGatewayV2StageCreation"
+        ]).resources,
+        local.application_apigateway_stages_resource,
+      ) &&
+      contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "CompleteTaggedApiGatewayV2StageCreation"
+        ]).resources,
+        local.application_apigateway_stage_tag_resource,
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "CompleteTaggedApiGatewayV2StageCreation"
+        ]).resources,
+        local.application_apigateway_stage_resource_prefix,
+      ) &&
       !contains(
         one([
           for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
@@ -1186,14 +1213,6 @@ run "apply_boundary_contract" {
           if statement.sid == "CompleteTaggedApiGatewayV2StageCreation"
         ]).resources,
         "arn:aws:apigateway:us-east-1::/tags/*",
-      ) &&
-      !contains(
-        one([
-          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
-          statement
-          if statement.sid == "CompleteTaggedApiGatewayV2StageCreation"
-        ]).resources,
-        "arn:aws:apigateway:us-east-1::/apis/*/stages",
       ) &&
       !contains(
         one([
@@ -1217,10 +1236,42 @@ run "apply_boundary_contract" {
           statement
           if statement.sid == "CompleteTaggedApiGatewayV2StageCreation"
         ]).actions,
+        "apigateway:POST",
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "CompleteTaggedApiGatewayV2StageCreation"
+        ]).actions,
+        "apigateway:PATCH",
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "CompleteTaggedApiGatewayV2StageCreation"
+        ]).actions,
+        "apigateway:GET",
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "CompleteTaggedApiGatewayV2StageCreation"
+        ]).actions,
+        "apigateway:DELETE",
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "CompleteTaggedApiGatewayV2StageCreation"
+        ]).actions,
         "execute-api:Invoke",
       )
     )
-    error_message = "CompleteTaggedApiGatewayV2StageCreation must grant only apigateway:PUT on the encoded Stage tag resource."
+    error_message = "CompleteTaggedApiGatewayV2StageCreation must grant only apigateway:PUT on the raw Stages collection and encoded Stage tag resource."
   }
 
   assert {
