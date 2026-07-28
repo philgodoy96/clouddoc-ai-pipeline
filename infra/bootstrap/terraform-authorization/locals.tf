@@ -108,6 +108,10 @@ locals {
   application_apigateway_stage_resource_prefix = (
     "arn:${data.aws_partition.current.partition}:apigateway:${var.aws_region}::/apis/*/stages/*"
   )
+  # Tagged CreateApi authorizes against the URL-encoded API Gateway tag resource.
+  application_apigateway_api_tag_resource = (
+    "arn:${data.aws_partition.current.partition}:apigateway:${var.aws_region}::/tags/arn%3A${data.aws_partition.current.partition}%3Aapigateway%3A${var.aws_region}%3A%3A%2Fv2%2Fapis%2F*"
+  )
 
   application_sqs_queue_arns = [
     "arn:${data.aws_partition.current.partition}:sqs:${var.aws_region}:${var.aws_account_id}:${local.processing_queue_name}",
@@ -116,11 +120,11 @@ locals {
   ]
 
   application_log_group_arns = [
-    "arn:${data.aws_partition.current.partition}:logs:${var.aws_region}:${var.aws_account_id}:log-group:/aws/lambda/${local.create_job_function_name}",
-    "arn:${data.aws_partition.current.partition}:logs:${var.aws_region}:${var.aws_account_id}:log-group:/aws/lambda/${local.get_job_function_name}",
-    "arn:${data.aws_partition.current.partition}:logs:${var.aws_region}:${var.aws_account_id}:log-group:/aws/lambda/${local.processor_function_name}",
-    "arn:${data.aws_partition.current.partition}:logs:${var.aws_region}:${var.aws_account_id}:log-group:/aws/lambda/${local.dead_letter_reconciler_function_name}",
-    "arn:${data.aws_partition.current.partition}:logs:${var.aws_region}:${var.aws_account_id}:log-group:${local.control_plane_api_access_log_group_name}",
+    "arn:${data.aws_partition.current.partition}:logs:${var.aws_region}:${var.aws_account_id}:log-group:/aws/lambda/${local.create_job_function_name}:*",
+    "arn:${data.aws_partition.current.partition}:logs:${var.aws_region}:${var.aws_account_id}:log-group:/aws/lambda/${local.get_job_function_name}:*",
+    "arn:${data.aws_partition.current.partition}:logs:${var.aws_region}:${var.aws_account_id}:log-group:/aws/lambda/${local.processor_function_name}:*",
+    "arn:${data.aws_partition.current.partition}:logs:${var.aws_region}:${var.aws_account_id}:log-group:/aws/lambda/${local.dead_letter_reconciler_function_name}:*",
+    "arn:${data.aws_partition.current.partition}:logs:${var.aws_region}:${var.aws_account_id}:log-group:${local.control_plane_api_access_log_group_name}:*",
   ]
 
   application_alarm_arn_prefix = (

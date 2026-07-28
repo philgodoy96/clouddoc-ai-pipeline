@@ -615,6 +615,103 @@ run "apply_boundary_contract" {
     )
     error_message = "The apply policy must remain within the reviewed service families only."
   }
+
+  assert {
+    condition = (
+      contains(
+        flatten([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement.actions
+        ]),
+        "s3:GetLifecycleConfiguration",
+      ) &&
+      !contains(
+        flatten([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement.actions
+        ]),
+        "s3:GetBucketLifecycleConfiguration",
+      ) &&
+      contains(
+        flatten([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement.actions
+        ]),
+        "s3:PutLifecycleConfiguration",
+      )
+    )
+    error_message = "Apply S3 lifecycle authorization must use GetLifecycleConfiguration and PutLifecycleConfiguration only."
+  }
+
+  assert {
+    condition = (
+      length([
+        for action in flatten([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement.actions
+        ]) : action
+        if contains([
+          "s3:DeleteBucketEncryption",
+          "s3:DeleteBucketOwnershipControls",
+          "s3:DeleteBucketTagging",
+          "s3:DeleteBucketPublicAccessBlock",
+        ], action)
+      ]) == 0
+    )
+    error_message = "Apply S3 control-plane authorization must exclude the invalid Delete* action names."
+  }
+
+  assert {
+    condition = (
+      length(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageCloudWatchLogGroups"
+        ]).resources
+      ) > 0 &&
+      alltrue([
+        for resource in one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageCloudWatchLogGroups"
+        ]).resources :
+        endswith(resource, ":*") && resource != "*"
+      ])
+    )
+    error_message = "ManageCloudWatchLogGroups resources must each end with :* and must not use unrestricted *."
+  }
+
+  assert {
+    condition = (
+      toset(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageApiGatewayV2ControlPlane"
+        ]).resources
+        ) == toset([
+          "arn:aws:apigateway:us-east-1::/apis",
+          "arn:aws:apigateway:us-east-1::/apis/*",
+          "arn:aws:apigateway:us-east-1::/apis/*/integrations",
+          "arn:aws:apigateway:us-east-1::/apis/*/integrations/*",
+          "arn:aws:apigateway:us-east-1::/apis/*/routes",
+          "arn:aws:apigateway:us-east-1::/apis/*/routes/*",
+          "arn:aws:apigateway:us-east-1::/apis/*/stages",
+          "arn:aws:apigateway:us-east-1::/apis/*/stages/*",
+          "arn:aws:apigateway:us-east-1::/tags/arn%3Aaws%3Aapigateway%3Aus-east-1%3A%3A%2Fv2%2Fapis%2F*",
+      ]) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageApiGatewayV2ControlPlane"
+        ]).resources,
+        "*",
+      )
+    )
+    error_message = "ManageApiGatewayV2ControlPlane must keep the reviewed API scopes plus the encoded tag resource, without unrestricted *."
+  }
 }
 
 run "outputs_contract" {

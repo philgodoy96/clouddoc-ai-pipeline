@@ -44,6 +44,7 @@ data "aws_iam_policy_document" "terraform_apply_access" {
       local.application_apigateway_route_resource_prefix,
       local.application_apigateway_stages_resource,
       local.application_apigateway_stage_resource_prefix,
+      local.application_apigateway_api_tag_resource,
     ]
   }
 
@@ -291,7 +292,7 @@ data "aws_iam_policy_document" "terraform_apply_access" {
       "s3:GetAccelerateConfiguration",
       "s3:GetBucketAcl",
       "s3:GetBucketCORS",
-      "s3:GetBucketLifecycleConfiguration",
+      "s3:GetLifecycleConfiguration",
       "s3:GetBucketLocation",
       "s3:GetBucketLogging",
       "s3:GetBucketNotification",
@@ -321,11 +322,7 @@ data "aws_iam_policy_document" "terraform_apply_access" {
     actions = [
       "s3:CreateBucket",
       "s3:DeleteBucket",
-      "s3:DeleteBucketEncryption",
-      "s3:DeleteBucketOwnershipControls",
       "s3:DeleteBucketPolicy",
-      "s3:DeleteBucketPublicAccessBlock",
-      "s3:DeleteBucketTagging",
       "s3:PutBucketNotification",
       "s3:PutBucketOwnershipControls",
       "s3:PutBucketPolicy",
