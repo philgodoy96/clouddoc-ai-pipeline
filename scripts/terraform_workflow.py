@@ -17,10 +17,26 @@ from typing import Final
 SUPPORTED_ENVIRONMENTS: Final = ("dev", "staging", "prod")
 STATE_BUCKET_ENV: Final = "CLOUDDOC_TERRAFORM_STATE_BUCKET"
 EXPECTED_ACCOUNT_ENV: Final = "CLOUDDOC_EXPECTED_AWS_ACCOUNT_ID"
+STATE_ROLE_ENV: Final = "CLOUDDOC_DEV_TERRAFORM_STATE_ROLE_ARN"
+PLAN_ROLE_ENV: Final = "CLOUDDOC_DEV_TERRAFORM_PLAN_ROLE_ARN"
+PLAN_ROLE_TF_VAR: Final = "TF_VAR_terraform_plan_role_arn"
 TERRAFORM_BINARY_ENV: Final = "CLOUDDOC_TERRAFORM_BINARY"
 LOCK_TIMEOUT: Final = "5m"
+ROLE_SESSION_DURATION: Final = "15m"
+STATE_ROLE_SESSION_NAME: Final = "clouddoc-terraform-state"
+PLAN_ROLE_SESSION_NAME: Final = "clouddoc-terraform-plan"
+STATE_ROLE_NAME: Final = "clouddoc-dev-terraform-state"
+PLAN_ROLE_NAME: Final = "clouddoc-dev-terraform-plan"
 PLAN_FILENAME: Final = "clouddoc.tfplan"
 MANIFEST_FILENAME: Final = "clouddoc.tfplan.json"
+BACKEND_OVERRIDE_FILENAME: Final = "backend-override.tfbackend"
+
+OFFLINE_TERRAFORM_ROOTS: Final[tuple[str, ...]] = (
+    "infra/terraform",
+    "infra/bootstrap/terraform-state",
+    "infra/bootstrap/github-oidc",
+    "infra/bootstrap/terraform-authorization",
+)
 
 ACCOUNT_ID_PATTERN: Final = re.compile(r"^[0-9]{12}$")
 PROJECT_PATTERN: Final = re.compile(r"^[a-z][a-z0-9-]*[a-z0-9]$")
@@ -32,6 +48,10 @@ BUCKET_PATTERN: Final = re.compile(
     r"(?!.*-s3alias$)(?!.*--ol-s3$)"
     r"(?!.*\.\.)(?!.*\.-)(?!.*-\.)"
     r"[a-z0-9](?:[a-z0-9.-]{1,61}[a-z0-9])$"
+)
+IAM_ROLE_ARN_PATTERN: Final = re.compile(
+    r"^arn:(?P<partition>aws|aws-us-gov|aws-cn):iam::"
+    r"(?P<account>[0-9]{12}):role/(?P<name>[A-Za-z0-9+=,.@_/-]+)$"
 )
 
 
@@ -220,6 +240,13 @@ class RemoteInputs:
 
     state_bucket: str
     expected_account_id: str
+    state_role_arn: str | None
+    plan_role_arn: str | None
+
+    @property
+    def uses_chained_roles(self) -> bool:
+        """Return whether backend and provider role assumption is active."""
+        return self.state_role_arn is not None and self.plan_role_arn is not None
 
     @classmethod
     def load(cls, environ: Mapping[str, str]) -> RemoteInputs:
@@ -246,9 +273,16 @@ class RemoteInputs:
                 f"{EXPECTED_ACCOUNT_ENV} must contain exactly 12 digits."
             )
 
+        state_role_arn, plan_role_arn = load_paired_role_arns(
+            environ,
+            expected_account_id=account_id,
+        )
+
         return cls(
             state_bucket=bucket,
             expected_account_id=account_id,
+            state_role_arn=state_role_arn,
+            plan_role_arn=plan_role_arn,
         )
 
 
@@ -453,6 +487,222 @@ def validate_bucket(bucket: str) -> None:
         raise WorkflowError(f"{STATE_BUCKET_ENV} must not use an IP-address format.")
 
 
+def _optional_role_env_value(
+    environ: Mapping[str, str],
+    name: str,
+    *,
+    role_label: str,
+) -> str | None:
+    """Return a present role ARN or None when the variable is absent."""
+    if name not in environ:
+        return None
+
+    value = environ[name]
+    if value.strip() == "":
+        raise WorkflowError(f"Invalid {role_label}: empty value.")
+    if value != value.strip() or any(character.isspace() for character in value):
+        raise WorkflowError(f"Invalid {role_label}: invalid ARN shape.")
+    return value
+
+
+def validate_authorization_role_arn(
+    role_arn: str,
+    *,
+    role_label: str,
+    expected_role_name: str,
+    expected_account_id: str,
+) -> str:
+    """Validate one state or plan IAM role ARN without echoing it."""
+    if "*" in role_arn or any(character.isspace() for character in role_arn):
+        raise WorkflowError(f"Invalid {role_label}: invalid ARN shape.")
+
+    if ":assumed-role/" in role_arn or ":sts:" in role_arn:
+        raise WorkflowError(f"Invalid {role_label}: invalid ARN shape.")
+
+    match = IAM_ROLE_ARN_PATTERN.fullmatch(role_arn)
+    if match is None:
+        raise WorkflowError(f"Invalid {role_label}: invalid ARN shape.")
+
+    role_name = match.group("name")
+    if "/" in role_name:
+        raise WorkflowError(f"Invalid {role_label}: invalid ARN shape.")
+    if role_name != expected_role_name:
+        raise WorkflowError(f"Invalid {role_label}: invalid ARN shape.")
+
+    account_id = match.group("account")
+    if account_id != expected_account_id:
+        raise WorkflowError(f"Invalid {role_label}: account mismatch.")
+
+    return role_arn
+
+
+def load_paired_role_arns(
+    environ: Mapping[str, str],
+    *,
+    expected_account_id: str,
+) -> tuple[str | None, str | None]:
+    """Load ambient or chained role ARNs with paired-role validation."""
+    state_role_arn = _optional_role_env_value(
+        environ,
+        STATE_ROLE_ENV,
+        role_label="state role",
+    )
+    plan_role_arn = _optional_role_env_value(
+        environ,
+        PLAN_ROLE_ENV,
+        role_label="plan role",
+    )
+
+    if state_role_arn is None and plan_role_arn is None:
+        return None, None
+
+    if state_role_arn is None or plan_role_arn is None:
+        raise WorkflowError("Invalid authorization roles: missing paired role.")
+
+    validated_state = validate_authorization_role_arn(
+        state_role_arn,
+        role_label="state role",
+        expected_role_name=STATE_ROLE_NAME,
+        expected_account_id=expected_account_id,
+    )
+    validated_plan = validate_authorization_role_arn(
+        plan_role_arn,
+        role_label="plan role",
+        expected_role_name=PLAN_ROLE_NAME,
+        expected_account_id=expected_account_id,
+    )
+
+    state_account = IAM_ROLE_ARN_PATTERN.fullmatch(validated_state)
+    plan_account = IAM_ROLE_ARN_PATTERN.fullmatch(validated_plan)
+    if (
+        state_account is None
+        or plan_account is None
+        or state_account.group("account") != plan_account.group("account")
+    ):
+        raise WorkflowError("Invalid authorization roles: account mismatch.")
+
+    return validated_state, validated_plan
+
+
+def env_get_ci(environment: Mapping[str, str], name: str) -> str | None:
+    """Read one environment value with Windows-safe case handling."""
+    for key, value in environment.items():
+        if key.lower() == name.lower():
+            return value
+    return None
+
+
+def env_pop_ci(environment: dict[str, str], name: str) -> str | None:
+    """Remove one environment value with Windows-safe case handling."""
+    matched_keys = [key for key in environment if key.lower() == name.lower()]
+    value: str | None = None
+    for key in matched_keys:
+        value = environment.pop(key)
+    return value
+
+
+def apply_plan_role_tf_var(
+    child_environment: dict[str, str],
+    plan_role_arn: str | None,
+) -> None:
+    """Map the plan role into TF_VAR_* with conflict detection."""
+    existing = env_get_ci(child_environment, PLAN_ROLE_TF_VAR)
+
+    if plan_role_arn is None:
+        if existing is not None and existing != "":
+            raise WorkflowError(
+                "Invalid plan role: ambient mode rejects a pre-existing "
+                f"{PLAN_ROLE_TF_VAR} value."
+            )
+        env_pop_ci(child_environment, PLAN_ROLE_TF_VAR)
+        return
+
+    if existing is not None and existing != plan_role_arn:
+        raise WorkflowError(
+            f"Invalid plan role: conflicting pre-existing {PLAN_ROLE_TF_VAR} value."
+        )
+
+    env_pop_ci(child_environment, PLAN_ROLE_TF_VAR)
+    child_environment[PLAN_ROLE_TF_VAR] = plan_role_arn
+
+
+def write_backend_override(
+    *,
+    path: Path,
+    state_bucket: str,
+    state_role_arn: str | None,
+) -> Path:
+    """Write an ephemeral backend override containing only runtime fields."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    lines = [f'bucket = "{state_bucket}"\n']
+    if state_role_arn is not None:
+        lines.extend(
+            [
+                "assume_role = {\n",
+                f'  role_arn     = "{state_role_arn}"\n',
+                f'  session_name = "{STATE_ROLE_SESSION_NAME}"\n',
+                f'  duration     = "{ROLE_SESSION_DURATION}"\n',
+                "}\n",
+            ]
+        )
+
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    try:
+        file_descriptor = os.open(path, flags, 0o600)
+    except OSError as error:
+        raise WorkflowError(
+            f"Could not create temporary backend override: {path}"
+        ) from error
+
+    try:
+        with os.fdopen(file_descriptor, "w", encoding="utf-8", newline="\n") as handle:
+            handle.writelines(lines)
+    except OSError as error:
+        path.unlink(missing_ok=True)
+        raise WorkflowError(
+            f"Could not write temporary backend override: {path}"
+        ) from error
+
+    return path
+
+
+def remove_backend_override(path: Path) -> None:
+    """Remove one ephemeral backend override and fail if cleanup cannot finish."""
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as error:
+        raise WorkflowError(
+            f"Could not remove temporary backend override: {path}"
+        ) from error
+
+
+def resolve_plan_output_directory(
+    paths: WorkflowPaths,
+    environment: str,
+    output_directory: str | Path | None,
+) -> Path:
+    """Resolve the plan artifact directory, preserving the default when unset."""
+    if output_directory is None:
+        resolved = paths.plan_dir(environment)
+    else:
+        resolved = Path(output_directory).expanduser().resolve()
+        if resolved.exists() and resolved.is_file():
+            raise WorkflowError(
+                "Plan output directory must not point to an existing regular file: "
+                f"{resolved}."
+            )
+
+    try:
+        resolved.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        raise WorkflowError(
+            f"Could not create plan output directory: {resolved}"
+        ) from error
+
+    return resolved
+
+
 def sha256_file(path: Path) -> str:
     """Calculate a file SHA-256 digest."""
     digest = hashlib.sha256()
@@ -546,6 +796,7 @@ def run_terraform(
     data_dir: Path,
     arguments: Sequence[str],
     expected_account_id: str | None = None,
+    plan_role_arn: str | None = None,
     accepted_codes: frozenset[int] = frozenset({0}),
 ) -> int:
     """Run Terraform without shell interpolation."""
@@ -555,9 +806,12 @@ def run_terraform(
     child_environment["TF_IN_AUTOMATION"] = "1"
 
     if expected_account_id is None:
-        child_environment.pop("TF_VAR_expected_aws_account_id", None)
+        env_pop_ci(child_environment, "TF_VAR_expected_aws_account_id")
     else:
+        env_pop_ci(child_environment, "TF_VAR_expected_aws_account_id")
         child_environment["TF_VAR_expected_aws_account_id"] = expected_account_id
+
+    apply_plan_role_tf_var(child_environment, plan_role_arn)
 
     command = [binary, f"-chdir={root}", *arguments]
 
@@ -637,21 +891,36 @@ def initialize_backend(
 
     print_remote_summary(paths=paths, config=config, inputs=inputs)
 
-    run_terraform(
-        binary=binary,
-        root=paths.terraform_root,
-        repository_root=paths.repository_root,
-        data_dir=paths.data_dir(config.environment),
-        expected_account_id=inputs.expected_account_id,
-        arguments=[
-            "init",
-            "-input=false",
-            "-reconfigure",
-            "-lockfile=readonly",
-            f"-backend-config={config.backend_file}",
-            f"-backend-config=bucket={inputs.state_bucket}",
-        ],
+    override_path = (
+        paths.data_dir(config.environment)
+        / "backend-overrides"
+        / BACKEND_OVERRIDE_FILENAME
     )
+    write_backend_override(
+        path=override_path,
+        state_bucket=inputs.state_bucket,
+        state_role_arn=inputs.state_role_arn,
+    )
+
+    try:
+        run_terraform(
+            binary=binary,
+            root=paths.terraform_root,
+            repository_root=paths.repository_root,
+            data_dir=paths.data_dir(config.environment),
+            expected_account_id=inputs.expected_account_id,
+            plan_role_arn=inputs.plan_role_arn,
+            arguments=[
+                "init",
+                "-input=false",
+                "-reconfigure",
+                "-lockfile=readonly",
+                f"-backend-config={config.backend_file}",
+                f"-backend-config={override_path}",
+            ],
+        )
+    finally:
+        remove_backend_override(override_path)
 
 
 def build_manifest(
@@ -746,22 +1015,17 @@ def command_offline_check(
     binary: str,
     paths: WorkflowPaths,
 ) -> None:
-    """Validate both Terraform roots without remote state or AWS access."""
-    roots = (
-        (
-            "application",
-            paths.terraform_root,
-            paths.data_dir("offline"),
-        ),
-        (
-            "bootstrap",
-            paths.bootstrap_root,
-            paths.bootstrap_root / ".terraform-data" / "offline",
-        ),
-    )
+    """Validate committed Terraform roots without remote state or AWS access."""
+    for relative_root in OFFLINE_TERRAFORM_ROOTS:
+        root = paths.repository_root.joinpath(*relative_root.split("/"))
+        data_dir = (
+            paths.terraform_root
+            / ".terraform-data"
+            / "offline-roots"
+            / relative_root.replace("/", "__")
+        )
+        print(f"Running offline Terraform checks for {relative_root}.")
 
-    for label, root, data_dir in roots:
-        print(f"Running {label} Terraform offline checks.")
         for arguments in (
             (
                 "init",
@@ -773,13 +1037,20 @@ def command_offline_check(
             ("validate",),
             ("test",),
         ):
-            run_terraform(
-                binary=binary,
-                root=root,
-                repository_root=paths.repository_root,
-                data_dir=data_dir,
-                arguments=arguments,
-            )
+            phase = arguments[0]
+            try:
+                run_terraform(
+                    binary=binary,
+                    root=root,
+                    repository_root=paths.repository_root,
+                    data_dir=data_dir,
+                    arguments=arguments,
+                )
+            except WorkflowError as error:
+                raise WorkflowError(
+                    f"Offline check failed for root {relative_root} "
+                    f"during {phase}: {error}"
+                ) from error
 
     print("Terraform offline checks completed successfully.")
 
@@ -809,6 +1080,7 @@ def command_plan(
     paths: WorkflowPaths,
     environment: str,
     environ: Mapping[str, str],
+    output_directory: str | Path | None = None,
 ) -> None:
     """Create one environment-bound saved plan."""
     config = EnvironmentConfig.load(paths, environment)
@@ -822,9 +1094,13 @@ def command_plan(
         inputs=inputs,
     )
 
-    paths.plan_dir(environment).mkdir(parents=True, exist_ok=True)
-    plan_file = paths.plan_file(environment)
-    manifest_file = paths.manifest_file(environment)
+    plan_directory = resolve_plan_output_directory(
+        paths,
+        environment,
+        output_directory,
+    )
+    plan_file = plan_directory / PLAN_FILENAME
+    manifest_file = plan_directory / MANIFEST_FILENAME
     plan_file.unlink(missing_ok=True)
     manifest_file.unlink(missing_ok=True)
 
@@ -834,6 +1110,7 @@ def command_plan(
         repository_root=paths.repository_root,
         data_dir=paths.data_dir(environment),
         expected_account_id=inputs.expected_account_id,
+        plan_role_arn=inputs.plan_role_arn,
         accepted_codes=frozenset({0, 2}),
         arguments=[
             "plan",
@@ -848,11 +1125,31 @@ def command_plan(
     if not plan_file.is_file():
         raise WorkflowError(f"Terraform did not create the saved plan: {plan_file}")
 
-    build_manifest(
-        paths=paths,
-        config=config,
-        inputs=inputs,
-        exit_code=exit_code,
+    PlanManifest(
+        environment=config.environment,
+        project_name=config.project_name,
+        aws_region=config.aws_region,
+        state_bucket=inputs.state_bucket,
+        state_key=config.state_key,
+        expected_account_id=inputs.expected_account_id,
+        terraform_data_dir=display_path(
+            paths.data_dir(config.environment),
+            paths.repository_root,
+        ),
+        tfvars_file=display_path(
+            config.tfvars_file,
+            paths.repository_root,
+        ),
+        backend_file=display_path(
+            config.backend_file,
+            paths.repository_root,
+        ),
+        plan_file=display_path(
+            plan_file,
+            paths.repository_root,
+        ),
+        plan_sha256=sha256_file(plan_file),
+        terraform_exit_code=exit_code,
     ).write(manifest_file)
 
     outcome = "no changes" if exit_code == 0 else "proposed changes"
@@ -926,6 +1223,7 @@ def command_apply(
         repository_root=paths.repository_root,
         data_dir=paths.data_dir(environment),
         expected_account_id=inputs.expected_account_id,
+        plan_role_arn=inputs.plan_role_arn,
         arguments=[
             "apply",
             "-input=false",
@@ -964,6 +1262,7 @@ def command_output(
         repository_root=paths.repository_root,
         data_dir=paths.data_dir(environment),
         expected_account_id=inputs.expected_account_id,
+        plan_role_arn=inputs.plan_role_arn,
         arguments=arguments,
     )
 
@@ -980,7 +1279,7 @@ def create_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser(
         "offline-check",
-        help="Validate both Terraform roots without remote state.",
+        help="Validate committed Terraform roots without remote state.",
     )
 
     for name, help_text in (
@@ -995,6 +1294,15 @@ def create_parser() -> argparse.ArgumentParser:
             required=True,
             choices=SUPPORTED_ENVIRONMENTS,
         )
+        if name == "plan":
+            command.add_argument(
+                "--output-directory",
+                default=None,
+                help=(
+                    "Optional directory for plan artifacts. "
+                    "Defaults to artifacts/terraform/<environment>/."
+                ),
+            )
         if name == "output":
             command.add_argument(
                 "--json",
@@ -1048,6 +1356,7 @@ def main(
                 paths=paths,
                 environment=arguments.environment,
                 environ=current_environment,
+                output_directory=arguments.output_directory,
             )
         elif arguments.command == "show-plan":
             command_show_plan(
