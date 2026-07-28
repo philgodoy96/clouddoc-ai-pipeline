@@ -2,12 +2,28 @@
 
 ## Status
 
-- **Decision state:** Approved for implementation
-- **Repository implementation:** Pending
+- **Decision state:** Approved
+- **Repository implementation:** Implemented
 - **AWS activation:** Pending
 - **Live plan verification:** Pending
 - **Environment:** `dev`
 - **Last updated:** 2026-07-28
+
+
+## Implementation Status
+
+The approved architecture is now implemented in repository source through:
+
+- authorization bootstrap in `infra/bootstrap/terraform-authorization/`;
+- application provider and backend role wiring in `infra/terraform/` and `scripts/terraform_workflow.py`;
+- sanitized plan-summary utility in `scripts/summarize_terraform_plan.py`;
+- GitHub OIDC exact two-workflow allowlist source in `infra/bootstrap/github-oidc/`;
+- caller workflow in `.github/workflows/terraform-plan.yml`;
+- reusable workflow in `.github/workflows/reusable-terraform-plan.yml`;
+- offline and static tests covering IAM, workflow, and summary contracts;
+- operations runbook in [Terraform Plan Workflow Runbook](../operations/terraform-plan-workflow.md).
+
+These artifacts are implemented in source only. AWS activation and live operational proof remain pending. See [Terraform Authorization Bootstrap](../../infra/bootstrap/terraform-authorization/README.md) and [ADR-027](../adr/ADR-027-separate-terraform-state-plan-and-apply-authorization.md).
 
 ## Purpose
 
@@ -56,15 +72,16 @@ The design is grounded in the current repository:
 - Backend encryption: S3-managed AES256
 - State bucket input: runtime value in
   `CLOUDDOC_TERRAFORM_STATE_BUCKET`
-- AWS provider role assumption: not yet implemented
-- Backend role assumption: not yet implemented
+- AWS provider role assumption: implemented through `terraform_plan_role_arn`
+- Backend role assumption: implemented through runtime backend role assumption
 - Lambda package build: `make lambda-package`
 - Lambda package verification: `make lambda-package-check`
 - Current OIDC identity role:
   `clouddoc-dev-github-identity`
 - Current identity-role permission policies: none
-- Current trusted reusable workflow:
+- Trusted reusable workflows in source:
   `reusable-aws-identity.yml@refs/heads/main`
+  `reusable-terraform-plan.yml@refs/heads/main`
 
 ## Goals
 

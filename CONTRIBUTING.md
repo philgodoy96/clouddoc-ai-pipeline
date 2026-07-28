@@ -141,15 +141,24 @@ python -m pytest
 
 ## Terraform Workflow
 
-Infrastructure changes must preserve the guarded Terraform workflow documented in [Terraform State and Environment Workflow](docs/architecture/terraform-state-and-environment-workflow.md) and [ADR-025](docs/adr/ADR-025-use-s3-native-locking-and-explicit-environment-state.md).
+Infrastructure changes must preserve the guarded Terraform workflow documented in [Terraform State and Environment Workflow](docs/architecture/terraform-state-and-environment-workflow.md), [Terraform Plan Authorization](docs/architecture/terraform-plan-authorization.md), [Terraform Plan Workflow Runbook](docs/operations/terraform-plan-workflow.md), [ADR-025](docs/adr/ADR-025-use-s3-native-locking-and-explicit-environment-state.md), and [ADR-027](docs/adr/ADR-027-separate-terraform-state-plan-and-apply-authorization.md).
 
-Before opening or updating a pull request that touches Terraform, bootstrap, or `scripts/terraform_workflow.py`, run:
+Architecture review and ADR review must precede changes to Terraform state authorization, Terraform plan authorization, reusable-workflow trust, or future apply authorization.
+
+Before opening or updating a pull request that touches Terraform, bootstrap, workflow contracts, or `scripts/terraform_workflow.py`, run:
 
 ```powershell
+make check
+make lambda-package-check
 python scripts/terraform_workflow.py offline-check
+python -m pytest -q
 ```
 
-For authenticated operations against AWS (when credentials are configured in the future), use the guarded workflow commands rather than direct `terraform init`, `plan`, or `apply` against the application root.
+For authenticated operations against AWS after the reviewed source changes are merged and activated, use the manual Terraform plan workflow documented in [Terraform Plan Workflow Runbook](docs/operations/terraform-plan-workflow.md) rather than direct AWS access from validation workflows. Contributors must not introduce static AWS credentials, direct AWS access from quality workflows, `terraform apply` into plan workflows, or saved-plan artifact upload.
+
+Plan-policy expansion requires one concrete denied read action from provider refresh evidence. Do not shortcut least privilege with AWS-managed broad policies such as `ReadOnlyAccess`, `PowerUserAccess`, or `AdministratorAccess`.
+
+New Terraform roots must join explicit offline validation, and workflow actions must remain pinned to immutable SHAs with same-line release comments. Documentation updates must clearly distinguish source implementation from AWS activation and live operational proof.
 
 Never:
 
@@ -161,6 +170,9 @@ Never:
 * use Terraform workspaces for environment selection
 * migrate state automatically
 * apply configuration directly without the saved-plan contract
+* add static AWS credentials to GitHub configuration
+* run Terraform plan from a pull-request validation workflow
+* upload saved plan artifacts from a plan workflow
 
 ## GitHub OIDC and Identity Trust
 
@@ -218,7 +230,10 @@ The identity workflows are implemented in repository source. They cannot succeed
 Architecture references:
 
 * [GitHub OIDC Trust Bootstrap](docs/architecture/github-oidc-trust-bootstrap.md)
+* [Terraform Plan Authorization](docs/architecture/terraform-plan-authorization.md)
+* [Terraform Plan Workflow Runbook](docs/operations/terraform-plan-workflow.md)
 * [ADR-026: Separate OIDC Authentication from Deployment Authorization](docs/adr/ADR-026-separate-oidc-authentication-from-deployment-authorization.md)
+* [ADR-027: Separate Terraform State, Plan, and Apply Authorization](docs/adr/ADR-027-separate-terraform-state-plan-and-apply-authorization.md)
 
 ## Continuous Integration
 

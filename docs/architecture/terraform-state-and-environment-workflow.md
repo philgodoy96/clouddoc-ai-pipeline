@@ -70,11 +70,11 @@ Operational ordering for foundation work:
 state substrate
 OIDC trust
 identity proof
-future authorization
+separate authorization boundary
 remote plan/apply
 ```
 
-State substrate and OIDC trust are separate bootstrap roots. Identity proof verifies authentication only. Future authorization and remote plan or apply remain intentionally deferred.
+State substrate and OIDC trust are separate bootstrap roots. Identity proof verifies authentication only. The authorization bootstrap now owns the dedicated state and plan roles in source, while AWS activation and live remote-plan proof remain pending.
 
 ## Architecture Overview
 
@@ -368,12 +368,13 @@ The shared root does not commit:
 
 ```text
 bucket
-state key
 backend Region
 credentials
 AWS profile
 role ARN
 ```
+
+The committed backend key remains authoritative. No duplicate GitHub variable exists for the state key, and `CLOUDDOC_DEV_TERRAFORM_STATE_KEY` must not be introduced.
 
 Environment backend files provide:
 
@@ -608,16 +609,18 @@ AWS_SESSION_TOKEN
 
 Authentication remains external.
 
-Future supported mechanisms may include:
+Supported authenticated modes now divide into two execution patterns:
 
 ```text
-AWS IAM Identity Center
-temporary local credentials
-GitHub Actions OIDC with future authorized roles
-assumed deployment roles
+ambient
+    local approved operation with both role ARNs absent
+
+chained
+    backend assumes clouddoc-dev-terraform-state
+    provider assumes clouddoc-dev-terraform-plan
 ```
 
-Repository source already implements a permissionless OIDC identity proof path. That path does not grant state access, remote plan, or apply authorization.
+Repository source already implements the runtime contracts for separate backend and provider role assumption. The permissionless identity role remains authentication only; it does not hold plan or state permissions directly.
 
 The repository does not commit credential values.
 
@@ -760,7 +763,10 @@ Command:
 
 ```powershell
 python scripts/terraform_workflow.py plan --environment dev
+python scripts/terraform_workflow.py plan --environment dev --output-directory <approved-path>
 ```
+
+The optional `--output-directory` flag allows plan output to be redirected outside the repository, including runner-temporary locations for the manual GitHub workflow.
 
 Before planning, the workflow validates:
 
@@ -1579,6 +1585,9 @@ Repository implementation remains distinct from real AWS deployment.
 ## Related Documentation
 
 - [GitHub OIDC Trust Bootstrap](github-oidc-trust-bootstrap.md)
+- [Terraform Plan Authorization](terraform-plan-authorization.md)
+- [Terraform Plan Workflow Runbook](../operations/terraform-plan-workflow.md)
+- [Terraform Authorization Bootstrap](../../infra/bootstrap/terraform-authorization/README.md)
 - [ADR-026: Separate OIDC Authentication from Deployment Authorization](../adr/ADR-026-separate-oidc-authentication-from-deployment-authorization.md)
 - [Infrastructure CI Validation](infrastructure-ci-validation.md)
 - [Terraform Infrastructure](../../infra/terraform/README.md)

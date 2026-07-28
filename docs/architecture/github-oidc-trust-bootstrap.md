@@ -4,12 +4,12 @@
 
 ```text
 Initial OIDC bootstrap was provisioned.
-Initial identity verification reached AWS but was denied.
-CloudTrail identified the ID-qualified subject.
-The exact subject correction is implemented in source.
-The permanent OIDC claim preflight is implemented in the reusable workflow.
-The corrective role update is not yet applied.
-End-to-end federation has not yet been re-verified.
+The original AWS identity proof completed successfully.
+The repository now extends the source trust contract to a second exact reusable workflow.
+The permanent OIDC claim preflight is implemented in the reusable workflows.
+Applying that trust extension in AWS remains pending until post-merge activation.
+Terraform plan authorization is a separate boundary documented by ADR-027.
+Terraform plan federation has not yet been verified.
 ```
 
 Preserve the distinction between:
@@ -31,14 +31,14 @@ mocked Terraform trust tests
 static bootstrap security tests
 manual AWS identity-check caller workflow
 reusable AWS identity workflow
-static GitHub Actions identity contracts
+static GitHub Actions identity and Terraform-plan workflow contracts
 ```
 
 The following remain intentionally pending:
 
 ```text
-corrective AWS role trust apply
-AWS Identity Check re-verification
+Terraform plan reusable-workflow trust apply
+Terraform plan federation verification
 deployment authorization
 ```
 
@@ -48,7 +48,7 @@ CloudDoc needs a production-minded mechanism for GitHub Actions to authenticate 
 
 This architecture establishes the identity trust boundary first.
 
-It does not grant deployment authorization.
+It does not grant Terraform plan authorization, Terraform apply authorization, or deployment authorization.
 
 The central engineering decision is:
 
@@ -501,8 +501,11 @@ The reusable identity job must run through the `dev` GitHub Environment.
 
 ```text
 token.actions.githubusercontent.com:job_workflow_ref
-    = philgodoy96/clouddoc-ai-pipeline/.github/workflows/
+    = one of two exact values:
+      philgodoy96/clouddoc-ai-pipeline/.github/workflows/
       reusable-aws-identity.yml@refs/heads/main
+      philgodoy96/clouddoc-ai-pipeline/.github/workflows/
+      reusable-terraform-plan.yml@refs/heads/main
 ```
 
 `job_workflow_ref` remains:
@@ -514,7 +517,7 @@ token.actions.githubusercontent.com:job_workflow_ref
 `job_workflow_sha` is a separate claim and is intentionally not part of this
 hotfix.
 
-This restricts role assumption to the reviewed reusable identity workflow on `main`.
+This restricts role assumption to exactly two reviewed reusable workflows on `main`: the identity proof workflow and the Terraform plan workflow.
 
 A different workflow file cannot assume the role merely because it belongs to the same repository.
 
@@ -1611,7 +1614,7 @@ The trust requires main.
 
 The trust requires the dev environment.
 
-The trust requires one reusable workflow on main.
+The trust requires exactly two reusable workflows on main.
 
 All trust claim values are exact.
 
@@ -1677,7 +1680,7 @@ GitHub workflow run
 AWS STS assumed-role session
 ```
 
-Future CloudTrail review can use this session name when deployment authorization is introduced.
+Future CloudTrail review can use this session name when Terraform plan authorization and deployment authorization is introduced.
 
 CloudTrail alerting and formal audit dashboards remain deferred.
 
@@ -1713,26 +1716,27 @@ workflow contract tests
 documentation
 ```
 
-### Provisioned previously
+### Operationally verified already
 
 ```text
 AWS IAM OIDC provider
 AWS IAM identity role
 GitHub dev Environment
 GitHub repository variables
+original AWS identity proof
 ```
 
-### Not yet applied
+### Implemented in source, AWS apply pending
 
 ```text
-corrective AWS role trust update with exact sub
+second exact reusable workflow trust entry for reusable-terraform-plan.yml
 ```
 
 ### Not yet re-verified against AWS
 
 ```text
-successful AssumeRoleWithWebIdentity
-successful GetCallerIdentity federation evidence
+successful AssumeRoleWithWebIdentity for the Terraform plan reusable workflow
+successful GetCallerIdentity evidence for the Terraform plan reusable workflow
 ```
 
 ### Not yet authorized
@@ -1780,7 +1784,10 @@ These capabilities require distinct authorization, review, and operational contr
 - [GitHub OIDC Bootstrap Root](../../infra/bootstrap/github-oidc/README.md)
 - [Terraform State Bootstrap](../../infra/bootstrap/terraform-state/README.md)
 - [Contributing](../../CONTRIBUTING.md)
+- [Terraform Plan Authorization](terraform-plan-authorization.md)
+- [Terraform Plan Workflow Runbook](../operations/terraform-plan-workflow.md)
 - [ADR-026: Separate OIDC Authentication from Deployment Authorization](../adr/ADR-026-separate-oidc-authentication-from-deployment-authorization.md)
+- [ADR-027: Separate Terraform State, Plan, and Apply Authorization](../adr/ADR-027-separate-terraform-state-plan-and-apply-authorization.md)
 
 ## References
 

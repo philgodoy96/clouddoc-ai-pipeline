@@ -58,6 +58,8 @@ Terraform infrastructure state is operational metadata for this root. It is dist
 | Lockfiles | S3-native lock objects alongside state (`use_lockfile = true`; no DynamoDB table) |
 | Committed environment inputs | `infra/terraform/environments/*.tfvars` and `*.s3.tfbackend` |
 | Runtime bucket and account inputs | `CLOUDDOC_TERRAFORM_STATE_BUCKET`, `CLOUDDOC_EXPECTED_AWS_ACCOUNT_ID` |
+| Optional chained-role inputs | `CLOUDDOC_DEV_TERRAFORM_STATE_ROLE_ARN`, `CLOUDDOC_DEV_TERRAFORM_PLAN_ROLE_ARN` |
+| Optional provider variable | `terraform_plan_role_arn` |
 | Provider wrong-account guard | optional `expected_aws_account_id` → `allowed_account_ids` |
 | Isolated Terraform metadata | `infra/terraform/.terraform-data/<environment>/` via `TF_DATA_DIR` |
 | Saved plans and manifests | `artifacts/terraform/<environment>/` (strict JSON manifest, plan SHA-256 binding) |
@@ -80,7 +82,7 @@ Six committed files define explicit non-secret environment identity (no Terrafor
 | `environments/staging.s3.tfbackend` | environment-specific `key` under `clouddoc/staging/...` |
 | `environments/prod.s3.tfbackend` | environment-specific `key` under `clouddoc/prod/...` |
 
-The bucket name is supplied at runtime through `CLOUDDOC_TERRAFORM_STATE_BUCKET`, not committed in backend files. Do not add `profile`, `dynamodb_table`, or static credentials to committed files.
+The bucket name is supplied at runtime through `CLOUDDOC_TERRAFORM_STATE_BUCKET`, not committed in backend files. The committed backend key remains authoritative, and there is no GitHub variable for the state key. Do not add `profile`, `dynamodb_table`, or static credentials to committed files.
 
 Local `terraform.tfvars`, state, plans, manifests, and credentials remain outside Git.
 
@@ -92,6 +94,7 @@ Use the guarded workflow script from the repository root:
 python scripts/terraform_workflow.py offline-check
 python scripts/terraform_workflow.py init --environment dev
 python scripts/terraform_workflow.py plan --environment dev
+python scripts/terraform_workflow.py plan --environment dev --output-directory <approved-path>
 python scripts/terraform_workflow.py show-plan --environment dev
 python scripts/terraform_workflow.py apply --environment dev --confirm-environment dev
 python scripts/terraform_workflow.py output --environment dev
@@ -101,7 +104,7 @@ python scripts/terraform_workflow.py output --environment dev
 * `init`, `plan`, `apply`, and `output` require future AWS authentication and the runtime bucket/account variables.
 * `show-plan` validates a local saved plan and manifest without calling AWS.
 
-The script verifies `artifacts/lambda/clouddoc-app.zip` and its SHA-256 checksum before `plan` and `apply`. It does not expose `destroy`, `force-unlock`, `-lock=false`, or `-auto-approve`.
+The script verifies `artifacts/lambda/clouddoc-app.zip` and its SHA-256 checksum before `plan` and `apply`. It does not expose `destroy`, `force-unlock`, `-lock=false`, or `-auto-approve`. It supports two runtime modes: ambient when both authorization role ARNs are absent, and chained when both `CLOUDDOC_DEV_TERRAFORM_STATE_ROLE_ARN` and `CLOUDDOC_DEV_TERRAFORM_PLAN_ROLE_ARN` are present. Partial role configuration fails before Terraform execution.
 
 ## Continuous Integration
 
@@ -113,7 +116,7 @@ python scripts/terraform_workflow.py offline-check
 
 CI pins Terraform to `1.15.8` with `terraform_wrapper: false`.
 
-Both roots are validated with `backend=false`:
+Both roots are validated with `backend=false`, while authenticated Terraform plan remains a separate manual operational workflow:
 
 ```text
 application Terraform root → 29 passing runs
@@ -1221,6 +1224,12 @@ Run bootstrap and workflow tests:
 ```powershell
 python -m pytest tests/unit/infrastructure/test_terraform_state_bootstrap.py tests/unit/scripts/test_terraform_workflow.py
 ```
+
+## Authenticated role contract
+
+When chained mode is used, the S3 backend assumes the state role and the AWS provider assumes the plan role. Both sessions use 15-minute durations. The role ARNs are identifiers, not credentials, and a caller-selected `--output-directory` can place saved plan artifacts outside the repository for approved runner-temporary workflows. The summary utility remains separate from plan generation and does not replace Terraform planning itself.
+
+See [Terraform Plan Authorization](../../docs/architecture/terraform-plan-authorization.md), [Terraform Plan Workflow Runbook](../../docs/operations/terraform-plan-workflow.md), and [Terraform Authorization Bootstrap](../bootstrap/terraform-authorization/README.md).
 
 ## State access boundary (future IAM)
 
