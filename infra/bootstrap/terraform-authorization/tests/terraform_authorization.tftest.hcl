@@ -525,6 +525,7 @@ run "apply_boundary_contract" {
         "ManageCloudWatchDashboard",
         "DescribeCloudWatchLogGroups",
         "ManageCloudWatchLogGroups",
+        "ManageCloudWatchLogGroupTags",
         "ManageDynamoDBTableControlPlane",
         "ManageLambdaExecutionRoles",
         "ManageLambdaExecutionRoleInlinePolicies",
@@ -733,6 +734,18 @@ run "apply_boundary_contract" {
           for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
           statement
           if statement.sid == "ManageCloudWatchLogGroups"
+        ]).actions
+        ) == toset([
+          "logs:CreateLogGroup",
+          "logs:DeleteLogGroup",
+          "logs:DeleteRetentionPolicy",
+          "logs:PutRetentionPolicy",
+      ]) &&
+      toset(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageCloudWatchLogGroups"
         ]).resources
       ) == toset(local.application_log_group_management_arns) &&
       length(
@@ -757,9 +770,70 @@ run "apply_boundary_contract" {
           if statement.sid == "ManageCloudWatchLogGroups"
         ]).resources,
         "*",
+      ) &&
+      length(setintersection(
+        toset(
+          one([
+            for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+            statement
+            if statement.sid == "ManageCloudWatchLogGroups"
+          ]).actions
+        ),
+        toset([
+          "logs:ListTagsForResource",
+          "logs:TagResource",
+          "logs:UntagResource",
+        ])
+      )) == 0
+    )
+    error_message = "ManageCloudWatchLogGroups must use exactly the four management actions on the five :* ARNs, without tagging actions or unrestricted *."
+  }
+
+  assert {
+    condition = (
+      toset(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageCloudWatchLogGroupTags"
+        ]).actions
+        ) == toset([
+          "logs:ListTagsForResource",
+          "logs:TagResource",
+          "logs:UntagResource",
+      ]) &&
+      toset(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageCloudWatchLogGroupTags"
+        ]).resources
+      ) == toset(local.application_log_group_arns) &&
+      length(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageCloudWatchLogGroupTags"
+        ]).resources
+      ) == 5 &&
+      alltrue([
+        for resource in one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageCloudWatchLogGroupTags"
+        ]).resources :
+        !endswith(resource, ":*") && resource != "*"
+      ]) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageCloudWatchLogGroupTags"
+        ]).resources,
+        "*",
       )
     )
-    error_message = "ManageCloudWatchLogGroups must use the five management ARNs ending with :*, without unrestricted *."
+    error_message = "ManageCloudWatchLogGroupTags must use exactly the three tagging actions on the five bare ARNs, without management :* ARNs or unrestricted *."
   }
 
   assert {
@@ -804,6 +878,14 @@ run "cloudwatch_log_group_arn_contract" {
         for resource in local.application_log_group_arns :
         !endswith(resource, ":*") && resource != "*"
       ]) &&
+      length([
+        for resource in local.application_log_group_arns :
+        resource if strcontains(resource, ":log-group:/aws/lambda/")
+      ]) == 4 &&
+      length([
+        for resource in local.application_log_group_arns :
+        resource if strcontains(resource, ":log-group:/aws/apigateway/")
+      ]) == 1 &&
       length(local.application_log_group_management_arns) == 5 &&
       alltrue([
         for resource in local.application_log_group_management_arns :
@@ -815,7 +897,7 @@ run "cloudwatch_log_group_arn_contract" {
       ]) == toset(local.application_log_group_arns) &&
       toset(local.application_log_group_arns) != toset(local.application_log_group_management_arns)
     )
-    error_message = "Tagging and management log-group ARN locals must be distinct five-entry sets linked by a trailing :*."
+    error_message = "Tagging and management log-group ARN locals must be distinct five-entry sets (4 Lambda + 1 API Gateway) linked by a trailing :*."
   }
 
   assert {
@@ -868,6 +950,93 @@ run "cloudwatch_log_group_arn_contract" {
           for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
           statement
           if statement.sid == "ManageCloudWatchLogGroups"
+        ]).actions
+        ) == toset([
+          "logs:CreateLogGroup",
+          "logs:DeleteLogGroup",
+          "logs:DeleteRetentionPolicy",
+          "logs:PutRetentionPolicy",
+      ]) &&
+      toset(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageCloudWatchLogGroups"
+        ]).resources
+      ) == toset(local.application_log_group_management_arns) &&
+      length(setintersection(
+        toset(
+          one([
+            for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+            statement
+            if statement.sid == "ManageCloudWatchLogGroups"
+          ]).actions
+        ),
+        toset([
+          "logs:ListTagsForResource",
+          "logs:TagResource",
+          "logs:UntagResource",
+        ])
+      )) == 0 &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageCloudWatchLogGroups"
+        ]).resources,
+        "*",
+      )
+    )
+    error_message = "ManageCloudWatchLogGroups must keep exactly the four management actions on management ARNs, without tagging actions."
+  }
+
+  assert {
+    condition = (
+      toset(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageCloudWatchLogGroupTags"
+        ]).actions
+        ) == toset([
+          "logs:ListTagsForResource",
+          "logs:TagResource",
+          "logs:UntagResource",
+      ]) &&
+      toset(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageCloudWatchLogGroupTags"
+        ]).resources
+      ) == toset(local.application_log_group_arns) &&
+      alltrue([
+        for resource in one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageCloudWatchLogGroupTags"
+        ]).resources :
+        !endswith(resource, ":*") && resource != "*"
+      ]) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageCloudWatchLogGroupTags"
+        ]).resources,
+        "*",
+      )
+    )
+    error_message = "ManageCloudWatchLogGroupTags must use exactly the three tagging actions on bare ARNs only."
+  }
+
+  assert {
+    condition = (
+      toset(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageCloudWatchLogGroups"
         ]).resources
       ) == toset(local.application_log_group_management_arns) &&
       toset(
@@ -881,6 +1050,26 @@ run "cloudwatch_log_group_arn_contract" {
           for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
           statement
           if statement.sid == "ManageCloudWatchLogGroups"
+        ]).resources
+      ) &&
+      toset(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageCloudWatchLogGroupTags"
+        ]).resources
+      ) == toset(local.application_log_group_arns) &&
+      toset(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageCloudWatchLogGroupTags"
+        ]).resources
+        ) == toset(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_plan_access.statement :
+          statement
+          if statement.sid == "ReadCloudWatchLogGroupTags"
         ]).resources
       ) &&
       toset([
@@ -898,7 +1087,7 @@ run "cloudwatch_log_group_arn_contract" {
         ]).resources
       )
     )
-    error_message = "Plan tagging and Apply management log-group resource sets must remain distinct and :*-linked."
+    error_message = "Plan/Apply tagging must share bare ARNs; Apply management must remain the distinct :*-linked set."
   }
 }
 
