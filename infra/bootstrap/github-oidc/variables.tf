@@ -92,6 +92,18 @@ variable "github_environment" {
   }
 }
 
+variable "github_deploy_environment" {
+  description = "GitHub Environment required by the Terraform deployment workflow."
+  type        = string
+  default     = "dev-deploy"
+  nullable    = false
+
+  validation {
+    condition     = var.github_deploy_environment == "dev-deploy"
+    error_message = "github_deploy_environment must remain dev-deploy for the deployment identity."
+  }
+}
+
 variable "github_ref" {
   description = "Exact Git ref allowed to assume the identity verification role."
   type        = string
@@ -134,6 +146,20 @@ variable "github_terraform_plan_workflow_ref" {
   validation {
     condition     = var.github_terraform_plan_workflow_ref != var.github_identity_workflow_ref
     error_message = "github_terraform_plan_workflow_ref must be distinct from github_identity_workflow_ref."
+  }
+}
+
+variable "github_terraform_deploy_workflow_ref" {
+  description = "Exact reusable workflow ref that identifies the only Terraform deployment reusable workflow allowed by the deployment trust boundary."
+  type        = string
+  default     = "philgodoy96/clouddoc-ai-pipeline/.github/workflows/reusable-terraform-deploy.yml@refs/heads/main"
+  nullable    = false
+
+  validation {
+    condition = var.github_terraform_deploy_workflow_ref == (
+      "${var.github_repository_owner}/${var.github_repository_name}/.github/workflows/reusable-terraform-deploy.yml@refs/heads/main"
+    )
+    error_message = "github_terraform_deploy_workflow_ref must identify reusable-terraform-deploy.yml from the approved repository main branch."
   }
 }
 

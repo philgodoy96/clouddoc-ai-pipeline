@@ -1,10 +1,12 @@
 locals {
-  github_oidc_url      = "https://token.actions.githubusercontent.com"
-  github_oidc_host     = "token.actions.githubusercontent.com"
-  github_oidc_audience = "sts.amazonaws.com"
-  github_repository    = "${var.github_repository_owner}/${var.github_repository_name}"
-  github_oidc_subject  = "repo:${var.github_repository_owner}@${var.github_repository_owner_id}/${var.github_repository_name}@${var.github_repository_id}:environment:${var.github_environment}"
-  github_identity_role = "${var.project_name}-${var.github_environment}-github-identity"
+  github_oidc_url                  = "https://token.actions.githubusercontent.com"
+  github_oidc_host                 = "token.actions.githubusercontent.com"
+  github_oidc_audience             = "sts.amazonaws.com"
+  github_repository                = "${var.github_repository_owner}/${var.github_repository_name}"
+  github_oidc_subject              = "repo:${var.github_repository_owner}@${var.github_repository_owner_id}/${var.github_repository_name}@${var.github_repository_id}:environment:${var.github_environment}"
+  github_deploy_subject            = "repo:${var.github_repository_owner}@${var.github_repository_owner_id}/${var.github_repository_name}@${var.github_repository_id}:environment:${var.github_deploy_environment}"
+  github_identity_role             = "${var.project_name}-${var.github_environment}-github-identity"
+  github_deploy_identity_role_name = "${var.project_name}-${var.github_environment}-github-deploy-identity"
   github_trusted_workflow_refs = sort([
     var.github_identity_workflow_ref,
     var.github_terraform_plan_workflow_ref,
