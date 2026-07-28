@@ -29,6 +29,7 @@ EXPECTED_TERRAFORM_TEST_FILES = {
 EXPECTED_RESOURCES = {
     ("aws_iam_openid_connect_provider", "github_actions"),
     ("aws_iam_role", "github_dev_identity"),
+    ("aws_iam_role", "github_dev_deploy_identity"),
 }
 EXPECTED_TRUST_CLAIMS = {
     "aud",
@@ -47,6 +48,10 @@ IDENTITY_WORKFLOW_REF = (
 TERRAFORM_PLAN_WORKFLOW_REF = (
     "philgodoy96/clouddoc-ai-pipeline/.github/workflows/"
     "reusable-terraform-plan.yml@refs/heads/main"
+)
+TERRAFORM_DEPLOY_WORKFLOW_REF = (
+    "philgodoy96/clouddoc-ai-pipeline/.github/workflows/"
+    "reusable-terraform-deploy.yml@refs/heads/main"
 )
 
 
@@ -119,7 +124,7 @@ def test_bootstrap_preserves_the_project_terraform_version_contract() -> None:
 
 
 def test_bootstrap_owns_only_the_oidc_provider_and_identity_role() -> None:
-    """Authentication bootstrap must not grow application resources."""
+    """Authentication bootstrap must own only the reviewed identity resources."""
     source = terraform_source()
     actual_resources = set(
         re.findall(
@@ -142,7 +147,7 @@ def test_bootstrap_state_remains_local_and_independent() -> None:
 
 
 def test_trust_policy_uses_only_exact_approved_claims() -> None:
-    """The GitHub trust policy must be explicit and wildcard-free."""
+    """Both GitHub trust policies must be explicit and wildcard-free."""
     source = read_bootstrap_file("data.tf")
 
     actual_claims = set(
@@ -154,12 +159,13 @@ def test_trust_policy_uses_only_exact_approved_claims() -> None:
 
     assert actual_claims == EXPECTED_TRUST_CLAIMS
     assert len(actual_claims) == 8
-    assert source.count('test     = "StringEquals"') == 8
-    assert source.count('"sts:AssumeRoleWithWebIdentity"') == 1
-    assert source.count("${local.github_oidc_host}:job_workflow_ref") == 1
+    assert source.count('test     = "StringEquals"') == 16
+    assert source.count('"sts:AssumeRoleWithWebIdentity"') == 2
+    assert source.count("${local.github_oidc_host}:job_workflow_ref") == 2
     assert "values = local.github_trusted_workflow_refs" in source
     assert "${local.github_oidc_host}:sub" in source
     assert "local.github_oidc_subject" in source
+    assert "local.github_deploy_subject" in source
     assert "StringLike" not in source
     assert '"*"' not in source
     assert '"?"' not in source
@@ -170,15 +176,21 @@ def test_trust_policy_uses_only_exact_approved_claims() -> None:
 
 
 def test_oidc_subject_is_built_from_reviewed_identity_variables() -> None:
-    """The exact ID-qualified subject must come from Terraform variables."""
+    """Both exact ID-qualified subjects must come from Terraform variables."""
     locals_source = re.sub(r"\s+", "", read_bootstrap_file("locals.tf"))
     expected_subject = (
         'github_oidc_subject="repo:${var.github_repository_owner}'
         "@${var.github_repository_owner_id}/${var.github_repository_name}"
         '@${var.github_repository_id}:environment:${var.github_environment}"'
     )
+    expected_deploy_subject = (
+        'github_deploy_subject="repo:${var.github_repository_owner}'
+        "@${var.github_repository_owner_id}/${var.github_repository_name}"
+        '@${var.github_repository_id}:environment:${var.github_deploy_environment}"'
+    )
 
     assert expected_subject in locals_source
+    assert expected_deploy_subject in locals_source
     assert "job_workflow_sha" not in locals_source
 
 
@@ -191,10 +203,11 @@ def test_trusted_workflow_refs_local_contains_exactly_both_variables() -> None:
     assert "var.github_terraform_plan_workflow_ref" in locals_source
     assert locals_source.count("var.github_identity_workflow_ref") == 1
     assert locals_source.count("var.github_terraform_plan_workflow_ref") == 1
+    assert "var.github_terraform_deploy_workflow_ref" not in locals_source
 
 
 def test_identity_role_has_no_authorization_policy() -> None:
-    """The verification role must remain authentication-only."""
+    """Both identity roles must remain authentication-only."""
     source = terraform_source().lower()
 
     forbidden = (
@@ -243,10 +256,14 @@ def test_example_variables_keep_identifiers_as_placeholders() -> None:
         'github_repository_owner_id = "REPLACE_WITH_GITHUB_REPOSITORY_OWNER_ID"'
     ) in source
     assert 'github_environment           = "dev"' in source
+    assert 'github_deploy_environment    = "dev-deploy"' in source
     assert 'github_ref                   = "refs/heads/main"' in source
     assert f'github_identity_workflow_ref = "{IDENTITY_WORKFLOW_REF}"' in source
     assert (
         f'github_terraform_plan_workflow_ref = "{TERRAFORM_PLAN_WORKFLOW_REF}"'
+    ) in source
+    assert (
+        f'github_terraform_deploy_workflow_ref = "{TERRAFORM_DEPLOY_WORKFLOW_REF}"'
     ) in source
     assert re.search(r'=\s*"[0-9]{5,}"', source) is None
     assert "arn:aws:iam::" not in source
@@ -258,23 +275,30 @@ def test_example_variables_keep_identifiers_as_placeholders() -> None:
 
 
 def test_role_and_workflow_defaults_remain_narrow() -> None:
-    """Defaults should target one role, branch, environment, and two workflows."""
+    """Defaults should stay pinned to the reviewed roles and workflows."""
     variables = read_bootstrap_file("variables.tf")
     locals_source = read_bootstrap_file("locals.tf")
     outputs = read_bootstrap_file("outputs.tf")
 
+    assert 'variable "github_deploy_environment"' in variables
     assert 'variable "github_identity_workflow_ref"' in variables
     assert 'variable "github_terraform_plan_workflow_ref"' in variables
+    assert 'variable "github_terraform_deploy_workflow_ref"' in variables
     assert 'default     = "dev"' in variables
+    assert 'default     = "dev-deploy"' in variables
     assert 'default     = "refs/heads/main"' in variables
     assert f'default     = "{IDENTITY_WORKFLOW_REF}"' in variables
     assert f'default     = "{TERRAFORM_PLAN_WORKFLOW_REF}"' in variables
+    assert f'default     = "{TERRAFORM_DEPLOY_WORKFLOW_REF}"' in variables
     assert "reusable-aws-identity.yml@refs/heads/main" in variables
     assert "reusable-terraform-plan.yml@refs/heads/main" in variables
+    assert "reusable-terraform-deploy.yml@refs/heads/main" in variables
     assert "*" not in IDENTITY_WORKFLOW_REF
     assert "*" not in TERRAFORM_PLAN_WORKFLOW_REF
+    assert "*" not in TERRAFORM_DEPLOY_WORKFLOW_REF
     assert "?" not in IDENTITY_WORKFLOW_REF
     assert "?" not in TERRAFORM_PLAN_WORKFLOW_REF
+    assert "?" not in TERRAFORM_DEPLOY_WORKFLOW_REF
     assert "refs/pull/" not in variables
     assert "refs/tags/" not in variables
     assert "var.role_max_session_duration == 3600" in variables
@@ -282,7 +306,60 @@ def test_role_and_workflow_defaults_remain_narrow() -> None:
         '"${var.project_name}-${var.github_environment}-github-identity"'
         in locals_source
     )
+    assert (
+        '"${var.project_name}-${var.github_environment}-github-deploy-identity"'
+        in locals_source
+    )
     assert 'output "github_identity_workflow_ref"' in outputs
+    assert 'output "github_deploy_environment"' in outputs
+    assert 'output "github_terraform_deploy_workflow_ref"' in outputs
+    assert 'output "github_deploy_identity_role_name"' in outputs
+    assert 'output "github_deploy_identity_role_arn"' in outputs
+    assert 'output "github_deploy_identity_role_max_session_duration"' in outputs
+    assert 'output "github_deploy_trusted_repository_identity"' in outputs
     assert 'output "github_trusted_workflow_refs"' in outputs
     assert "value       = local.github_trusted_workflow_refs" in outputs
     assert "value       = var.github_identity_workflow_ref" in outputs
+
+
+def test_existing_identity_trust_remains_unchanged_and_deploy_trust_is_separate() -> (
+    None
+):
+    """Existing trust stays intact while deployment trust stays isolated."""
+    source = read_bootstrap_file("data.tf")
+
+    assert 'data "aws_iam_policy_document" "github_identity_assume_role"' in source
+    assert (
+        'data "aws_iam_policy_document" "github_deploy_identity_assume_role"' in source
+    )
+    assert "values = local.github_trusted_workflow_refs" in source
+    assert (
+        "values = [\n        var.github_terraform_deploy_workflow_ref,\n      ]"
+        in source
+    )
+    assert source.count('variable = "${local.github_oidc_host}:job_workflow_ref"') == 2
+    assert source.count(IDENTITY_WORKFLOW_REF) == 0
+    assert source.count(TERRAFORM_PLAN_WORKFLOW_REF) == 0
+
+
+def test_deploy_role_and_outputs_expose_only_the_reviewed_contract() -> None:
+    """Deployment role and outputs should expose only the reviewed public contract."""
+    roles = read_bootstrap_file("roles.tf")
+    outputs = read_bootstrap_file("outputs.tf")
+
+    assert 'resource "aws_iam_role" "github_dev_deploy_identity"' in roles
+    assert "name = local.github_deploy_identity_role_name" in roles
+    assert (
+        "data.aws_iam_policy_document.github_deploy_identity_assume_role.json" in roles
+    )
+    assert "max_session_duration = var.role_max_session_duration" in roles
+    assert "managed_policy_arns" not in roles
+    assert "inline_policy" not in roles
+
+    assert 'output "github_deploy_identity_role_name"' in outputs
+    assert 'output "github_deploy_identity_role_arn"' in outputs
+    assert 'output "github_deploy_identity_role_max_session_duration"' in outputs
+    assert 'output "github_deploy_environment"' in outputs
+    assert 'output "github_terraform_deploy_workflow_ref"' in outputs
+    assert 'output "github_deploy_trusted_repository_identity"' in outputs
+    assert "environment         = var.github_deploy_environment" in outputs

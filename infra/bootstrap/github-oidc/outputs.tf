@@ -18,6 +18,21 @@ output "github_dev_identity_role_max_session_duration" {
   value       = aws_iam_role.github_dev_identity.max_session_duration
 }
 
+output "github_deploy_identity_role_name" {
+  description = "Name of the permissionless GitHub Terraform deployment identity role."
+  value       = aws_iam_role.github_dev_deploy_identity.name
+}
+
+output "github_deploy_identity_role_arn" {
+  description = "ARN of the permissionless GitHub Terraform deployment identity role."
+  value       = aws_iam_role.github_dev_deploy_identity.arn
+}
+
+output "github_deploy_identity_role_max_session_duration" {
+  description = "Maximum session duration configured for the GitHub Terraform deployment identity role."
+  value       = aws_iam_role.github_dev_deploy_identity.max_session_duration
+}
+
 output "github_repository_identity" {
   description = "GitHub repository owner, name, repository ID, and owner ID trusted by the role."
   value = {
@@ -30,6 +45,26 @@ output "github_repository_identity" {
 output "github_identity_workflow_ref" {
   description = "Exact reusable workflow reference trusted by the role."
   value       = var.github_identity_workflow_ref
+}
+
+output "github_deploy_environment" {
+  description = "Exact GitHub Environment trusted by the Terraform deployment identity role."
+  value       = var.github_deploy_environment
+}
+
+output "github_terraform_deploy_workflow_ref" {
+  description = "Exact reusable Terraform deployment workflow reference trusted by the deployment identity role."
+  value       = var.github_terraform_deploy_workflow_ref
+}
+
+output "github_deploy_trusted_repository_identity" {
+  description = "GitHub repository identity and deploy environment trusted by the Terraform deployment role."
+  value = {
+    repository          = local.github_repository
+    repository_id       = var.github_repository_id
+    repository_owner_id = var.github_repository_owner_id
+    environment         = var.github_deploy_environment
+  }
 }
 
 output "github_trusted_workflow_refs" {
