@@ -549,6 +549,47 @@ def test_apply_policy_uses_valid_s3_lifecycle_and_put_control_plane_actions() ->
     }.issubset(actions)
 
 
+def test_plan_policy_uses_valid_s3_lifecycle_configuration_action() -> None:
+    """Plan S3 auth must use GetLifecycleConfiguration on the documents bucket only."""
+    plan_block = extract_policy_document_block("terraform_plan_access")
+    apply_block = extract_policy_document_block("terraform_apply_access")
+    actions = quoted_actions(plan_block)
+    statement = re.search(
+        r'sid\s*=\s*"ReadDocumentsBucketConfiguration".*?(?=sid\s*=|\Z)',
+        plan_block,
+        flags=re.DOTALL,
+    )
+    assert statement is not None
+    statement_body = statement.group(0)
+    statement_actions = quoted_actions(statement_body)
+
+    assert "s3:GetLifecycleConfiguration" in actions
+    assert "s3:GetBucketLifecycleConfiguration" not in actions
+    assert "s3:GetLifecycleConfiguration" in statement_actions
+    assert "s3:GetBucketLifecycleConfiguration" not in statement_actions
+    assert "local.documents_bucket_arn" in statement_body
+    assert '"*"' not in re.search(
+        r"resources\s*=\s*\[.*?\]",
+        statement_body,
+        flags=re.DOTALL,
+    ).group(0)
+    assert FORBIDDEN_PLAN_ACTION_PATTERN.search(plan_block) is None
+    assert "iam:PassRole" not in plan_block
+    for forbidden in (
+        "terraform_state_object_arn",
+        "terraform_lock_object_arn",
+        "terraform_state_key",
+        "terraform_lock_key",
+        "terraform_state_bucket",
+        "tfstate",
+        ".tflock",
+    ):
+        assert forbidden not in plan_block
+    assert "s3:GetLifecycleConfiguration" in quoted_actions(apply_block)
+    assert "s3:GetBucketLifecycleConfiguration" not in quoted_actions(apply_block)
+    assert "s3:PutLifecycleConfiguration" in quoted_actions(apply_block)
+
+
 def test_application_log_group_arns_remain_bare_tagging_form() -> None:
     """Tagging ARNs must be bare log-group names without a trailing :*."""
     locals_source = read_bootstrap_file("locals.tf")

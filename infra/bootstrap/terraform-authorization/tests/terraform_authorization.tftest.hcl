@@ -441,6 +441,71 @@ run "plan_read_only_boundary_contract" {
     ])
     error_message = "Every plan-access statement must contain only explicit service:Action names and resources."
   }
+
+  assert {
+    condition = (
+      contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_plan_access.statement :
+          statement
+          if statement.sid == "ReadDocumentsBucketConfiguration"
+        ]).actions,
+        "s3:GetLifecycleConfiguration",
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_plan_access.statement :
+          statement
+          if statement.sid == "ReadDocumentsBucketConfiguration"
+        ]).actions,
+        "s3:GetBucketLifecycleConfiguration",
+      ) &&
+      !contains(
+        flatten([
+          for statement in data.aws_iam_policy_document.terraform_plan_access.statement :
+          statement.actions
+        ]),
+        "s3:GetBucketLifecycleConfiguration",
+      ) &&
+      toset(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_plan_access.statement :
+          statement
+          if statement.sid == "ReadDocumentsBucketConfiguration"
+        ]).resources
+      ) == toset([local.documents_bucket_arn]) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_plan_access.statement :
+          statement
+          if statement.sid == "ReadDocumentsBucketConfiguration"
+        ]).resources,
+        "*",
+      ) &&
+      length([
+        for action in flatten([
+          for statement in data.aws_iam_policy_document.terraform_plan_access.statement :
+          statement.actions
+        ]) : action
+        if can(regex(
+          ":(Create|Update|Delete|Put|Set|Tag|Untag|Invoke|Send|Start|Stop|PassRole|Attach|Detach|Add|Remove|Publish|Purge|Redrive)",
+          action,
+        ))
+      ]) == 0 &&
+      length([
+        for resource in flatten([
+          for statement in data.aws_iam_policy_document.terraform_plan_access.statement :
+          statement.resources
+        ]) : resource
+        if(
+          strcontains(resource, "terraform.tfstate") ||
+          strcontains(resource, "clouddoc-123456789012-terraform-state") ||
+          endswith(resource, ".tflock")
+        )
+      ]) == 0
+    )
+    error_message = "Plan ReadDocumentsBucketConfiguration must use s3:GetLifecycleConfiguration only on the documents bucket, remain read-only, and stay state-free."
+  }
 }
 
 run "apply_boundary_contract" {
