@@ -753,8 +753,158 @@ def test_apply_policy_includes_encoded_api_gateway_tag_resource() -> None:
         "local.application_apigateway_stages_resource",
         "local.application_apigateway_stage_resource_prefix",
         "local.application_apigateway_api_tag_resource",
+        "local.application_apigateway_stage_tag_resource",
     ):
         assert expected_resource in api_gateway_body
+
+
+def test_encoded_api_gateway_stage_tag_resource_is_exact() -> None:
+    """Stage TagResource must use the encoded /v2/apis/*/stages/* tag shape."""
+    locals_source = read_bootstrap_file("locals.tf")
+    apply_block = extract_policy_document_block("terraform_apply_access")
+    api_gateway_body = re.search(
+        r'sid\s*=\s*"ManageApiGatewayV2ControlPlane".*?(?=sid\s*=|\Z)',
+        apply_block,
+        flags=re.DOTALL,
+    ).group(0)
+
+    assert "application_apigateway_stage_tag_resource" in locals_source
+    assert "%2Fv2%2Fapis%2F*%2Fstages%2F*" in locals_source, (
+        "stage tag local must encode /v2/apis/*/stages/*"
+    )
+    assert "application_apigateway_api_tag_resource" in locals_source
+    assert "%2Fv2%2Fapis%2F*" in locals_source
+    assert "local.application_apigateway_api_tag_resource" in api_gateway_body
+    assert "local.application_apigateway_stage_tag_resource" in api_gateway_body
+    assert re.search(r'resources\s*=\s*\[\s*"\*"\s*\]', api_gateway_body) is None
+    assert "/tags/*" not in api_gateway_body
+    assert quoted_actions(api_gateway_body) == {
+        "apigateway:DELETE",
+        "apigateway:GET",
+        "apigateway:PATCH",
+        "apigateway:POST",
+    }
+    assert "execute-api:Invoke" not in quoted_actions(api_gateway_body)
+
+
+def test_event_source_mapping_function_arns_are_exactly_two_consumers() -> None:
+    """Event-source mapping FunctionArn must target only the two SQS consumers."""
+    locals_source = read_bootstrap_file("locals.tf")
+    local_block = extract_named_block(locals_source, "locals")
+    mapping_functions = re.search(
+        r"application_lambda_event_source_mapping_function_arns\s*=\s*sort\(\[(.*?)\]\)",
+        local_block,
+        flags=re.DOTALL,
+    )
+    assert mapping_functions is not None
+    mapping_body = mapping_functions.group(1)
+
+    assert "processor_function_name" in mapping_body
+    assert "dead_letter_reconciler_function_name" in mapping_body
+    assert "create_job_function_name" not in mapping_body
+    assert "get_job_function_name" not in mapping_body
+    assert "event-source-mapping" not in mapping_body
+    assert ":sqs:" not in mapping_body
+    assert "function:*" not in mapping_body
+    assert "application_lambda_event_source_mapping_arn_prefix" not in locals_source
+    assert mapping_body.count("function:${local.") == 2
+
+
+def test_plan_get_event_source_mapping_uses_service_required_star() -> None:
+    """Plan GetEventSourceMapping must use Resource * with no conditions."""
+    plan_block = extract_policy_document_block("terraform_plan_access")
+    statement = re.search(
+        r'sid\s*=\s*"ReadLambdaEventSourceMappings".*?(?=sid\s*=|\Z)',
+        plan_block,
+        flags=re.DOTALL,
+    )
+    assert statement is not None
+    body = statement.group(0)
+
+    assert quoted_actions(body) == {"lambda:GetEventSourceMapping"}
+    assert re.search(r'resources\s*=\s*\[\s*"\*"\s*,?\s*\]', body) is not None
+    assert "condition" not in body
+    assert "application_lambda_event_source_mapping_arn_prefix" not in body
+    assert FORBIDDEN_PLAN_ACTION_PATTERN.search(plan_block) is None
+    assert "iam:PassRole" not in plan_block
+    assert PLAN_DATA_PLANE_ACTIONS.isdisjoint(quoted_actions(plan_block))
+    for forbidden in (
+        "terraform_state_bucket_arn",
+        "terraform_state_object_arn",
+        "terraform_lock_object_arn",
+    ):
+        assert forbidden not in plan_block
+
+
+def test_apply_list_event_source_mappings_uses_star_without_conditions() -> None:
+    """Apply ListEventSourceMappings must use Resource * with no conditions."""
+    apply_block = extract_policy_document_block("terraform_apply_access")
+    statement = re.search(
+        r'sid\s*=\s*"ListLambdaEventSourceMappings".*?(?=sid\s*=|\Z)',
+        apply_block,
+        flags=re.DOTALL,
+    )
+    assert statement is not None
+    body = statement.group(0)
+
+    assert quoted_actions(body) == {"lambda:ListEventSourceMappings"}
+    assert re.search(r'resources\s*=\s*\[\s*"\*"\s*,?\s*\]', body) is not None
+    assert "condition" not in body
+
+
+def test_apply_get_event_source_mapping_uses_star_without_conditions() -> None:
+    """Apply GetEventSourceMapping must use Resource * with no conditions."""
+    apply_block = extract_policy_document_block("terraform_apply_access")
+    statement = re.search(
+        r'sid\s*=\s*"ReadLambdaEventSourceMapping".*?(?=sid\s*=|\Z)',
+        apply_block,
+        flags=re.DOTALL,
+    )
+    assert statement is not None
+    body = statement.group(0)
+
+    assert quoted_actions(body) == {"lambda:GetEventSourceMapping"}
+    assert re.search(r'resources\s*=\s*\[\s*"\*"\s*,?\s*\]', body) is not None
+    assert "condition" not in body
+
+
+def test_apply_event_source_mapping_mutation_uses_function_arn_condition() -> None:
+    """Create/Delete/Update mappings must use * constrained by FunctionArn."""
+    apply_block = extract_policy_document_block("terraform_apply_access")
+    statement = re.search(
+        r'sid\s*=\s*"ManageLambdaEventSourceMappings".*?(?=sid\s*=|\Z)',
+        apply_block,
+        flags=re.DOTALL,
+    )
+    assert statement is not None
+    body = statement.group(0)
+
+    assert quoted_actions(body) == {
+        "lambda:CreateEventSourceMapping",
+        "lambda:DeleteEventSourceMapping",
+        "lambda:UpdateEventSourceMapping",
+    }
+    assert "lambda:GetEventSourceMapping" not in quoted_actions(body)
+    assert "lambda:ListEventSourceMappings" not in quoted_actions(body)
+    assert "lambda:TagResource" not in quoted_actions(body)
+    assert "lambda:UntagResource" not in quoted_actions(body)
+    assert re.search(r'resources\s*=\s*\[\s*"\*"\s*,?\s*\]', body) is not None
+    assert body.count("condition") == 1
+    assert 'test     = "ArnLike"' in body or 'test = "ArnLike"' in body
+    assert 'variable = "lambda:FunctionArn"' in body
+    assert (
+        "values = local.application_lambda_event_source_mapping_function_arns" in body
+    )
+    assert "create_job" not in body
+    assert "get_job" not in body
+    assert "lambda:InvokeFunction" not in quoted_actions(apply_block)
+    assert {
+        "sqs:ReceiveMessage",
+        "sqs:SendMessage",
+        "sqs:DeleteMessage",
+        "sqs:ChangeMessageVisibility",
+        "sqs:PurgeQueue",
+    }.isdisjoint(quoted_actions(apply_block))
 
 
 def test_authorization_security_boundaries_remain_intact_after_apply_fix() -> None:
@@ -763,6 +913,7 @@ def test_authorization_security_boundaries_remain_intact_after_apply_fix() -> No
     plan_block = extract_policy_document_block("terraform_plan_access")
     state_block = extract_policy_document_block("terraform_state_access")
     apply_actions = quoted_actions(apply_block)
+    locals_source = read_bootstrap_file("locals.tf")
 
     assert quoted_actions(state_block) == STATE_POLICY_ACTIONS
     assert FORBIDDEN_PLAN_ACTION_PATTERN.search(plan_block) is None
@@ -786,3 +937,23 @@ def test_authorization_security_boundaries_remain_intact_after_apply_fix() -> No
     assert "lambda:InvokeFunction" not in apply_actions
     assert PLAN_DATA_PLANE_ACTIONS.isdisjoint(quoted_actions(plan_block))
     assert PLAN_DATA_PLANE_ACTIONS.isdisjoint(apply_actions)
+    assert "s3:GetLifecycleConfiguration" in apply_actions
+    assert "s3:GetBucketLifecycleConfiguration" not in apply_actions
+    assert "application_apigateway_api_tag_resource" in locals_source
+    assert "application_apigateway_stage_tag_resource" in locals_source
+    assert "application_log_group_arns" in locals_source
+    assert "application_log_group_management_arns" in locals_source
+    assert "ReadLambdaEventSourceMapping" in apply_block
+    assert "application_lambda_event_source_mapping_function_arns" in locals_source
+    assert "application_lambda_event_source_mapping_arn_prefix" not in locals_source
+    assert (
+        len(re.findall(r"function:\$\{local\.\w+_function_name\}", locals_source)) >= 4
+    )
+    mapping_local = re.search(
+        r"application_lambda_event_source_mapping_function_arns\s*=\s*sort\(\[(.*?)\]\)",
+        locals_source,
+        flags=re.DOTALL,
+    )
+    assert mapping_local is not None
+    assert "create_job_function_name" not in mapping_local.group(1)
+    assert "get_job_function_name" not in mapping_local.group(1)

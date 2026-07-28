@@ -230,6 +230,7 @@ data "aws_iam_policy_document" "terraform_plan_access" {
     resources = local.application_lambda_function_arns
   }
 
+  # GetEventSourceMapping does not support resource-level restriction.
   statement {
     sid    = "ReadLambdaEventSourceMappings"
     effect = "Allow"
@@ -239,7 +240,7 @@ data "aws_iam_policy_document" "terraform_plan_access" {
     ]
 
     resources = [
-      local.application_lambda_event_source_mapping_arn_prefix,
+      "*",
     ]
   }
 
