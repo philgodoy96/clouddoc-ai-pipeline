@@ -64,22 +64,6 @@ data "aws_iam_policy_document" "terraform_apply_access" {
     ]
   }
 
-  # The provider reports nominal TagResource authorization during tagged Stage creation and uses TagResource/UntagResource for later Stage tag reconciliation.
-  statement {
-    sid    = "ManageApiGatewayV2StageTags"
-    effect = "Allow"
-
-    actions = [
-      "apigateway:TagResource",
-      "apigateway:UntagResource",
-    ]
-
-    resources = [
-      local.application_apigateway_stages_resource,
-      local.application_apigateway_stage_resource_prefix,
-    ]
-  }
-
   statement {
     sid    = "DescribeCloudWatchAlarmMetrics"
     effect = "Allow"
@@ -177,6 +161,26 @@ data "aws_iam_policy_document" "terraform_apply_access" {
     ]
 
     resources = local.application_log_group_arns
+  }
+
+  # API Gateway HTTP API access logging uses the CloudWatch Logs delivery control plane. These account-level and permission-only operations do not support the canonical log-group ARN restriction.
+  statement {
+    sid    = "ManageApiGatewayAccessLogDelivery"
+    effect = "Allow"
+
+    actions = [
+      "logs:CreateLogDelivery",
+      "logs:DeleteLogDelivery",
+      "logs:DescribeResourcePolicies",
+      "logs:GetLogDelivery",
+      "logs:ListLogDeliveries",
+      "logs:PutResourcePolicy",
+      "logs:UpdateLogDelivery",
+    ]
+
+    resources = [
+      "*",
+    ]
   }
 
   statement {
