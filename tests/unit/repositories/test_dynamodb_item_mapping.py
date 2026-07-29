@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -15,6 +16,7 @@ from clouddoc.domain import (
 from clouddoc.domain.errors import InvalidDomainValueError
 from clouddoc.schemas import AIExtractionResult, DocumentType
 from clouddoc.schemas.persistence_models import (
+    DYNAMODB_PARTITION_KEY_ATTRIBUTE,
     ENTITY_TYPE_DOCUMENT_JOB,
     build_job_partition_key,
     document_job_from_item,
@@ -23,6 +25,8 @@ from clouddoc.schemas.persistence_models import (
 
 BASE_TIME = datetime(2026, 7, 25, 12, 0, tzinfo=UTC)
 NON_UTC = timezone(timedelta(hours=-3))
+REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
+DYNAMODB_TERRAFORM_PATH = REPOSITORY_ROOT / "infra" / "terraform" / "dynamodb.tf"
 
 
 def make_job() -> DocumentJob:
@@ -71,6 +75,20 @@ def test_builds_document_job_partition_key() -> None:
     assert build_job_partition_key("job-001") == "JOB#job-001"
 
 
+def test_dynamodb_partition_key_attribute_is_uppercase_pk() -> None:
+    """The physical DynamoDB partition-key attribute must match Terraform."""
+    assert DYNAMODB_PARTITION_KEY_ATTRIBUTE == "PK"
+
+
+def test_application_partition_key_matches_terraform_contract() -> None:
+    """Application and Terraform must share the uppercase PK attribute name."""
+    terraform_source = DYNAMODB_TERRAFORM_PATH.read_text(encoding="utf-8")
+
+    assert 'hash_key                    = "PK"' in terraform_source
+    assert 'name = "PK"' in terraform_source
+    assert DYNAMODB_PARTITION_KEY_ATTRIBUTE == "PK"
+
+
 @pytest.mark.parametrize(
     "job_id",
     [
@@ -94,7 +112,7 @@ def test_serializes_pending_job() -> None:
     item = document_job_to_item(make_job())
 
     assert item == {
-        "pk": "JOB#job-001",
+        "PK": "JOB#job-001",
         "entity_type": ENTITY_TYPE_DOCUMENT_JOB,
         "job_id": "job-001",
         "status": "pending_upload",
@@ -109,6 +127,11 @@ def test_serializes_pending_job() -> None:
         "processing_result": None,
         "error_reason": None,
     }
+    assert "pk" not in item
+    assert DYNAMODB_PARTITION_KEY_ATTRIBUTE in item
+    assert item[DYNAMODB_PARTITION_KEY_ATTRIBUTE] == "JOB#job-001"
+    partition_key_attributes = [key for key in item if key.casefold() == "pk"]
+    assert partition_key_attributes == ["PK"]
 
 
 def test_serializes_processing_job() -> None:
@@ -270,13 +293,38 @@ def test_rejects_unexpected_entity_type() -> None:
 def test_rejects_partition_key_identity_mismatch() -> None:
     """The item key must match its declared job identity."""
     item = document_job_to_item(make_job())
-    item["pk"] = "JOB#different-job"
+    item[DYNAMODB_PARTITION_KEY_ATTRIBUTE] = "JOB#different-job"
 
     with pytest.raises(
         InvalidDomainValueError,
         match="partition key does not match job_id",
     ):
         document_job_from_item(item)
+
+
+def test_rejects_lowercase_only_partition_key() -> None:
+    """Lowercase pk alone is not a valid physical partition key."""
+    item = document_job_to_item(make_job())
+    item["pk"] = item.pop(DYNAMODB_PARTITION_KEY_ATTRIBUTE)
+
+    with pytest.raises(
+        InvalidDomainValueError,
+        match="missing required field: PK",
+    ):
+        document_job_from_item(item)
+
+
+def test_deserializes_uppercase_partition_key() -> None:
+    """Deserialization must accept the deployed uppercase PK attribute."""
+    item = document_job_to_item(make_job())
+
+    assert DYNAMODB_PARTITION_KEY_ATTRIBUTE in item
+    assert "pk" not in item
+
+    reconstructed = document_job_from_item(item)
+
+    assert reconstructed.job_id == "job-001"
+    assert reconstructed.status is JobStatus.PENDING_UPLOAD
 
 
 def test_rejects_missing_required_field() -> None:

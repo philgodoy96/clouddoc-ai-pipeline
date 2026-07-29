@@ -17,6 +17,7 @@ from clouddoc.schemas.ai_output import AIExtractionResult
 
 ENTITY_TYPE_DOCUMENT_JOB = "document_job"
 JOB_PARTITION_KEY_PREFIX = "JOB#"
+DYNAMODB_PARTITION_KEY_ATTRIBUTE = "PK"
 
 
 def build_job_partition_key(job_id: str) -> str:
@@ -42,7 +43,7 @@ def document_job_to_item(
         raise InvalidDomainValueError("processing_result must be an AIExtractionResult")
 
     return {
-        "pk": build_job_partition_key(job.job_id),
+        DYNAMODB_PARTITION_KEY_ATTRIBUTE: build_job_partition_key(job.job_id),
         "entity_type": ENTITY_TYPE_DOCUMENT_JOB,
         "job_id": job.job_id,
         "status": job.status.value,
@@ -147,8 +148,8 @@ def _validate_partition_key(item: dict[str, Any]) -> None:
             field_name="job_id",
         )
         partition_key = _parse_required_string(
-            item["pk"],
-            field_name="pk",
+            item[DYNAMODB_PARTITION_KEY_ATTRIBUTE],
+            field_name=DYNAMODB_PARTITION_KEY_ATTRIBUTE,
         )
     except KeyError as error:
         missing_field = str(error.args[0])

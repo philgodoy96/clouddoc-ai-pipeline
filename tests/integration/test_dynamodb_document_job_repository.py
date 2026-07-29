@@ -24,6 +24,10 @@ from clouddoc.repositories import (
     RepositoryError,
 )
 from clouddoc.schemas import AIExtractionResult, DocumentType
+from clouddoc.schemas.persistence_models import (
+    DYNAMODB_PARTITION_KEY_ATTRIBUTE,
+    build_job_partition_key,
+)
 
 BASE_TIME = datetime(2026, 7, 25, 12, 0, tzinfo=UTC)
 TABLE_NAME = "clouddoc-document-jobs-test"
@@ -54,13 +58,13 @@ def dynamodb_table(
             TableName=TABLE_NAME,
             KeySchema=[
                 {
-                    "AttributeName": "pk",
+                    "AttributeName": "PK",
                     "KeyType": "HASH",
                 }
             ],
             AttributeDefinitions=[
                 {
-                    "AttributeName": "pk",
+                    "AttributeName": "PK",
                     "AttributeType": "S",
                 }
             ],
@@ -127,9 +131,20 @@ def make_result() -> AIExtractionResult:
 
 def test_create_and_get_job(
     repository: DynamoDBDocumentJobRepository,
+    dynamodb_table: Any,
 ) -> None:
     """A job should round-trip through the DynamoDB repository."""
     repository.create_job(make_job())
+
+    raw_item = dynamodb_table.get_item(
+        Key={
+            DYNAMODB_PARTITION_KEY_ATTRIBUTE: build_job_partition_key("job-001"),
+        },
+        ConsistentRead=True,
+    )["Item"]
+
+    assert raw_item[DYNAMODB_PARTITION_KEY_ATTRIBUTE] == "JOB#job-001"
+    assert "pk" not in raw_item
 
     stored_job = repository.get_job("job-001")
 

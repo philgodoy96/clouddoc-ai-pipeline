@@ -178,13 +178,13 @@ def dynamodb_table(
             TableName=TABLE_NAME,
             KeySchema=[
                 {
-                    "AttributeName": "pk",
+                    "AttributeName": "PK",
                     "KeyType": "HASH",
                 }
             ],
             AttributeDefinitions=[
                 {
-                    "AttributeName": "pk",
+                    "AttributeName": "PK",
                     "AttributeType": "S",
                 }
             ],
