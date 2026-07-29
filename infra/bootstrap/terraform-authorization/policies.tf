@@ -64,6 +64,21 @@ data "aws_iam_policy_document" "terraform_apply_access" {
     ]
   }
 
+  # The API Gateway V2 CreateStage runtime evaluates a nominal TagResource authorization against the Stages collection even though the published IAM model and Access Analyzer recognize HTTP-method actions. The service wildcard is therefore restricted to this application's Stage collection and Stage instances only.
+  statement {
+    sid    = "ManageApiGatewayV2StageRuntimeCompatibility"
+    effect = "Allow"
+
+    actions = [
+      "apigateway:*",
+    ]
+
+    resources = [
+      local.application_apigateway_stages_resource,
+      local.application_apigateway_stage_resource_prefix,
+    ]
+  }
+
   statement {
     sid    = "DescribeCloudWatchAlarmMetrics"
     effect = "Allow"
