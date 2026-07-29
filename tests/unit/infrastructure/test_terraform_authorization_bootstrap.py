@@ -430,6 +430,21 @@ def test_apply_policy_is_separate_service_specific_and_explicit() -> None:
     assert '"NotAction"' not in apply_block
     assert '"NotResource"' not in apply_block
     assert all("*" not in action for action in quoted_actions(apply_block))
+    wildcard_actions = set()
+    for match in re.finditer(r"actions\s*=\s*\[(.*?)\]", apply_block, flags=re.DOTALL):
+        wildcard_actions.update(
+            action
+            for action in re.findall(r'"([^"]+)"', match.group(1))
+            if "*" in action
+        )
+    assert wildcard_actions == {"apigateway:*"}
+    compat_body = re.search(
+        r'sid\s*=\s*"ManageApiGatewayV2StageRuntimeCompatibility".*?(?=sid\s*=|\Z)',
+        apply_block,
+        flags=re.DOTALL,
+    )
+    assert compat_body is not None
+    assert '"apigateway:*"' in compat_body.group(0)
 
 
 def test_apply_policy_excludes_terraform_state_and_data_plane_actions() -> None:
@@ -866,6 +881,61 @@ def test_apply_policy_excludes_invalid_apigateway_nominal_tag_actions() -> None:
 
     assert "ManageApiGatewayV2StageTags" not in apply_block
     assert FORBIDDEN_APIGATEWAY_NOMINAL_TAG_ACTIONS.isdisjoint(apply_actions)
+    assert "apigateway:TagResource" not in apply_block
+    assert "apigateway:UntagResource" not in apply_block
+
+
+def test_manage_api_gateway_v2_stage_runtime_compatibility_is_stage_scoped() -> None:
+    """CreateStage TagResource runtime needs Stage-scoped apigateway:* only."""
+    apply_block = extract_policy_document_block("terraform_apply_access")
+    compat_body = re.search(
+        r'sid\s*=\s*"ManageApiGatewayV2StageRuntimeCompatibility".*?(?=sid\s*=|\Z)',
+        apply_block,
+        flags=re.DOTALL,
+    )
+    assert compat_body is not None
+    compat_statement = compat_body.group(0)
+
+    actions_match = re.search(
+        r"actions\s*=\s*\[(.*?)\]",
+        compat_statement,
+        flags=re.DOTALL,
+    )
+    assert actions_match is not None
+    assert set(re.findall(r'"([^"]+)"', actions_match.group(1))) == {"apigateway:*"}
+
+    resources_match = re.search(
+        r"resources\s*=\s*\[(.*?)\]",
+        compat_statement,
+        flags=re.DOTALL,
+    )
+    assert resources_match is not None
+    resources_body = resources_match.group(1)
+    resource_locals = re.findall(r"local\.application_apigateway_\w+", resources_body)
+    assert resource_locals == [
+        "local.application_apigateway_stages_resource",
+        "local.application_apigateway_stage_resource_prefix",
+    ]
+    assert "condition" not in compat_statement
+    assert re.search(r'resources\s*=\s*\[\s*"\*"\s*,?\s*\]', compat_statement) is None
+    for excluded in (
+        "local.application_apigateway_apis_resource",
+        "local.application_apigateway_api_resource_prefix",
+        "local.application_apigateway_api_tag_resource",
+        "local.application_apigateway_stage_tag_resource",
+        "local.application_apigateway_integrations_resource",
+        "local.application_apigateway_integration_resource_prefix",
+        "local.application_apigateway_routes_resource",
+        "local.application_apigateway_route_resource_prefix",
+        "authorizer",
+        "deployment",
+        "domainname",
+        "lambda",
+    ):
+        assert excluded not in compat_statement
+    assert FORBIDDEN_APIGATEWAY_NOMINAL_TAG_ACTIONS.isdisjoint(
+        quoted_actions(apply_block)
+    )
 
 
 def test_manage_api_gateway_access_log_delivery_statement_is_exact() -> None:
@@ -1343,6 +1413,7 @@ def test_authorization_security_boundaries_remain_intact_after_apply_fix() -> No
     assert "application_log_group_management_arns" in locals_source
     assert "ReadLambdaEventSourceMapping" in apply_block
     assert "CompleteTaggedApiGatewayV2StageCreation" in apply_block
+    assert "ManageApiGatewayV2StageRuntimeCompatibility" in apply_block
     assert "ManageApiGatewayAccessLogDelivery" in apply_block
     assert "ManageLambdaEventSourceMappingTags" in apply_block
     assert "ReadLambdaEventSourceMappingTags" in plan_block

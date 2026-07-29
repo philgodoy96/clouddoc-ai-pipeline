@@ -736,6 +736,7 @@ run "apply_boundary_contract" {
         "ReadCallerIdentity",
         "ManageApiGatewayV2ControlPlane",
         "CompleteTaggedApiGatewayV2StageCreation",
+        "ManageApiGatewayV2StageRuntimeCompatibility",
         "DescribeCloudWatchAlarmMetrics",
         "ManageCloudWatchAlarms",
         "ListCloudWatchDashboards",
@@ -768,11 +769,19 @@ run "apply_boundary_contract" {
         for action in flatten([
           for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
           statement.actions
+          if statement.sid != "ManageApiGatewayV2StageRuntimeCompatibility"
         ]) : action
         if strcontains(action, "*")
-      ]) == 0
+      ]) == 0 &&
+      toset(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageApiGatewayV2StageRuntimeCompatibility"
+        ]).actions
+      ) == toset(["apigateway:*"])
     )
-    error_message = "The apply policy must enumerate explicit actions only."
+    error_message = "The apply policy must enumerate explicit actions only, except Stage-scoped apigateway:* runtime compatibility."
   }
 
   assert {
@@ -1273,6 +1282,180 @@ run "apply_boundary_contract" {
       )
     )
     error_message = "CompleteTaggedApiGatewayV2StageCreation must grant only apigateway:PUT on the raw Stages collection and encoded Stage tag resource."
+  }
+
+  assert {
+    condition = (
+      toset(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageApiGatewayV2StageRuntimeCompatibility"
+        ]).actions
+      ) == toset(["apigateway:*"]) &&
+      length(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageApiGatewayV2StageRuntimeCompatibility"
+        ]).actions
+      ) == 1 &&
+      toset(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageApiGatewayV2StageRuntimeCompatibility"
+        ]).resources
+        ) == toset([
+          local.application_apigateway_stages_resource,
+          local.application_apigateway_stage_resource_prefix,
+      ]) &&
+      length(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageApiGatewayV2StageRuntimeCompatibility"
+        ]).resources
+      ) == 2 &&
+      length(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageApiGatewayV2StageRuntimeCompatibility"
+        ]).condition
+      ) == 0 &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageApiGatewayV2StageRuntimeCompatibility"
+        ]).resources,
+        "*",
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageApiGatewayV2StageRuntimeCompatibility"
+        ]).resources,
+        local.application_apigateway_apis_resource,
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageApiGatewayV2StageRuntimeCompatibility"
+        ]).resources,
+        local.application_apigateway_api_resource_prefix,
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageApiGatewayV2StageRuntimeCompatibility"
+        ]).resources,
+        local.application_apigateway_api_tag_resource,
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageApiGatewayV2StageRuntimeCompatibility"
+        ]).resources,
+        local.application_apigateway_stage_tag_resource,
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageApiGatewayV2StageRuntimeCompatibility"
+        ]).resources,
+        local.application_apigateway_integrations_resource,
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageApiGatewayV2StageRuntimeCompatibility"
+        ]).resources,
+        local.application_apigateway_integration_resource_prefix,
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageApiGatewayV2StageRuntimeCompatibility"
+        ]).resources,
+        local.application_apigateway_routes_resource,
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageApiGatewayV2StageRuntimeCompatibility"
+        ]).resources,
+        local.application_apigateway_route_resource_prefix,
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageApiGatewayV2StageRuntimeCompatibility"
+        ]).resources,
+        "arn:aws:apigateway:us-east-1::/apis/*/authorizers",
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageApiGatewayV2StageRuntimeCompatibility"
+        ]).resources,
+        "arn:aws:apigateway:us-east-1::/apis/*/authorizers/*",
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageApiGatewayV2StageRuntimeCompatibility"
+        ]).resources,
+        "arn:aws:apigateway:us-east-1::/apis/*/deployments",
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageApiGatewayV2StageRuntimeCompatibility"
+        ]).resources,
+        "arn:aws:apigateway:us-east-1::/apis/*/deployments/*",
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageApiGatewayV2StageRuntimeCompatibility"
+        ]).resources,
+        "arn:aws:apigateway:us-east-1::/domainnames",
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageApiGatewayV2StageRuntimeCompatibility"
+        ]).resources,
+        "arn:aws:apigateway:us-east-1::/domainnames/*",
+      ) &&
+      length(setintersection(
+        toset(
+          one([
+            for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+            statement
+            if statement.sid == "ManageApiGatewayV2StageRuntimeCompatibility"
+          ]).resources
+        ),
+        toset(local.application_lambda_function_arns)
+      )) == 0
+    )
+    error_message = "ManageApiGatewayV2StageRuntimeCompatibility must grant exactly apigateway:* on the raw Stages collection and Stage instance prefix only, with no conditions or non-Stage API Gateway families."
   }
 
   assert {
