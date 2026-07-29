@@ -4,15 +4,15 @@
 
 - **Decision state:** Approved
 - **Repository implementation:** Implemented
-- **AWS activation:** Pending
-- **Live plan verification:** Pending
+- **AWS activation:** Deployed and verified for `dev`
+- **Live plan verification:** Operationally verified
 - **Environment:** `dev`
-- **Last updated:** 2026-07-28
+- **Last updated:** 2026-07-29
 
 
 ## Implementation Status
 
-The approved architecture is now implemented in repository source through:
+The approved architecture is implemented in repository source through:
 
 - authorization bootstrap in `infra/bootstrap/terraform-authorization/`;
 - application provider and backend role wiring in `infra/terraform/` and `scripts/terraform_workflow.py`;
@@ -24,7 +24,7 @@ The approved architecture is now implemented in repository source through:
 - offline and static tests covering IAM, workflow, summary, and attestation contracts;
 - operations runbook in [Terraform Plan Workflow Runbook](../operations/terraform-plan-workflow.md).
 
-These artifacts are implemented in source only. AWS activation and live operational proof remain pending. Controlled deployment regenerates rather than downloading a binary plan; see [Terraform Deployment Authorization](terraform-deployment-authorization.md), [Terraform Deploy Workflow Runbook](../operations/terraform-deploy-workflow.md), and [ADR-027](../adr/ADR-027-separate-terraform-state-plan-and-apply-authorization.md).
+These artifacts are deployed and operationally verified for `dev`. Controlled deployment regenerates rather than downloading a binary plan; see [Terraform Deployment Authorization](terraform-deployment-authorization.md), [Terraform Deploy Workflow Runbook](../operations/terraform-deploy-workflow.md), [ADR-027](../adr/ADR-027-separate-terraform-state-plan-and-apply-authorization.md), and [Deployed Runtime Evidence](../operations/deployed-runtime-evidence.md).
 
 ## Purpose
 
@@ -124,10 +124,10 @@ This slice does not implement:
 - static AWS credentials;
 - automatic rollback.
 
-Controlled deployment is a separate source-implemented boundary documented in
+Controlled deployment is a separate boundary documented in
 [Terraform Deployment Authorization](terraform-deployment-authorization.md) and
 [ADR-028](../adr/ADR-028-controlled-single-operator-terraform-deployment.md).
-Live plan activation remains pending before that path may be proven.
+Live Plan for `dev` is operationally verified.
 
 ## Actors
 
@@ -588,7 +588,7 @@ uploaded. Controlled deployment regenerates a fresh plan rather than
 downloading a binary plan. The uploaded attestation is value-free and is not
 the local saved-plan manifest used by the wrapper `apply` command.
 
-Live plan activation remains pending.
+Live Plan for `dev` is operationally verified. See [Deployed Runtime Evidence](../operations/deployed-runtime-evidence.md).
 
 ## Plan Summary Contract
 
@@ -647,7 +647,7 @@ Binary plan files and full plan JSON remain temporary and are deleted before
 the job finishes. Controlled deployment regenerates a fresh plan and compares
 attestations rather than downloading a binary plan.
 
-The plan role remains read-only. Live plan activation remains pending.
+The plan role remains read-only. Live Plan for `dev` is operationally verified. See [Deployed Runtime Evidence](../operations/deployed-runtime-evidence.md).
 
 ## Cleanup Contract
 
@@ -932,7 +932,7 @@ The slice is complete only when:
 - positive and negative authorization evidence is recorded;
 - architecture, ADR, operations, and contributor documentation are complete.
 
-Live plan activation and operational proof remain pending after source merge.
+Live Plan and controlled Deploy for `dev` are operationally verified. See [Deployed Runtime Evidence](../operations/deployed-runtime-evidence.md).
 
 ## References
 

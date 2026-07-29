@@ -7,19 +7,19 @@ OIDC identity proof:
     operationally verified
 
 Terraform plan OIDC workflow trust:
-    source implemented, AWS apply pending
+    deployed and verified
 
 Deployment identity:
-    source implemented, AWS apply pending
+    deployed and verified
 
 Controlled deploy workflow trust:
-    source implemented, AWS apply pending
+    deployed and verified
 
 Terraform plan federation:
-    pending operational activation
+    operationally verified
 
 Controlled deploy federation:
-    pending operational proof
+    operationally verified
 ```
 
 Preserve the distinction between:
@@ -47,14 +47,19 @@ environment separation between dev and dev-deploy
 static GitHub Actions identity, plan, and deploy workflow contracts
 ```
 
-The following remain intentionally pending:
+Verified operational baseline for `dev`:
 
 ```text
-Terraform plan reusable-workflow trust apply
-deployment identity AWS apply
-Terraform plan federation verification
-controlled deploy federation verification
+GitHub OIDC identities deployed
+dev and dev-deploy Environments configured
+repository variables configured
+live Plan verified
+live controlled Deploy verified
 ```
+
+Evidence: [Deployed Runtime Evidence](../operations/deployed-runtime-evidence.md).
+
+Staging and production identities remain intentionally undeployed.
 
 ## Purpose
 
@@ -1368,9 +1373,7 @@ The source hotfix adds an eighth exact `StringEquals` condition for `sub`, const
 
 `job_workflow_sha` was not introduced.
 
-The corrected trust contract is implemented in repository source.
-
-It is not yet applied to the AWS role and has not yet been re-verified against AWS.
+The corrected trust contract is implemented in repository source and has been applied and re-verified against AWS for the approved `dev` workloads.
 
 ## Corrective Operational Sequence
 
@@ -1387,8 +1390,8 @@ rerun AWS Identity Check
 record successful identity evidence
 ```
 
-These steps are not yet complete. End-to-end identity proof remains pending.
-The role remains a permissionless identity role.
+These corrective steps were completed for the approved `dev` identity path. End-to-end identity federation for the identity-check, plan, and deploy workloads is operationally verified.
+The roles remain permissionless identity roles.
 
 ## End-to-End Verification
 
@@ -1439,7 +1442,7 @@ runtime correctness
 rollback readiness
 ```
 
-End-to-end federation has not yet been re-verified.
+End-to-end federation for the approved `dev` identity, plan, and deploy workloads has been re-verified.
 
 ## Failure Modes
 
@@ -1760,28 +1763,16 @@ documentation
 ```text
 AWS IAM OIDC provider
 AWS IAM identity role
+AWS IAM deployment identity role
 GitHub dev Environment
+GitHub dev-deploy Environment
 GitHub repository variables
 original AWS identity proof
+Terraform plan federation
+controlled deploy federation
 ```
 
-### Implemented in source, AWS apply pending
-
-```text
-second exact reusable workflow trust entry for reusable-terraform-plan.yml
-deployment identity role for reusable-terraform-deploy.yml@refs/heads/main
-dev-deploy environment trust for the deployment identity
-```
-
-### Not yet re-verified against AWS
-
-```text
-successful AssumeRoleWithWebIdentity for the Terraform plan reusable workflow
-successful GetCallerIdentity evidence for the Terraform plan reusable workflow
-successful AssumeRoleWithWebIdentity for the Terraform deploy reusable workflow
-```
-
-### Not yet authorized by this root
+### Not authorized by this root
 
 ```text
 Terraform state read
@@ -1791,7 +1782,7 @@ Terraform apply
 application resource management
 ```
 
-Authorization roles are owned by the separate Terraform authorization bootstrap. Live plan activation and live deployment proof remain pending.
+Authorization roles are owned by the separate Terraform authorization bootstrap. Live plan activation and live controlled deployment for `dev` are operationally verified; see [Deployed Runtime Evidence](../operations/deployed-runtime-evidence.md).
 
 ## Intentionally Deferred
 

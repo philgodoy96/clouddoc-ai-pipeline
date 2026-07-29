@@ -16,8 +16,9 @@ clouddoc-dev-terraform-apply
 The root does not own the GitHub OIDC provider, the permissionless GitHub
 identity roles, the Terraform state bucket, or the application infrastructure.
 
-Source is implemented. AWS apply remains pending. Do not claim the initial
-apply action matrix is live-proven.
+The `dev` state, plan, and apply roles are deployed and operationally verified.
+See [Deployed Runtime Evidence](../../../docs/operations/deployed-runtime-evidence.md).
+Do not claim staging or production authorization roles.
 
 ## Architecture
 
@@ -709,8 +710,7 @@ The state key remains versioned in:
 infra/terraform/environments/dev.s3.tfbackend
 ```
 
-Source implemented versus AWS apply pending remains the status for these roles
-until post-merge activation completes.
+These roles are deployed and operationally verified for `dev` Plan and Deploy.
 
 ## Operational Verification
 
@@ -866,8 +866,8 @@ operational activation.
 - No AWS-managed broad policy is attached.
 - No static AWS credential is stored in the repository or GitHub.
 - No customer-managed KMS permission is included.
-- Authorization expansion requires concrete evidence.
-- The initial apply action matrix is not claimed as live-proven.
+- Authorization expansion still requires concrete evidence when AccessDenied appears.
+- The `dev` Plan and Deploy paths are operationally verified, including post-apply convergence.
 
 ## Intentionally Deferred
 
@@ -884,5 +884,5 @@ The following are not owned by this bootstrap activation:
 - policy generation from CloudTrail.
 
 These items require separate architecture and operational controls. Apply
-authorization now exists in source; AWS activation and live proof remain
-pending.
+authorization for `dev` is deployed and operationally verified. Staging and
+production authorization remain intentionally deferred.

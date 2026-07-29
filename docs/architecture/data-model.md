@@ -15,9 +15,9 @@ The current model intentionally avoids secondary indexes because no query patter
 ## Table
 
 ```text
-Table name: clouddoc-document-jobs
+Table: environment-scoped document jobs table
 Billing mode: PAY_PER_REQUEST
-Partition key: pk
+Partition key: PK
 Sort key: none
 ```
 
@@ -35,13 +35,24 @@ Example:
 JOB#job-001
 ```
 
+The physical attribute name is case-sensitive uppercase `PK`. The logical value remains `JOB#{job_id}`.
+
 The explicit prefix keeps the keyspace extensible if additional entity types are introduced later.
+
+### Cross-layer key invariant
+
+Terraform table schema, persistence mapping, repository operations, and
+integration fixtures must use the same case-sensitive physical key name.
+
+Deployed runtime proof exposed a mismatch between the Terraform-provisioned
+uppercase `PK` attribute and an earlier lowercase `pk` persistence mapping.
+Regression coverage now enforces parity across those layers.
 
 ## Stored Attributes
 
 | Attribute | Type | Required | Description |
 |---|---:|---:|---|
-| `pk` | String | Yes | Partition key in the format `JOB#{job_id}`. |
+| `PK` | String | Yes | Partition key in the format `JOB#{job_id}`. |
 | `entity_type` | String | Yes | Persisted entity discriminator. Current value: `document_job`. |
 | `job_id` | String | Yes | Domain identifier for the document job. |
 | `status` | String | Yes | Current lifecycle state. |
@@ -175,10 +186,10 @@ Exact-decimal business values, such as money, should use a dedicated typed schem
 
 ```text
 Key:
-  pk = JOB#{job_id}
+  PK = JOB#{job_id}
 
 Condition:
-  attribute_not_exists(pk)
+  attribute_not_exists(PK)
 ```
 
 This prevents duplicate job creation.
@@ -187,7 +198,7 @@ This prevents duplicate job creation.
 
 ```text
 Key:
-  pk = JOB#{job_id}
+  PK = JOB#{job_id}
 
 Read consistency:
   strongly consistent
@@ -266,7 +277,7 @@ A generic object-mapping framework was intentionally not introduced because the 
 
 ```json
 {
-  "pk": "JOB#job-001",
+  "PK": "JOB#job-001",
   "entity_type": "document_job",
   "job_id": "job-001",
   "status": "processing",

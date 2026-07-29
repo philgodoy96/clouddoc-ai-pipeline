@@ -4,7 +4,23 @@
 
 Implemented as an application, runtime-composition, and Terraform infrastructure slice.
 
-The repository now contains:
+Real Amazon Bedrock inference was verified through the deployed `dev` happy path.
+
+Sanitized deployed proof:
+
+```text
+provider = bedrock
+model = amazon.nova-micro-v1:0
+outcome = succeeded
+strict AIExtractionResult validation completed
+job persisted as succeeded
+```
+
+Evidence: [Deployed Runtime Evidence](../operations/deployed-runtime-evidence.md).
+
+The controlled oversized-document failure correctly did not invoke Bedrock because document validation precedes inference.
+
+The repository contains:
 
 ```text
 BedrockAIProvider
@@ -17,7 +33,7 @@ deterministic offline provider tests
 offline Terraform tests
 ```
 
-Real AWS inference and end-to-end deployment validation remain separate delivery work.
+Automated offline tests still do not call Amazon Bedrock.
 
 ## Purpose
 
@@ -1121,10 +1137,6 @@ The system does not claim exactly-once inference.
 ## Intentionally Deferred
 
 ```text
-real AWS inference validation
-deployed end-to-end validation
-real AWS metric validation
-real dashboard inspection
 token-to-currency cost attribution
 prompt version registry
 Bedrock prompt management
@@ -1142,6 +1154,7 @@ provisioned throughput
 streaming inference
 batch inference
 Bedrock model invocation logging
+model-quality evaluation
 quality evaluation datasets
 RAG
 embeddings
@@ -1156,7 +1169,7 @@ Textract
 
 These capabilities have separate contracts, failure modes, costs, and validation requirements.
 
-They are not required to establish the current production-provider boundary.
+They are not required to establish the current production-provider boundary. Real AWS inference for one deployed happy path is already verified; model-quality benchmarking and the deferred product capabilities remain intentional non-goals.
 
 ## Validation Commands
 

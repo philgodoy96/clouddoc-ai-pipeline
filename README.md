@@ -4,90 +4,55 @@ Production-minded AWS serverless document intelligence pipeline designed to inge
 
 ## Project Status
 
-CloudDoc AI Pipeline contains incrementally implemented application and infrastructure foundations in the repository. Controlled Terraform plan and deployment authorization now exist as repository source. Live AWS activation, GitHub deployment configuration, and operational proof remain pending.
+CloudDoc AI Pipeline has a complete approved-v1 repository implementation. The `dev` infrastructure is deployed and converged, and the deployed runtime has been operationally verified for one happy path and one controlled deterministic failure path. Sanitized evidence lives in [Deployed Runtime Evidence](docs/operations/deployed-runtime-evidence.md).
 
 ### Status distinction
 
 ```text
-OIDC identity proof:
+repository implementation:
+    complete for the approved v1 scope
+
+GitHub OIDC authentication:
+    deployed and verified
+
+state / plan / apply roles:
+    deployed and verified
+
+remote state:
+    active
+
+controlled Plan / Deploy:
     operationally verified
 
-Terraform plan OIDC workflow trust:
-    source implemented, AWS apply pending
+value-free attestation:
+    operationally verified
 
-Terraform state and plan authorization roles:
-    source implemented, AWS apply pending
+dev infrastructure:
+    61 managed Terraform addresses
+    0 taints
+    remote lock absent
 
-Live remote-state Terraform plan:
-    pending operational activation
+real Bedrock invocation:
+    verified
 
-Deployment identity:
-    source implemented, AWS apply pending
+runtime happy path:
+    verified
 
-Terraform apply authorization:
-    source implemented, AWS apply pending
+controlled deterministic failure path:
+    verified
 
-Plan attestation:
-    source implemented, live artifact proof pending
+remaining pre-release work:
+    engineering review
+    conceptual engineering review
+    v1.0.0 release
 
-Controlled deploy workflow:
-    source implemented, GitHub configuration pending
-
-GitHub dev-deploy Environment:
-    pending
-
-Live Terraform deployment:
-    pending operational proof
+intentionally deferred scope:
+    production authorization, multi-party approval, automatic rollback,
+    notification routing, load testing, model-quality evaluation, and
+    other non-goals listed below
 ```
 
-### Implemented and operationally verified
-
-* existing application capabilities documented in this README
-* the original GitHub OIDC identity proof
-
-### Implemented in source, activation pending
-
-* second exact GitHub OIDC reusable-workflow trust entry for `.github/workflows/reusable-terraform-plan.yml`
-* permissionless deployment identity `clouddoc-dev-github-deploy-identity` for `.github/workflows/reusable-terraform-deploy.yml`
-* separate Terraform authorization bootstrap for state, plan, and apply roles
-* backend state-role wiring and mutually exclusive plan/apply provider-role wiring
-* manual Terraform plan workflow with sanitized summary and value-free plan attestation
-* controlled Terraform deploy workflow with regenerate/compare/apply execution
-* deployment request validation and exact plan-run binding
-* no binary plan or full plan JSON artifact upload
-
-### Controlled Terraform deployment
-
-The project uses a controlled single-operator Terraform deployment model. It does not simulate independent approval through an artificial second GitHub account. Controls include separate permissionless identities, separate authorization roles, manual plan and deploy phases, exact plan-run and commit validation, value-free plan attestation, explicit destructive-change authorization, non-cancelling deployment concurrency, and native S3 Terraform locking.
-
-Security boundaries:
-
-* the plan identity remains unable to deploy
-* the deployment identity is permissionless
-* the apply role is separate from state and plan roles
-* the deploy workflow uses a value-free attestation rather than a binary plan upload
-* binary plan files and full plan JSON are not uploaded
-* destructive changes are denied by default
-* a verified no-op succeeds without apply
-* automatic rollback is intentionally not claimed
-* live activation remains pending
-
-Design and operations:
-
-* [Terraform Deployment Authorization](docs/architecture/terraform-deployment-authorization.md)
-* [Terraform Deploy Workflow Runbook](docs/operations/terraform-deploy-workflow.md)
-* [ADR-028: Controlled Single-Operator Terraform Deployment](docs/adr/ADR-028-controlled-single-operator-terraform-deployment.md)
-
-### Intentionally deferred
-
-* production authorization
-* cross-account deployment
-* team-based reviewers
-* multi-party approval
-* automatic rollback
-* HCP Terraform
-* persistent binary plans
-* policy-as-code platforms
+### Repository implementation
 
 Foundations already implemented in the repository include:
 
@@ -131,15 +96,90 @@ Foundations already implemented in the repository include:
 * static CI workflow contract tests
 * GitHub OIDC bootstrap root
 * strict GitHub workload trust policy
-* permissionless development identity role
+* permissionless development and deployment identity roles
 * manual OIDC identity-check workflow
-* reusable identity workflow
+* reusable identity, plan, and deploy workflows
+* separate Terraform authorization bootstrap for state, plan, and apply roles
+* value-free plan attestation and controlled regenerate/compare/apply deployment
 * OIDC bootstrap tests
-* identity workflow contract tests
+* identity, plan, and deploy workflow contract tests
 
-Validation workflows are implemented in the repository. Controlled plan and deploy workflow source exists; live plan activation, GitHub `dev-deploy` configuration, and live deployment proof remain pending. Branch protection is not claimed as configured.
+### Deployed `dev` infrastructure
 
-GitHub OIDC trust bootstrap, both permissionless identity roles, identity-check workflows, Terraform authorization bootstrap (state, plan, and apply), manual Terraform plan workflows, value-free plan attestation, and controlled deploy workflows are implemented in repository source. The previously completed GitHub OIDC identity proof is the completed operational checkpoint. AWS apply of the extended trust and authorization roles, GitHub Environment and repository-variable configuration, live remote Terraform plan proof, and live controlled deployment proof remain post-merge activation work.
+The `dev` environment is deployed through the controlled Plan and Deploy path:
+
+* GitHub OIDC authentication deployed and verified
+* state, plan, and apply roles deployed and verified
+* remote S3 Terraform state active with native lockfiles
+* GitHub `dev` and `dev-deploy` Environments configured
+* controlled Plan and Deploy operationally verified
+* value-free attestation operationally verified
+* 61 managed Terraform addresses, 0 taints, remote lock absent
+* post-apply convergence verified (`No changes`)
+
+Staging and production infrastructure are not claimed as deployed.
+
+### Runtime operational proof
+
+Manually executed deployed-runtime evidence (not an automated test suite) verified:
+
+* IAM-authenticated `POST /v1/document-jobs` and `GET /v1/document-jobs/{job_id}`
+* successful pre-signed `PUT` upload with `content-type = text/plain`
+* DynamoDB persistence under the uppercase `PK` contract
+* real Amazon Bedrock invocation (`provider = bedrock`, model `amazon.nova-micro-v1:0`)
+* strict `AIExtractionResult` validation and `succeeded` job persistence
+* one controlled oversized-document failure (`document_validation_failed`) before Bedrock
+* correlated CloudWatch telemetry for both paths
+* no DLQ or reconciliation increase attributable to the proofs
+
+Authoritative sanitized evidence: [Deployed Runtime Evidence](docs/operations/deployed-runtime-evidence.md).
+
+### Controlled Terraform deployment
+
+The project uses a controlled single-operator Terraform deployment model. It does not simulate independent approval through an artificial second GitHub account. Controls include separate permissionless identities, separate authorization roles, manual plan and deploy phases, exact plan-run and commit validation, value-free plan attestation, explicit destructive-change authorization, non-cancelling deployment concurrency, and native S3 Terraform locking.
+
+Security boundaries:
+
+* the plan identity remains unable to deploy
+* the deployment identity is permissionless
+* the apply role is separate from state and plan roles
+* the deploy workflow uses a value-free attestation rather than a binary plan upload
+* binary plan files and full plan JSON are not uploaded
+* destructive changes are denied by default
+* a verified no-op succeeds without apply
+* automatic rollback is intentionally not claimed
+
+Design and operations:
+
+* [Terraform Deployment Authorization](docs/architecture/terraform-deployment-authorization.md)
+* [Terraform Deploy Workflow Runbook](docs/operations/terraform-deploy-workflow.md)
+* [ADR-028: Controlled Single-Operator Terraform Deployment](docs/adr/ADR-028-controlled-single-operator-terraform-deployment.md)
+* [Deployed Runtime Evidence](docs/operations/deployed-runtime-evidence.md)
+
+### Remaining pre-release work
+
+* engineering review
+* conceptual engineering review
+* v1.0.0 release
+
+Branch protection is not claimed as configured.
+
+### Intentionally deferred
+
+* production authorization
+* cross-account deployment
+* team-based reviewers
+* multi-party approval
+* automatic rollback
+* HCP Terraform
+* persistent binary plans
+* policy-as-code platforms
+* operator notification routing
+* load and stress testing
+* model-quality evaluation
+* RAG, agents, and tool calling
+* PDF/OCR and frontend
+* multi-tenancy
 
 Architecture and delivery foundations already defined include:
 
@@ -157,7 +197,7 @@ Architecture and delivery foundations already defined include:
 * Terraform ownership boundaries
 * professional contribution and pull request workflow
 
-Implemented-in-repository foundations are distinct from resources created, initialized, planned, or applied in AWS. Real AWS state-bucket bootstrap, remote backend initialization, OIDC bootstrap apply, end-to-end identity verification, and deployment validation remain pending. AWS deployment, real Bedrock invocation, and deployed end-to-end validation remain future work.
+Repository implementation, deployed `dev` infrastructure, and manually executed runtime proof are distinct layers. CI validates repository contracts; it does not replace the deployed-runtime evidence document.
 
 ## Business Problem
 
@@ -180,15 +220,16 @@ CloudDoc AI Pipeline is designed to transform uploaded business documents into v
 ```text
 Client Application
         │
-        │ POST /document-jobs
+        │ POST /v1/document-jobs
         ▼
 API Gateway
         │
         ▼
 API Lambda
         │
-        ├── creates the job in DynamoDB
-        └── returns a pre-signed S3 upload URL
+        ├── provisions upload instructions
+        ├── persists the job in DynamoDB
+        └── returns nested job + upload
                     │
                     ▼
               Amazon S3
@@ -222,7 +263,7 @@ CloudWatch Logs, native AWS metrics, alarms, and operations dashboard
 
 Infrastructure management side path (not runtime request processing):
 Infrastructure Operator
-    → guarded Terraform workflow
+    → controlled Terraform Plan / Deploy
     → account-scoped S3 state bucket
     → independent dev/staging/prod state objects
 
@@ -241,38 +282,40 @@ Manual identity check
     → STS GetCallerIdentity
 ```
 
-The repository declares the control plane, queues, event-source mappings, Lambdas, runtime composition, Bedrock adapter, exact IAM boundary, structured operational logging, CloudWatch alarms, and the operations dashboard. The AWS environment has not yet been deployed and validated. The diagram describes the approved architecture as implemented in the repository, not an already active AWS deployment. DynamoDB remains authoritative for `DocumentJob` lifecycle state; CloudWatch provides operational evidence only. CI validates repository contracts; it does not deploy or prove deployed AWS behavior. The identity verification path is implemented in repository source and is intentionally separate from application runtime and deployment authorization; it is not yet verified against AWS.
+The `dev` control plane, queues, event-source mappings, Lambdas, runtime composition, Bedrock adapter, IAM boundary, structured operational logging, CloudWatch alarms, and operations dashboard are deployed and operationally verified. DynamoDB remains authoritative for `DocumentJob` lifecycle state; CloudWatch provides operational evidence only. CI validates repository contracts; manually executed deployed-runtime evidence is recorded separately in [Deployed Runtime Evidence](docs/operations/deployed-runtime-evidence.md). Staging and production are not claimed as deployed.
 
 ## V1 Capabilities
 
-### Implemented in the repository
+### Implemented in the repository and deployed in `dev`
 
-* document job creation
-* direct uploads through time-limited S3 pre-signed URLs
+* document job creation (`POST /v1/document-jobs`; body absent, blank, or `{}`)
+* direct uploads through time-limited S3 pre-signed `PUT` URLs (`content-type = text/plain`)
+* job status retrieval (`GET /v1/document-jobs/{job_id}`)
 * asynchronous processing through SQS
 * Lambda-based API and processor runtimes
 * UTF-8 plain-text document support
-* Amazon Bedrock production provider adapter
+* Amazon Bedrock production provider adapter with verified Nova Micro inference in `dev`
 * structured result validation
-* deterministic mock AI provider
-* DynamoDB job-state persistence
+* deterministic mock AI provider for offline tests
+* DynamoDB job-state persistence under the uppercase `PK` contract
 * conditional processing ownership
 * bounded retries
 * dead-letter queue handling
 * dead-letter state reconciliation
 * least-privilege IAM declarations
-* Terraform-managed infrastructure
-* structured CloudWatch operational logs
+* Terraform-managed `dev` infrastructure (61 managed addresses)
+* structured CloudWatch operational logs with correlated happy-path and failure-path telemetry
 * nine CloudWatch alarms
 * one environment-scoped CloudWatch operations dashboard
 * offline automated tests without real Bedrock or CloudWatch calls
 
-### Remaining before validated v1
+### Remaining pre-release work
 
-* live activation and operational proof of controlled Terraform deployment
-* real end-to-end AWS validation
-* real alarm validation
-* operator notification routing
+* engineering review
+* conceptual engineering review
+* v1.0.0 release
+
+Operator notification routing remains intentionally deferred.
 
 ## Structured Result Contract
 
@@ -349,6 +392,7 @@ Detailed principles are documented in:
 * [ADR-028: Controlled Single-Operator Terraform Deployment](docs/adr/ADR-028-controlled-single-operator-terraform-deployment.md)
 * [Terraform Plan Workflow Runbook](docs/operations/terraform-plan-workflow.md)
 * [Terraform Deploy Workflow Runbook](docs/operations/terraform-deploy-workflow.md)
+* [Deployed Runtime Evidence](docs/operations/deployed-runtime-evidence.md)
 * [Terraform Authorization Bootstrap](infra/bootstrap/terraform-authorization/README.md)
 * [ADR-017: Package Python Lambdas as a Shared Deterministic ZIP](docs/adr/ADR-017-package-python-lambdas-as-a-shared-zip.md)
 * [ADR-023: Use Amazon Nova Micro through Bedrock Converse](docs/adr/ADR-023-use-amazon-nova-micro-through-bedrock-converse.md)
@@ -372,7 +416,7 @@ The v1 architecture uses:
 * AWS Identity and Access Management
 * Terraform
 
-The repository declares these components and the Bedrock processing-path adapter. Declared code and infrastructure remain distinct from deployed-and-validated AWS behavior.
+These components and the Bedrock processing-path adapter are deployed and operationally verified in the `dev` environment. Staging and production remain undeployed.
 
 The initial processing path is:
 
@@ -411,7 +455,7 @@ EventBridge is intentionally deferred from the primary v1 path because the curre
 * Git
 * pip-tools
 
-Lambda ZIP packaging targets Python 3.12 on Linux x86_64. Bedrock is integrated in the Processor application path and Terraform IAM boundary; real AWS deployment and inference validation remain pending.
+Lambda ZIP packaging targets Python 3.12 on Linux x86_64. Bedrock is integrated in the Processor application path and Terraform IAM boundary; real Nova Micro inference was verified through the deployed `dev` happy path.
 
 ## Repository Structure
 
@@ -425,13 +469,22 @@ Current repository layout:
 │       ├── aws-identity-check.yml
 │       ├── infrastructure-quality.yml
 │       ├── python-quality.yml
-│       └── reusable-aws-identity.yml
+│       ├── reusable-aws-identity.yml
+│       ├── reusable-terraform-deploy.yml
+│       ├── reusable-terraform-plan.yml
+│       ├── terraform-deploy.yml
+│       └── terraform-plan.yml
 ├── docs/
 │   ├── adr/
-│   └── architecture/
+│   ├── architecture/
+│   └── operations/
+│       ├── deployed-runtime-evidence.md
+│       ├── terraform-deploy-workflow.md
+│       └── terraform-plan-workflow.md
 ├── infra/
 │   ├── bootstrap/
 │   │   ├── github-oidc/
+│   │   ├── terraform-authorization/
 │   │   └── terraform-state/
 │   └── terraform/
 │       └── environments/
@@ -441,6 +494,8 @@ Current repository layout:
 │   └── lambda.lock.txt
 ├── scripts/
 │   ├── build_lambda_package.py
+│   ├── summarize_terraform_plan.py
+│   ├── terraform_plan_attestation.py
 │   └── terraform_workflow.py
 ├── src/
 │   └── clouddoc/
@@ -489,7 +544,7 @@ artifacts/lambda/
 * a Python virtual environment
 * Make, Git Bash, WSL, or equivalent direct commands
 
-AWS CLI is optional. AWS authentication is not required for offline OIDC bootstrap validation, CI-equivalent offline validation, formatting, linting, packaging checks, or automated tests. Temporary human AWS authentication will be required for the first real bootstrap plan and apply, including the state-bucket and GitHub OIDC trust roots, and for later remote backend initialization, plan, apply, and output against AWS.
+AWS CLI is optional. AWS authentication is not required for offline OIDC bootstrap validation, CI-equivalent offline validation, formatting, linting, packaging checks, or automated tests. Temporary human AWS authentication is required only for bootstrap maintenance and other intentional operator tasks outside the controlled GitHub Plan/Deploy path. The `dev` remote backend, OIDC identities, authorization roles, and controlled Plan/Deploy path are already active.
 
 ### Setup
 
@@ -628,14 +683,14 @@ Run offline checks (no AWS credentials):
 python scripts/terraform_workflow.py offline-check
 ```
 
-When AWS authentication is configured for future real operations, set runtime inputs (use your account values; do not commit them):
+When AWS authentication is configured for authenticated local Terraform operations, set runtime inputs (use your account values; do not commit them):
 
 ```text
 CLOUDDOC_TERRAFORM_STATE_BUCKET
 CLOUDDOC_EXPECTED_AWS_ACCOUNT_ID
 ```
 
-Guarded commands (require future AWS authentication except `show-plan`):
+Guarded commands (require AWS authentication except `show-plan` and `offline-check`):
 
 ```powershell
 python scripts/terraform_workflow.py init --environment dev
@@ -646,7 +701,7 @@ python scripts/terraform_workflow.py deploy --environment dev --confirm-environm
 python scripts/terraform_workflow.py output --environment dev
 ```
 
-`show-plan` and local `apply` use the existing saved-plan contract under `artifacts/terraform/<environment>/`. `deploy` is the controlled regenerate/compare/apply contract used by the GitHub deploy path. Real remote backend initialization, live plan activation, and live controlled deployment remain pending.
+`show-plan` and local `apply` use the existing saved-plan contract under `artifacts/terraform/<environment>/`. `deploy` is the controlled regenerate/compare/apply contract used by the GitHub deploy path. The remote backend is initialized for `dev`, and live controlled Plan/Deploy have been operationally verified through GitHub Actions. Prefer the controlled GitHub Plan and Deploy workflows for reviewed `dev` mutations.
 
 ## Packaging Contract
 
@@ -673,6 +728,8 @@ CPython cp312
 Equivalent inputs produce a stable archive hash because ordering, timestamps, permissions, and compression behavior are controlled. This is intentionally deterministic packaging within that contract, not cryptographic signing or universal reproducibility across arbitrary environments.
 
 ## Testing Strategy
+
+### Automated offline tests
 
 Automated tests do not require AWS credentials or real CloudWatch or Bedrock calls.
 
@@ -711,7 +768,11 @@ Current coverage includes:
 
 Builder-tooling tests use temporary directories and local dependency fixtures. They do not install real packages, do not access AWS, and do not require network access. Bootstrap and workflow tests likewise require no AWS.
 
-Manual deployed-environment checks and end-to-end AWS validation remain future work.
+### Manually executed deployed runtime evidence
+
+Deployed `dev` runtime validation is recorded as manually executed operational evidence, not as an automated test suite. See [Deployed Runtime Evidence](docs/operations/deployed-runtime-evidence.md).
+
+That evidence covers one happy path and one controlled deterministic non-retryable failure path. It does not claim load testing, every failure mode, alarm notification delivery, or production certification.
 
 Testing guidance will evolve under:
 
@@ -883,20 +944,9 @@ The following product capabilities are intentionally deferred:
 
 These decisions keep the first release focused on one complete, observable, recoverable serverless document-processing workflow.
 
-Remaining deployment and operational follow-ups:
+Remaining intentionally deferred operational and product follow-ups:
 
 * branch protection activation
-* AWS apply of extended OIDC trust and deployment identity
-* AWS apply of Terraform state, plan, and apply authorization roles
-* GitHub repository variables for plan and deploy
-* GitHub `dev-deploy` Environment
-* live remote-state Terraform plan proof
-* live controlled Terraform deployment proof
-* real AWS deployment validation
-* real state-bucket bootstrap in AWS
-* real remote backend initialization
-* real AWS invocation and end-to-end validation
-* real CloudWatch dashboard and alarm validation
 * operator notification routing
 * operator recovery tooling
 * SLOs
@@ -913,8 +963,16 @@ Remaining deployment and operational follow-ups:
 * HCP Terraform
 * persistent binary plans
 * policy-as-code platforms
+* load and stress testing
+* model-quality evaluation
 
 Branch protection should be configured after the validation workflows run successfully on `main`. It is not claimed as active.
+
+Pre-release gates that remain:
+
+* engineering review
+* conceptual engineering review
+* v1.0.0 release
 
 ## Architecture Decision Records
 

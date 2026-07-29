@@ -7,17 +7,17 @@ Accepted
 ## Implementation Status
 
 ```text
-source implemented
-GitHub configuration pending
-AWS activation pending
-live proof pending
+deployed and operationally verified
 ```
 
-The decision is intentional and portfolio-defensible. The absence of an
+The decision remains intentional and portfolio-defensible. The absence of an
 independent reviewer is an operating-model trade-off, not a project defect.
 
 Operational procedure:
 [Terraform Deploy Workflow Runbook](../operations/terraform-deploy-workflow.md)
+
+Evidence:
+[Deployed Runtime Evidence](../operations/deployed-runtime-evidence.md)
 
 ## Date
 

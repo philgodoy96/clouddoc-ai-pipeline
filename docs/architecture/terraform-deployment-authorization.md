@@ -10,18 +10,18 @@ Source implementation:
     implemented
 
 AWS activation:
-    pending
+    deployed and verified for dev
 
 GitHub environment activation:
-    pending
+    deployed and verified
 
 Live deployment verification:
-    pending
+    operationally verified
 ```
 
 - **Environment:** `dev`
 - **Operating model:** Single authorized operator
-- **Last updated:** 2026-07-28
+- **Last updated:** 2026-07-29
 
 ## Purpose
 
@@ -39,6 +39,8 @@ account.
 Operational procedure lives in
 [Terraform Deploy Workflow Runbook](../operations/terraform-deploy-workflow.md).
 
+Evidence: [Deployed Runtime Evidence](../operations/deployed-runtime-evidence.md).
+
 ## Business Context
 
 CloudDoc already has a source implementation for:
@@ -55,8 +57,8 @@ CloudDoc already has a source implementation for:
 - controlled deploy workflows;
 - temporary saved-plan cleanup.
 
-The next requirement after source merge is controlled infrastructure mutation
-activation and live operational proof.
+Controlled infrastructure mutation for `dev` is activated and operationally
+verified. See [Deployed Runtime Evidence](../operations/deployed-runtime-evidence.md).
 
 A deployment must:
 
@@ -146,9 +148,11 @@ The design is grounded in the current repository:
 - Source implementation status:
   implemented
 - AWS and GitHub activation:
-  pending
+  deployed and verified for `dev`
 - Live deployment verification:
-  pending
+  operationally verified
+
+Evidence: [Deployed Runtime Evidence](../operations/deployed-runtime-evidence.md).
 
 ## Goals
 
@@ -1378,7 +1382,7 @@ The slice is complete only when:
 - concurrent `dev` deployments are blocked;
 - post-apply convergence is verified;
 - positive and negative authorization evidence is recorded;
-- documentation distinguishes source implementation, activation, and live proof.
+- documentation distinguishes repository implementation, deployed `dev` activation, and live operational proof.
 
 ## Scaling and Evolution
 
