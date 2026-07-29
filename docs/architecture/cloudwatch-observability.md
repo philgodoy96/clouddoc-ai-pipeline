@@ -4,7 +4,20 @@
 
 Implemented as an application, runtime-composition, and Terraform infrastructure slice.
 
-The repository now contains:
+Deployed `dev` observability status:
+
+```text
+CloudWatch log groups deployed
+API Gateway access logging deployed
+operations dashboard deployed
+nine alarm resources deployed
+happy-path telemetry correlated
+controlled terminal-failure telemetry correlated
+```
+
+Evidence: [Deployed Runtime Evidence](../operations/deployed-runtime-evidence.md).
+
+The repository contains:
 
 ```text
 CloudDoc-owned structured operational logging contract
@@ -21,7 +34,7 @@ offline application telemetry tests
 offline Terraform observability tests
 ```
 
-Real AWS deployment, dashboard inspection, alarm-state validation, and notification routing remain separate delivery work.
+Synthetic alarm-state transition, notification delivery, and operator notification routing remain deliberately unverified or deferred.
 
 ## Purpose
 
@@ -1173,9 +1186,34 @@ PagerDuty integration
 environment-specific escalation policy
 ```
 
-Alarm state is implemented.
+Alarm state is implemented as Terraform-managed resources in `dev`.
 
-Notification routing is deferred until the deployment and operational-response boundary is approved.
+Operator notification routing remains intentionally deferred because the current project scope focuses on runtime correctness, traceability, state safety, and controlled deployment.
+
+## Operational Proof
+
+Deployed runtime evidence correlated these structured events without logging document or model content:
+
+```text
+control_plane.request_completed
+processing.record_completed
+processing.batch_completed
+ai_provider.invocation_completed
+```
+
+Happy-path correlation included create/get success, Bedrock success, and processing completion. The controlled oversized-document failure correlated terminal `document_validation_failed` without `ai_provider.invocation_completed`.
+
+Clarifications preserved by the proof:
+
+```text
+DynamoDB remains authoritative
+queue counts are supporting evidence
+logs are not transactionally coupled to state
+```
+
+No document content or raw model response is logged. Synthetic alarm-state transition and external notification delivery were not performed.
+
+Evidence: [Deployed Runtime Evidence](../operations/deployed-runtime-evidence.md).
 
 ## Operations Dashboard
 
@@ -1746,7 +1784,7 @@ The existing `AIProviderInvalidResponseError` remains authoritative.
 
 The alarm changes state but does not notify an external channel.
 
-Operators must inspect CloudWatch until notification routing is implemented.
+Operators must inspect CloudWatch until notification routing is implemented. Notification delivery is intentionally deferred and is not claimed by the deployed-runtime evidence.
 
 ### Dashboard panel has no data
 
@@ -1763,15 +1801,15 @@ The system does not assume logs are a transactional record.
 ## Intentionally Deferred
 
 ```text
-real AWS deployment
-real dashboard inspection
-real alarm-state validation
+synthetic alarm-state transition
+notification delivery
 SNS alarm notifications
 email subscriptions
 Slack integration
 PagerDuty integration
 environment-specific escalation policies
 operator on-call ownership
+operator notification routing
 SLOs
 error budgets
 custom application metrics
@@ -1798,7 +1836,7 @@ automatic DLQ replay
 operator recovery tooling
 ```
 
-These capabilities require explicit ownership, cost, privacy, and incident-response decisions.
+These capabilities require explicit ownership, cost, privacy, and incident-response decisions. Deployed log groups, access logging, dashboard, alarm resources, and correlated happy-path / failure-path telemetry are already verified in `dev`; synthetic alarm transitions and notification routing remain deliberately deferred.
 
 ## Validation Commands
 

@@ -11,7 +11,7 @@ The system has two primary execution paths:
 Responsible for:
 
 * creating document jobs
-* validating upload metadata
+* provisioning upload instructions
 * generating pre-signed S3 upload URLs
 * returning job status and results
 
@@ -35,7 +35,7 @@ This separation prevents document-processing latency and model availability from
 │  Client Application  │
 └──────────┬───────────┘
            │
-           │ POST /document-jobs
+           │ POST /v1/document-jobs
            ▼
 ┌──────────────────────┐
 │     API Gateway      │
@@ -45,9 +45,9 @@ This separation prevents document-processing latency and model availability from
 │      API Lambda      │
 │                      │
 │ - validates request  │
-│ - creates job        │
-│ - generates IDs      │
-│ - creates upload URL │
+│ - provisions upload  │
+│ - persists job       │
+│ - returns response   │
 └───────┬────────┬─────┘
         │        │
         │        │ pre-signed PUT URL
@@ -652,25 +652,17 @@ error_code
 retryable
 ```
 
-Stable event types include:
+Stable operational event names include:
 
 ```text
-job_creation_started
-job_created
-upload_url_generated
-job_status_requested
-processing_event_received
-processing_claim_acquired
-duplicate_processing_skipped
-document_validation_failed
-document_loaded
-ai_inference_started
-ai_inference_succeeded
-ai_output_invalid
-job_succeeded
-job_failed
-processing_retry_requested
-job_dead_lettered
+control_plane.request_completed
+processing.record_completed
+processing.record_failed
+processing.batch_completed
+reconciliation.record_completed
+reconciliation.record_failed
+reconciliation.batch_completed
+ai_provider.invocation_completed
 ```
 
 Logs must not contain:
@@ -786,41 +778,57 @@ Primary cost-risk paths include:
 ### Create document job
 
 ```text
-POST /document-jobs
+POST /v1/document-jobs
 ```
 
-Request:
+Request body:
 
-```json
-{
-  "original_filename": "service-agreement.txt",
-  "content_type": "text/plain",
-  "file_size_bytes": 48219
-}
+```text
+absent, blank, or {}
 ```
+
+The executable handler rejects request bodies that contain fields.
 
 Response:
 
 ```json
 {
-  "job_id": "job_...",
-  "status": "pending_upload",
+  "job": {
+    "job_id": "job_...",
+    "status": "pending_upload",
+    "request_id": "req_...",
+    "correlation_id": "corr_...",
+    "created_at": "...",
+    "updated_at": "...",
+    "attempts": 0,
+    "error_reason": null
+  },
   "upload": {
     "method": "PUT",
     "url": "<temporary pre-signed URL>",
-    "expires_at": "..."
-  },
-  "request_id": "req_...",
-  "correlation_id": "corr_..."
+    "headers": {
+      "content-type": "text/plain"
+    },
+    "object_key": "documents/job_.../source.txt",
+    "expires_in_seconds": 900
+  }
 }
 ```
 
-The job is persisted before the upload URL is returned.
+Ordering matches executable behavior:
+
+```text
+upload instructions are provisioned
+then
+the job is persisted
+then
+the response is returned
+```
 
 ### Get document job
 
 ```text
-GET /document-jobs/{job_id}
+GET /v1/document-jobs/{job_id}
 ```
 
 An existing job returns `200 OK` regardless of whether processing succeeded or failed.
@@ -878,11 +886,17 @@ Dev, staging, and prod use independent state object keys and S3-native lockfiles
 
 Operator workflow, locking, saved-plan apply, and migration guards are documented in [Terraform State and Environment Workflow](terraform-state-and-environment-workflow.md) and [ADR-025: Use S3 Native Locking and Explicit Environment State](../adr/ADR-025-use-s3-native-locking-and-explicit-environment-state.md).
 
-Real AWS state-bucket creation and remote backend initialization remain pending.
+The account-scoped state bucket exists and the `dev` application backend is initialized against remote state. Staging and production backends remain environment declarations only until intentionally activated.
+
+## Deployed Validation
+
+The `dev` environment has been operationally verified for one happy path and one controlled deterministic failure path. Sanitized evidence is recorded in [Deployed Runtime Evidence](../operations/deployed-runtime-evidence.md).
+
+That evidence proves authenticated job create/get, pre-signed upload, uppercase `PK` persistence, real Bedrock inference on the happy path, and terminal `document_validation_failed` before Bedrock on the oversized-document path. It does not claim production certification, load testing, notification routing, or every failure mode.
 
 ## Terraform Resource Boundaries
 
-Terraform will manage:
+Terraform manages:
 
 * API Gateway HTTP API
 * API Lambda
@@ -899,7 +913,7 @@ Terraform will manage:
 * CloudWatch alarms
 * environment-specific configuration
 
-Terraform will not manage:
+Terraform does not manage:
 
 * Bedrock foundation models
 * AWS organization configuration
@@ -907,7 +921,7 @@ Terraform will not manage:
 * production DNS
 * frontend resources
 
-Bedrock model access and regional availability remain deployment prerequisites.
+Bedrock model access and regional availability remain account and Region prerequisites for the selected `dev` deployment.
 
 ## Final V1 Decisions
 

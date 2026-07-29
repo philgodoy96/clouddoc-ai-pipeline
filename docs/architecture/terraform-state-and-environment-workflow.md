@@ -2,7 +2,7 @@
 
 ## Status
 
-Implemented in the repository as an offline-testable infrastructure and operator-workflow slice.
+Implemented in the repository as an offline-testable infrastructure and operator-workflow slice, and operationally verified for the `dev` environment.
 
 The repository now contains:
 
@@ -37,13 +37,24 @@ run deploy
 validate live AWS authorization
 ```
 
-The state bucket has not yet been created in AWS.
+Verified operational baseline for `dev`:
 
-The application backend has not yet been initialized against AWS.
+```text
+state bucket created
+dev backend initialized
+GitHub OIDC identities deployed
+state / plan / apply roles deployed
+repository variables configured
+dev and dev-deploy Environments configured
+live Plan verified
+live controlled Deploy verified
+value-free attestation verified
+post-apply convergence verified
+```
 
-The GitHub OIDC bootstrap and Terraform authorization bootstrap are implemented in repository source. AWS activation remains pending. The state role source now trusts exactly two approved identity principals: the plan identity and the deployment identity. That trust is not yet applied in AWS.
+Evidence: [Deployed Runtime Evidence](../operations/deployed-runtime-evidence.md).
 
-No CloudDoc environment has been planned or applied against a real AWS account through the controlled deploy path.
+Staging and production infrastructure are not claimed as deployed.
 
 ## Purpose
 
@@ -77,7 +88,7 @@ remote plan
 controlled deploy
 ```
 
-State substrate and OIDC trust are separate bootstrap roots. Identity proof verifies authentication only. The authorization bootstrap owns the dedicated state, plan, and apply roles in source, while AWS activation and live remote-plan proof remain pending.
+State substrate and OIDC trust are separate bootstrap roots. Identity proof verifies authentication only. The authorization bootstrap owns the dedicated state, plan, and apply roles. For `dev`, those roles are deployed and live remote Plan/Deploy have been operationally verified. Staging and production remain undeployed.
 
 ## Architecture Overview
 
@@ -233,7 +244,7 @@ attach state, plan, or apply authorization policies
 run remote plan or apply
 ```
 
-The OIDC identity roles currently have no state access and remain permissionless. Downstream state, plan, and apply authorization roles are owned by the separate Terraform authorization bootstrap in source. AWS activation of those roles remains pending. Authentication remains distinct from authorization. See [GitHub OIDC Trust Bootstrap](github-oidc-trust-bootstrap.md), [Terraform Deployment Authorization](terraform-deployment-authorization.md), and [ADR-026](../adr/ADR-026-separate-oidc-authentication-from-deployment-authorization.md).
+The OIDC identity roles currently have no state access and remain permissionless. Downstream state, plan, and apply authorization roles are owned by the separate Terraform authorization bootstrap and are deployed for `dev`. Authentication remains distinct from authorization. See [GitHub OIDC Trust Bootstrap](github-oidc-trust-bootstrap.md), [Terraform Deployment Authorization](terraform-deployment-authorization.md), and [ADR-026](../adr/ADR-026-separate-oidc-authentication-from-deployment-authorization.md).
 
 ### Application root
 
@@ -630,7 +641,7 @@ clouddoc-dev-github-identity
 clouddoc-dev-github-deploy-identity
 ```
 
-State permissions remain unchanged. State and provider roles remain independent. Plan uses state + plan roles. Deploy uses state + apply roles. `dev-deploy` is separate from `dev`. Environment reviewers remain future-compatible. The new trust is source implemented and not yet applied in AWS.
+State permissions remain unchanged. State and provider roles remain independent. Plan uses state + plan roles. Deploy uses state + apply roles. `dev-deploy` is separate from `dev`. Environment reviewers remain future-compatible. The dual-identity state-role trust is deployed and operationally verified for `dev`.
 
 The repository does not commit credential values.
 
@@ -1259,12 +1270,9 @@ State may contain sensitive infrastructure values.
 
 Access to the state bucket must be treated as privileged.
 
-## Future State Access IAM
+## State Access IAM
 
-State authorization now exists in repository source through
-`clouddoc-dev-terraform-state`, which trusts exactly the plan identity and
-deployment identity. State permissions remain exact to the `dev` state and lock
-objects. AWS activation remains pending.
+State authorization exists through `clouddoc-dev-terraform-state`, which trusts exactly the plan identity and deployment identity. State permissions remain exact to the `dev` state and lock objects. The role is deployed and used by live Plan and Deploy.
 
 Conceptual state-file permissions:
 
@@ -1286,7 +1294,7 @@ s3:DeleteObject
     → exact terraform.tfstate.tflock object
 ```
 
-These permissions are implemented in the authorization bootstrap source and remain AWS-apply pending. Authentication for identity proof remains separate from state authorization for remote plan or deploy.
+These permissions are provisioned by the authorization bootstrap and operationally verified for `dev` remote Plan and Deploy. Authentication for identity proof remains separate from state authorization for remote plan or deploy.
 
 ## Cost Position
 
@@ -1489,7 +1497,7 @@ python scripts/terraform_workflow.py apply `
 
 ## Real AWS Bootstrap Procedure
 
-This procedure is documented but has not yet been executed.
+This procedure documents the one-time bootstrap sequence. For the current project account it has already been executed for the state substrate and `dev` backend initialization. Re-running it is not routine day-2 operation; prefer the controlled Plan and Deploy workflows for application mutations.
 
 1. Choose and configure an approved AWS authentication method.
 2. Verify the intended AWS account.
@@ -1507,18 +1515,14 @@ This procedure is documented but has not yet been executed.
 14. Plan and review the `dev` environment.
 15. Apply only after explicit approval.
 
-The user does not need to configure AWS until this real bootstrap step is intentionally started.
+Evidence of the resulting `dev` convergence and runtime proof:
+[Deployed Runtime Evidence](../operations/deployed-runtime-evidence.md).
 
 ## Intentionally Deferred
 
 ```text
-real AWS state bootstrap apply
-AWS apply of extended OIDC trust and deployment identity
-AWS apply of Terraform state, plan, and apply authorization roles
-GitHub repository variables for plan and deploy
-GitHub dev-deploy Environment
-live remote-state Terraform plan proof
-live controlled Terraform deployment proof
+staging infrastructure deployment
+production infrastructure deployment
 state migration
 production authorization
 cross-account deployment
@@ -1544,7 +1548,7 @@ multi-account platform foundation
 centralized state-account model
 ```
 
-These require explicit identity, approval, recovery, cost, and deployment contracts. Source implementation of controlled single-operator deployment does not complete AWS activation or live operational proof.
+These require explicit identity, approval, recovery, cost, and deployment contracts. The `dev` state substrate, remote backend, OIDC identities, authorization roles, and controlled Plan/Deploy path are already operationally verified.
 
 ## Reliability Invariants
 

@@ -72,7 +72,7 @@ no state permissions
 no application permissions
 ```
 
-Terraform state, plan, and apply authorization are implemented as a separate authorization boundary in repository source. This root remains authentication only; the authorization roles are owned by `../terraform-authorization/README.md`. Source is implemented; AWS apply of the extended trust and the deployment identity remains pending.
+Terraform state, plan, and apply authorization are implemented as a separate authorization boundary. This root remains authentication only; the authorization roles are owned by `../terraform-authorization/README.md`. For `dev`, the OIDC identities and deployment identity are deployed and operationally verified. See [Deployed Runtime Evidence](../../../docs/operations/deployed-runtime-evidence.md).
 
 ## Terraform Root
 
@@ -192,7 +192,7 @@ deployment identity:
     dev-deploy
 ```
 
-The identity verification and plan workflows request a 900-second session. The deployment identity remains source implemented; AWS apply is pending. Do not document the deployment identity as already present in AWS.
+The identity verification and plan workflows request a 900-second session. The deployment identity is deployed in AWS for `dev` and is operationally verified through controlled Deploy. Do not claim staging or production deployment identities.
 
 ## OIDC Provider Contract
 
@@ -358,8 +358,7 @@ The source hotfix adds the exact subject condition.
 
 The corrected trust contract is implemented in repository source.
 
-It is not yet applied to the AWS role and has not yet been re-verified through
-the AWS Identity Check workflow.
+It has been applied to the AWS role and re-verified through the AWS Identity Check workflow and subsequent Plan/Deploy federation for `dev`.
 
 ## OIDC claim preflight
 
@@ -452,14 +451,15 @@ All preflight claims match but AWS denies assume-role
 ```text
 source trust correction implemented
 OIDC claim preflight implemented in the reusable workflow
-second exact reusable workflow trust entry for plan implemented in source
-deployment identity role implemented in source
-AWS trust extension not yet applied
-deployment identity not yet present in AWS
-Terraform plan federation not yet verified
-controlled deploy federation not yet verified
+second exact reusable workflow trust entry for plan deployed and verified
+deployment identity role deployed and verified
+AWS trust extension applied
+Terraform plan federation verified
+controlled deploy federation verified
 both roles remain permissionless
 ```
+
+Evidence: [Deployed Runtime Evidence](../../../docs/operations/deployed-runtime-evidence.md).
 
 ## Wildcard Boundary
 
@@ -672,7 +672,7 @@ github_deploy_trusted_repository_identity
 github_trusted_workflow_refs
 ```
 
-No credential or token is an output. `github_trusted_workflow_refs` should show exactly the two reviewed plan/identity reusable workflows on `refs/heads/main`. `github_terraform_deploy_workflow_ref` should show the exact deploy reusable workflow on `refs/heads/main`. Use the identity and deployment role ARN outputs when configuring repository variables after AWS apply.
+No credential or token is an output. `github_trusted_workflow_refs` should show exactly the two reviewed plan/identity reusable workflows on `refs/heads/main`. `github_terraform_deploy_workflow_ref` should show the exact deploy reusable workflow on `refs/heads/main`. Use the identity and deployment role ARN outputs when configuring or rotating repository variables. For the current `dev` environment those variables are already configured and verified.
 
 ## GitHub Configuration Boundary
 
@@ -796,11 +796,6 @@ Local bootstrap state remains outside Git.
 ## Intentionally Deferred
 
 ```text
-corrective AWS role trust apply
-AWS Identity Check re-verification
-AWS apply of the deployment identity
-Terraform plan federation verification
-controlled deploy federation verification
 staging identity
 production identity
 cross-account deployment
@@ -810,7 +805,7 @@ team-based reviewers
 multi-party approval
 ```
 
-Authorization policies for state, plan, and apply remain owned by the separate Terraform authorization bootstrap. These capabilities require separate implementation, review, and operational evidence.
+Authorization policies for state, plan, and apply remain owned by the separate Terraform authorization bootstrap. The `dev` authentication substrate, plan federation, and controlled deploy federation are already operationally verified.
 
 ## Related Documentation
 

@@ -7,23 +7,44 @@ Source implementation:
     implemented
 
 GitHub deployment environment:
-    pending
+    deployed and verified
 
 GitHub repository variables:
-    pending
+    configured and verified
 
 AWS deployment identity:
-    source implemented, AWS apply pending
+    deployed and verified
 
 AWS Terraform apply role:
-    source implemented, AWS apply pending
+    deployed and verified
 
 Live Terraform plan:
-    pending operational activation
+    operationally verified
 
 Live Terraform deployment:
-    pending operational proof
+    operationally verified
 ```
+
+## Verified operational baseline
+
+For the current `dev` environment:
+
+```text
+state bucket created
+dev backend initialized
+GitHub OIDC identities deployed
+state / plan / apply roles deployed
+repository variables configured
+dev and dev-deploy Environments configured
+live Plan verified
+live controlled Deploy verified
+value-free attestation verified
+post-apply convergence verified
+```
+
+Evidence: [Deployed Runtime Evidence](../operations/deployed-runtime-evidence.md).
+
+This runbook remains the actionable procedure for subsequent controlled deployments. Staging and production are not claimed as deployed.
 
 ## Purpose
 

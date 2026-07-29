@@ -8,6 +8,23 @@ CloudDoc `dev` Terraform plan workflow.
 The workflow performs a speculative plan only. It does not deploy
 infrastructure.
 
+## Verified operational baseline
+
+For the current `dev` environment:
+
+```text
+GitHub OIDC authentication = deployed and verified
+state and plan roles = deployed and verified
+remote state = active
+live Plan = operationally verified
+value-free attestation = operationally verified
+```
+
+Evidence: [Deployed Runtime Evidence](../operations/deployed-runtime-evidence.md).
+
+This runbook remains the actionable procedure for subsequent speculative plans.
+Staging and production are not claimed as deployed.
+
 ## Workflow Files
 
 Caller workflow:
