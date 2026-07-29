@@ -736,6 +736,7 @@ run "apply_boundary_contract" {
         "ReadCallerIdentity",
         "ManageApiGatewayV2ControlPlane",
         "CompleteTaggedApiGatewayV2StageCreation",
+        "ManageApiGatewayV2StageTags",
         "DescribeCloudWatchAlarmMetrics",
         "ManageCloudWatchAlarms",
         "ListCloudWatchDashboards",
@@ -1272,6 +1273,174 @@ run "apply_boundary_contract" {
       )
     )
     error_message = "CompleteTaggedApiGatewayV2StageCreation must grant only apigateway:PUT on the raw Stages collection and encoded Stage tag resource."
+  }
+
+  assert {
+    condition = (
+      toset(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageApiGatewayV2StageTags"
+        ]).actions
+        ) == toset([
+          "apigateway:TagResource",
+          "apigateway:UntagResource",
+      ]) &&
+      toset(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageApiGatewayV2StageTags"
+        ]).resources
+        ) == toset([
+          local.application_apigateway_stages_resource,
+          local.application_apigateway_stage_resource_prefix,
+      ]) &&
+      length(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageApiGatewayV2StageTags"
+        ]).condition
+      ) == 0 &&
+      length(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageApiGatewayV2StageTags"
+        ]).resources
+      ) == 2 &&
+      contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageApiGatewayV2StageTags"
+        ]).resources,
+        local.application_apigateway_stages_resource,
+      ) &&
+      contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageApiGatewayV2StageTags"
+        ]).resources,
+        local.application_apigateway_stage_resource_prefix,
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageApiGatewayV2StageTags"
+        ]).resources,
+        "*",
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageApiGatewayV2StageTags"
+        ]).resources,
+        local.application_apigateway_api_resource_prefix,
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageApiGatewayV2StageTags"
+        ]).resources,
+        local.application_apigateway_api_tag_resource,
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageApiGatewayV2StageTags"
+        ]).resources,
+        local.application_apigateway_stage_tag_resource,
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageApiGatewayV2StageTags"
+        ]).resources,
+        local.application_apigateway_integrations_resource,
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageApiGatewayV2StageTags"
+        ]).resources,
+        local.application_apigateway_integration_resource_prefix,
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageApiGatewayV2StageTags"
+        ]).resources,
+        local.application_apigateway_routes_resource,
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageApiGatewayV2StageTags"
+        ]).resources,
+        local.application_apigateway_route_resource_prefix,
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageApiGatewayV2StageTags"
+        ]).resources,
+        "arn:aws:apigateway:us-east-1::/tags/*",
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageApiGatewayV2StageTags"
+        ]).actions,
+        "apigateway:GET",
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageApiGatewayV2StageTags"
+        ]).actions,
+        "apigateway:POST",
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageApiGatewayV2StageTags"
+        ]).actions,
+        "apigateway:PUT",
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageApiGatewayV2StageTags"
+        ]).actions,
+        "apigateway:PATCH",
+      ) &&
+      !contains(
+        one([
+          for statement in data.aws_iam_policy_document.terraform_apply_access.statement :
+          statement
+          if statement.sid == "ManageApiGatewayV2StageTags"
+        ]).actions,
+        "apigateway:DELETE",
+      )
+    )
+    error_message = "ManageApiGatewayV2StageTags must grant only TagResource and UntagResource on the raw Stages collection and Stage instance prefix, without API, integration, route, or encoded tag resources."
   }
 
   assert {
