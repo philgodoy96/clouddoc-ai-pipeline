@@ -837,6 +837,56 @@ def test_complete_tagged_api_gateway_stage_creation_uses_put_on_stages_and_tag()
     ) < resources_body.index("application_apigateway_stage_tag_resource")
 
 
+def test_manage_api_gateway_v2_stage_tags_statement_is_exact() -> None:
+    """Stage tag reconciliation needs TagResource/UntagResource on Stages scopes."""
+    apply_block = extract_policy_document_block("terraform_apply_access")
+    tags_body = re.search(
+        r'sid\s*=\s*"ManageApiGatewayV2StageTags".*?(?=sid\s*=|\Z)',
+        apply_block,
+        flags=re.DOTALL,
+    )
+    manage_body = re.search(
+        r'sid\s*=\s*"ManageApiGatewayV2ControlPlane".*?(?=sid\s*=|\Z)',
+        apply_block,
+        flags=re.DOTALL,
+    )
+    put_body = re.search(
+        r'sid\s*=\s*"CompleteTaggedApiGatewayV2StageCreation".*?(?=sid\s*=|\Z)',
+        apply_block,
+        flags=re.DOTALL,
+    )
+    assert tags_body is not None
+    assert manage_body is not None
+    assert put_body is not None
+    tags_statement = tags_body.group(0)
+    manage_statement = manage_body.group(0)
+    put_statement = put_body.group(0)
+
+    assert quoted_actions(tags_statement) == {
+        "apigateway:TagResource",
+        "apigateway:UntagResource",
+    }
+    assert "local.application_apigateway_stages_resource" in tags_statement
+    assert "local.application_apigateway_stage_resource_prefix" in tags_statement
+    assert "local.application_apigateway_stage_tag_resource" not in tags_statement
+    assert "local.application_apigateway_api_tag_resource" not in tags_statement
+    assert "local.application_apigateway_api_resource_prefix" not in tags_statement
+    assert "application_apigateway_integrations_resource" not in tags_statement
+    assert "application_apigateway_integration_resource_prefix" not in tags_statement
+    assert "application_apigateway_routes_resource" not in tags_statement
+    assert "application_apigateway_route_resource_prefix" not in tags_statement
+    assert "/tags/*" not in tags_statement
+    assert re.search(r'resources\s*=\s*\[\s*"\*"\s*,?\s*\]', tags_statement) is None
+    assert "condition" not in tags_statement
+    assert len(re.findall(r"local\.application_apigateway_\w+", tags_statement)) == 2
+
+    assert "apigateway:TagResource" not in quoted_actions(manage_statement)
+    assert "apigateway:UntagResource" not in quoted_actions(manage_statement)
+    assert quoted_actions(put_statement) == {"apigateway:PUT"}
+    assert "local.application_apigateway_stages_resource" in put_statement
+    assert "local.application_apigateway_stage_tag_resource" in put_statement
+
+
 def test_lambda_permission_lifecycle_covers_control_plane_functions() -> None:
     """Add/Get/Remove must cover create-job and get-job without InvokeFunction."""
     locals_source = read_bootstrap_file("locals.tf")
@@ -1249,6 +1299,7 @@ def test_authorization_security_boundaries_remain_intact_after_apply_fix() -> No
     assert "application_log_group_management_arns" in locals_source
     assert "ReadLambdaEventSourceMapping" in apply_block
     assert "CompleteTaggedApiGatewayV2StageCreation" in apply_block
+    assert "ManageApiGatewayV2StageTags" in apply_block
     assert "ManageLambdaEventSourceMappingTags" in apply_block
     assert "ReadLambdaEventSourceMappingTags" in plan_block
     assert "application_lambda_event_source_mapping_function_arns" in locals_source
