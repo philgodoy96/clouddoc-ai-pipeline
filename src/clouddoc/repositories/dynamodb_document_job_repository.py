@@ -24,6 +24,7 @@ from clouddoc.repositories.repository_errors import (
 )
 from clouddoc.schemas.ai_output import AIExtractionResult
 from clouddoc.schemas.persistence_models import (
+    DYNAMODB_PARTITION_KEY_ATTRIBUTE,
     build_job_partition_key,
     document_job_from_item,
     document_job_to_item,
@@ -53,7 +54,7 @@ class DynamoDBDocumentJobRepository:
                 Item=document_job_to_item(job),
                 ConditionExpression="attribute_not_exists(#pk)",
                 ExpressionAttributeNames={
-                    "#pk": "pk",
+                    "#pk": DYNAMODB_PARTITION_KEY_ATTRIBUTE,
                 },
             )
         except ClientError as error:
@@ -75,7 +76,7 @@ class DynamoDBDocumentJobRepository:
         try:
             response = self._table.get_item(
                 Key={
-                    "pk": build_job_partition_key(job_id),
+                    DYNAMODB_PARTITION_KEY_ATTRIBUTE: build_job_partition_key(job_id),
                 },
                 ConsistentRead=True,
             )
