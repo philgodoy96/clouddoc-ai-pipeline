@@ -4,11 +4,14 @@ Production-minded AWS serverless document intelligence pipeline designed to inge
 
 ## Project Status
 
-CloudDoc AI Pipeline has a complete approved-v1 repository implementation. The `dev` infrastructure is deployed and converged, and the deployed runtime has been operationally verified for one happy path and one controlled deterministic failure path. Sanitized evidence lives in [Deployed Runtime Evidence](docs/operations/deployed-runtime-evidence.md).
+CloudDoc AI Pipeline `v1.0.0` is the published portfolio release for the approved v1 scope. The approved v1 portfolio scope is complete. The `dev` infrastructure is deployed and converged, and the deployed runtime has been operationally verified for one happy path and one controlled deterministic failure path. Sanitized evidence lives in [Deployed Runtime Evidence](docs/operations/deployed-runtime-evidence.md).
 
 ### Status distinction
 
 ```text
+portfolio release:
+    v1.0.0 published for the approved v1 scope
+
 repository implementation:
     complete for the approved v1 scope
 
@@ -40,11 +43,6 @@ runtime happy path:
 
 controlled deterministic failure path:
     verified
-
-remaining pre-release work:
-    engineering review
-    conceptual engineering review
-    v1.0.0 release
 
 intentionally deferred scope:
     production authorization, multi-party approval, automatic rollback,
@@ -156,11 +154,22 @@ Design and operations:
 * [ADR-028: Controlled Single-Operator Terraform Deployment](docs/adr/ADR-028-controlled-single-operator-terraform-deployment.md)
 * [Deployed Runtime Evidence](docs/operations/deployed-runtime-evidence.md)
 
-### Remaining pre-release work
+### Portfolio release status
 
-* engineering review
-* conceptual engineering review
-* v1.0.0 release
+CloudDoc AI Pipeline `v1.0.0` is the published portfolio release for the approved v1 scope.
+
+The release includes:
+
+* deployed and converged `dev` infrastructure
+* verified GitHub OIDC authentication
+* controlled Terraform Plan and Deploy workflows
+* a real Amazon Bedrock invocation
+* one verified end-to-end happy path
+* one verified deterministic terminal failure path
+* sanitized runtime evidence
+* documented reliability, IAM, observability, and cost boundaries
+
+This release does not claim production certification, multi-account deployment, cross-region disaster recovery, load testing, or automated rollback.
 
 Branch protection is not claimed as configured.
 
@@ -309,11 +318,9 @@ The `dev` control plane, queues, event-source mappings, Lambdas, runtime composi
 * one environment-scoped CloudWatch operations dashboard
 * offline automated tests without real Bedrock or CloudWatch calls
 
-### Remaining pre-release work
+### Portfolio release
 
-* engineering review
-* conceptual engineering review
-* v1.0.0 release
+The approved v1 portfolio scope is complete and published as CloudDoc AI Pipeline `v1.0.0`. See [Portfolio release status](#portfolio-release-status).
 
 Operator notification routing remains intentionally deferred.
 
@@ -968,11 +975,7 @@ Remaining intentionally deferred operational and product follow-ups:
 
 Branch protection should be configured after the validation workflows run successfully on `main`. It is not claimed as active.
 
-Pre-release gates that remain:
-
-* engineering review
-* conceptual engineering review
-* v1.0.0 release
+The approved v1 portfolio scope is complete and published as CloudDoc AI Pipeline `v1.0.0`. See [Portfolio release status](#portfolio-release-status).
 
 ## Architecture Decision Records
 

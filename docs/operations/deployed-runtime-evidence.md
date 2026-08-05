@@ -328,14 +328,26 @@ The evidence does not prove:
 
 These are explicit future decisions rather than hidden project limitations.
 
-## Current Project Status
+## Portfolio Release Status
+
+CloudDoc AI Pipeline `v1.0.0` is the published portfolio release for the approved
+v1 scope. The approved v1 portfolio scope is complete.
 
 ```text
+portfolio release:
+    v1.0.0 published for the approved v1 scope
+
 repository implementation:
     complete for the approved v1 scope
 
 dev infrastructure deployment:
     completed and converged
+
+GitHub OIDC authentication:
+    verified
+
+controlled Terraform Plan and Deploy:
+    verified
 
 runtime happy path:
     completed and verified
@@ -346,15 +358,14 @@ controlled deterministic failure path:
 real Bedrock invocation:
     completed and verified
 
+sanitized runtime evidence:
+    recorded in this document
+
 final documentation:
     completed by the documentation PR containing this evidence
-
-engineering review:
-    next gate
-
-conceptual engineering review:
-    after engineering review
-
-v1.0.0 release:
-    after final reviews
 ```
+
+This release does not claim production certification, multi-account deployment,
+cross-region disaster recovery, load testing, or automated rollback. Staging and
+production deployment are not claimed. Intentional deferrals remain as stated in
+[What Is Intentionally Not Claimed](#what-is-intentionally-not-claimed).
