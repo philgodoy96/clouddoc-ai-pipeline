@@ -41,9 +41,11 @@ offline observability tests
 offline bootstrap and workflow tests
 ```
 
-Backend declaration, bootstrap root, environment files, and the guarded workflow are implemented in the repository. Real AWS state-bucket creation, remote backend initialization, and environment plan/apply against AWS remain pending.
+Backend declaration, bootstrap root, environment files, guarded workflow, and OIDC-based state / plan / apply authorization are implemented in the repository.
 
-Credential-free infrastructure CI validation is implemented. Controlled deploy workflow source is implemented. GitHub configuration, AWS activation, and live deployment proof remain pending. Automatic replay, operator recovery tooling, real AWS deployment, and real CloudWatch validation remain separate follow-up work.
+For `dev`, the state bucket exists, the remote S3 backend with native lockfiles is in use, and controlled plan / apply have been deployed and operationally verified, including post-apply convergence. Staging and production are not claimed as deployed. Authoritative evidence: [Deployed Runtime Evidence](../../docs/operations/deployed-runtime-evidence.md).
+
+Credential-free infrastructure CI validation is implemented. Controlled deploy workflow source is implemented. GitHub OIDC, AWS activation for `dev`, and live `dev` deployment proof are operationally verified. Automatic replay, operator recovery tooling, alarm notification routing, synthetic alarm-state transition validation, staging / production deployment, and production certification remain separate follow-up work.
 
 ## Backend and state
 
@@ -68,7 +70,7 @@ Terraform infrastructure state is operational metadata for this root. It is dist
 
 Full operator workflow, IAM expectations, and integrity rules are documented in [Terraform State and Environment Workflow](../../docs/architecture/terraform-state-and-environment-workflow.md), [Terraform Deployment Authorization](../../docs/architecture/terraform-deployment-authorization.md), and [Terraform Deploy Workflow Runbook](../../docs/operations/terraform-deploy-workflow.md). Bootstrap local state for the state bucket itself is an intentional narrow exception and is not remote or collaborative.
 
-Real bucket creation and remote backend initialization in AWS remain future work.
+For `dev`, bucket creation and remote backend initialization are completed and in operational use. Staging and production remote backends are not claimed as initialized.
 
 ## Environment configuration
 
@@ -125,7 +127,7 @@ python scripts/terraform_workflow.py output --environment dev
 ```
 
 * `offline-check` runs bootstrap and application offline validation; no AWS credentials required.
-* `init`, `plan`, `apply`, `deploy`, and `output` require future AWS authentication and the runtime bucket/account variables.
+* `init`, `plan`, `apply`, `deploy`, and `output` require AWS authentication and the runtime bucket/account variables.
 * `show-plan` validates a local saved plan and manifest without calling AWS.
 * `apply` is the existing local saved-plan contract. It is not the GitHub controlled deployment path.
 * `deploy` is the controlled regenerate/compare/apply contract used by the GitHub deploy workflow.
@@ -1276,15 +1278,15 @@ When chained mode is used, the S3 backend assumes the state role and the AWS pro
 
 See [Terraform Plan Authorization](../../docs/architecture/terraform-plan-authorization.md), [Terraform Plan Workflow Runbook](../../docs/operations/terraform-plan-workflow.md), and [Terraform Authorization Bootstrap](../bootstrap/terraform-authorization/README.md).
 
-## State access boundary (future IAM)
+## State access boundary
 
-When state access IAM is introduced, operators or CI roles will need conceptually:
+Exact state and lockfile permissions are owned by the Terraform authorization bootstrap, not this application root. For `dev`, the dedicated state role is deployed and used by live Plan and Deploy. The conceptual permission surface remains:
 
 * `s3:ListBucket` on the state bucket prefix
 * `s3:GetObject` and `s3:PutObject` on state objects
 * `s3:GetObject`, `s3:PutObject`, and `s3:DeleteObject` on lockfile objects
 
-These roles and policies are not declared yet.
+See [Terraform Authorization Bootstrap](../bootstrap/terraform-authorization/README.md) and [Terraform Deployment Authorization](../../docs/architecture/terraform-deployment-authorization.md). Staging and production state authorization are not claimed as deployed.
 
 ## Outputs
 
@@ -1493,7 +1495,7 @@ measurement later.
 
 Do not treat unguarded `terraform apply` as part of the documented validation path. Offline `offline-check`, `fmt`, `validate`, and `test` are the approved checks for pull requests. CI invokes the same `offline-check` command without AWS credentials.
 
-Artifact absence is accepted for offline validation but not for real deployment. A controlled workflow must build and verify `artifacts/lambda/clouddoc-app.zip` before any future real plan or apply.
+Artifact absence is accepted for offline validation but not for real deployment. A controlled workflow must build and verify `artifacts/lambda/clouddoc-app.zip` before plan or apply against AWS.
 
 Terraform state, saved plans, manifests, and local `terraform.tfvars` remain excluded from Git.
 
@@ -1537,10 +1539,9 @@ Secrets Manager
 versions and aliases
 artifact publication to S3
 code signing
-real AWS deployment
-real CloudWatch dashboard and alarm validation
-model-access readiness validation
-real inference validation
+staging and production AWS deployment
+synthetic alarm-state transition validation
+model-access readiness validation beyond the verified Nova Micro path
 failure injection
 recovery testing
 SLOs
@@ -1548,6 +1549,11 @@ SLOs
 
 OAuth and JWT remain intentionally deferred while the project establishes a
 secure first-party AWS control plane and explicit invocation boundaries.
+
+The `dev` remote state substrate, GitHub OIDC identities, state / plan / apply
+authorization, controlled Plan / Deploy path, and correlated CloudWatch
+runtime telemetry are operationally verified. See
+[Deployed Runtime Evidence](../../docs/operations/deployed-runtime-evidence.md).
 
 Additional deferred items from earlier slices also remain separate:
 
@@ -1557,17 +1563,11 @@ S3 access logging
 customer-managed KMS
 malware scanning
 quarantine workflow
-real state-bucket creation in AWS
-real remote backend initialization
-GitHub OIDC
-Terraform state access IAM
-remote plan
-remote apply
-deployment workflow
 branch protection activation
 AWS CI identities
 artifact publication
-real environment plan/apply against AWS
+staging and production remote backend initialization
+staging and production plan / apply against AWS
 state audit logging
 cross-region replication
 operator replay tooling
@@ -1579,11 +1579,12 @@ DAX
 Contributor Insights
 AWS Backup plans
 cross-region disaster recovery
-real AWS deployment and restore validation
+staging / production deployment and restore validation
 ```
 
 ## Related documentation
 
+- [Deployed Runtime Evidence](../../docs/operations/deployed-runtime-evidence.md)
 - [Infrastructure CI Validation](../../docs/architecture/infrastructure-ci-validation.md)
 - [Terraform State and Environment Workflow](../../docs/architecture/terraform-state-and-environment-workflow.md)
 - [Terraform state bootstrap README](../bootstrap/terraform-state/README.md)

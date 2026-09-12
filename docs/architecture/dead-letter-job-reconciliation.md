@@ -8,9 +8,9 @@ This document describes how CloudDoc reconciles exhausted processing-queue deliv
 
 The reconciler records unfinished attempted jobs as `dead`, preserves terminal business outcomes, protects active workers, and isolates failures through the Lambda partial batch response.
 
-Automatic redrive, operator replay, stale-job scanning, real AWS deployment validation, and operator recovery tooling remain separate follow-up work.
+Automatic redrive, operator replay, stale-job scanning, and operator recovery tooling remain separate follow-up work.
 
-Structured operational logging, CloudWatch alarms, dashboard declarations, reconciler IAM, and Terraform consumer topology are implemented in the repository.
+Structured operational logging, CloudWatch alarms, dashboard declarations, reconciler IAM, and Terraform consumer topology are implemented in the repository and deployed in `dev`. Intentionally induced exhausted-retry / DLQ reconciliation runtime proof is not claimed by [Deployed Runtime Evidence](../operations/deployed-runtime-evidence.md).
 
 ## Purpose
 
@@ -677,14 +677,14 @@ The following are intentionally deferred:
 - EventBridge recovery schedules
 - custom metrics
 - distributed tracing
-- deployed AWS validation
+- intentionally induced exhausted-retry / DLQ reconciliation runtime proof
 - operator recovery tooling
 
 ## Follow-Up Work
 
 Remaining operational follow-up includes:
 
-- real AWS deployment and validation
+- intentionally induced exhausted-retry / DLQ reconciliation runtime proof
 - alarm notification routing
 - operator-controlled replay and investigation workflow
 - SLO definitions
