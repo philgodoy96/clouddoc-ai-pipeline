@@ -1563,7 +1563,11 @@ The system does not claim distributed tracing.
 
 The system does not claim exactly-once log delivery.
 
-The system does not claim real AWS observability validation yet.
+Correlated CloudWatch telemetry for one `dev` happy path and one controlled
+deterministic failure path is recorded in
+[Deployed Runtime Evidence](../operations/deployed-runtime-evidence.md).
+That evidence does not claim load testing, alarm notification delivery, or
+production certification.
 ```
 
 ## Cost Position
