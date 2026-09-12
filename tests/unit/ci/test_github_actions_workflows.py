@@ -57,8 +57,8 @@ EXPECTED_ACTIONS = {
         "v4.0.1",
     ),
     "aws-actions/configure-aws-credentials": (
-        "e6de054238d6b7531b4efff3b6587d9aade6a06c",
-        "v6.2.3",
+        "cbe3b392738ccf3f987d68400dafcf4b0624a56c",
+        "v6.2.4",
     ),
     "actions/upload-artifact": (
         "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
@@ -606,7 +606,7 @@ def test_reusable_aws_identity_configures_credentials_exactly() -> None:
 
     assert (
         "uses: aws-actions/configure-aws-credentials@"
-        "e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3"
+        "cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4"
     ) in source
     assert "role-to-assume: ${{ inputs.role_arn }}" in source
     assert "aws-region: ${{ inputs.aws_region }}" in source
